@@ -1,0 +1,5 @@
+find_package(Protobuf REQUIRED)
+message(STATUS "Protobuf_FOUND: ${Protobuf_FOUND}")
+message(STATUS "Protobuf_VERSION: ${Protobuf_VERSION}")
+message(STATUS "Protobuf_INCLUDE_DIRS: ${Protobuf_INCLUDE_DIRS}")
+message(STATUS "Protobuf_LIBRARIES: ${Protobuf_LIBRARIES}")
