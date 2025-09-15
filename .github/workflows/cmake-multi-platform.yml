@@ -81,58 +81,83 @@ jobs:
             c_compiler: cl
 
     steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
-        fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
 
-    - name: Cache vcpkg downloads
-      uses: actions/cache@v4
-      with:
-        path: |
-          ${{ github.workspace }}/external/vcpkg/downloads
-        key: vcpkg-downloads-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
-        restore-keys: |
-          vcpkg-downloads-${{ runner.os }}-
+      - name: Cache vcpkg downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/external/vcpkg/downloads
+          key: vcpkg-downloads-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-downloads-${{ runner.os }}-
 
-    # Prepare MSVC environment on Windows runners
-    - name: Setup MSVC (Windows)
-      if: runner.os == 'Windows'
-      uses: ilammy/msvc-dev-cmd@v1
+      # Prepare MSVC environment on Windows runners
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Setup Ninja
-      uses: seanmiddleditch/gha-setup-ninja@v4
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v4
 
-    # Use vcpkg manifest mode via the repository submodule on all platforms
+      # Extra guard: ensure Ninja is installed per-OS (fallback if action fails)
+      - name: Ensure Ninja on macOS
+        if: runner.os == 'macOS'
+        run: brew update && brew install ninja
 
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.3
+      - name: Ensure Ninja on Ubuntu
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-    - name: Configure CMake
-      run: >
-        cmake -G "Ninja" -B "${{ github.workspace }}/build"
-        -S "${{ github.workspace }}"
-        -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
-        -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
-        -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}
-        -DCMAKE_C_COMPILER_LAUNCHER=sccache
-        -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-        -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      - name: Ensure Ninja on Windows
+        if: runner.os == 'Windows'
+        run: choco install ninja --no-progress -y
 
-    - name: Upload vcpkg logs (on failure)
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: vcpkg-logs-${{ runner.os }}
-        path: |
-          ${{ github.workspace }}/build/vcpkg-manifest-install.log
-          ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.log
-          ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.txt
-        if-no-files-found: ignore
+      # Use vcpkg manifest mode via the repository submodule on all platforms
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.3
 
-    - name: Build
-      run: cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }}
+      - name: Configure CMake (Unix)
+        if: runner.os != 'Windows'
+        run: >
+          cmake -G "Ninja" -B "${{ github.workspace }}/build"
+          -S "${{ github.workspace }}"
+          -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
+          -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
-    - name: Test
-      working-directory: ${{ github.workspace }}/build
-      run: ctest --build-config ${{ matrix.build_type }}
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          cmake -G "Ninja" -B "${{ github.workspace }}/build"
+          -S "${{ github.workspace }}"
+          -DCMAKE_C_COMPILER=cl.exe
+          -DCMAKE_CXX_COMPILER=cl.exe
+          -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }}
+
+      - name: Test
+        working-directory: ${{ github.workspace }}/build
+        run: ctest --build-config ${{ matrix.build_type }}
+
+      - name: Upload vcpkg logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-logs-${{ runner.os }}
+          path: |
+            ${{ github.workspace }}/build/vcpkg-manifest-install.log
+            ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.log
+            ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.txt
+          if-no-files-found: ignore
