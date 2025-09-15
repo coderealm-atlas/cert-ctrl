@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         build_type: [Release]
         c_compiler: [clang, cl] # Using manual args; gcc removed
         include:
@@ -23,14 +23,42 @@ jobs:
           - os: ubuntu-latest
             c_compiler: clang
             cpp_compiler: clang++
+          - os: macos-latest
+            c_compiler: clang
+            cpp_compiler: clang++
         exclude:
           - os: windows-latest
             c_compiler: clang
           - os: ubuntu-latest
             c_compiler: cl
+          - os: macos-latest
+            c_compiler: cl
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    # Install Protobuf on Linux
+    - name: Install Protobuf (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler libprotobuf-dev
+
+    # Install Protobuf on macOS
+    - name: Install Protobuf (macOS)
+      if: runner.os == 'macOS'
+      run: brew install protobuf
+
+    # Setup vcpkg on Windows
+    - name: Setup vcpkg (Windows)
+      if: runner.os == 'Windows'
+      shell: cmd
+      run: |
+        cd external\vcpkg
+        .\bootstrap-vcpkg.bat
+        .\vcpkg.exe install --triplet x64-windows
 
     # Optional: use Ninja for faster Linux builds
     # - name: Install build tools (Linux)
@@ -44,14 +72,16 @@ jobs:
 
     - name: Configure CMake
       shell: bash
-      run: >
-        cmake -B ${{ steps.strings.outputs.build-output-dir }}
-        -S ${{ github.workspace }}
-        -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
-        -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
-        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-        # If you installed Ninja on Linux, you can uncomment this to standardize the generator:
-        # -G Ninja
+      run: |
+        CMAKE_ARGS="-B ${{ steps.strings.outputs.build-output-dir }} -S ${{ github.workspace }} -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}"
+        
+        # Add vcpkg toolchain file for Windows
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows"
+        fi
+        
+        echo "Running: cmake $CMAKE_ARGS"
+        cmake $CMAKE_ARGS
 
     - name: Build
       run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
