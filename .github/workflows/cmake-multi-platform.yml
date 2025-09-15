@@ -32,6 +32,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # Install dependencies using vcpkg
+    - name: Install dependencies with vcpkg
+      uses: microsoft/vcpkg-action@v0.1.1
+      with:
+        vcpkg-directory: '${{ github.workspace }}/vcpkg'
+        manifest-dir: '${{ github.workspace }}'
+        cache-key: 'vcpkg-${{ matrix.os }}-${{ matrix.c_compiler }}'
+
     # Optional: use Ninja for faster Linux builds
     # - name: Install build tools (Linux)
     #   if: runner.os == 'Linux'
@@ -50,6 +58,7 @@ jobs:
         -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
         -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
         # If you installed Ninja on Linux, you can uncomment this to standardize the generator:
         # -G Ninja
 
