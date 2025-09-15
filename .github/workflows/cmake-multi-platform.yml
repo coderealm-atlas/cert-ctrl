@@ -1,14 +1,60 @@
 name: CMake on multiple platforms
 
 on:
+  # Manual trigger from GitHub UI with optional inputs
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: CMake build type
+        type: choice
+        options:
+          - Release
+          - Debug
+        default: Release
+  # Only run on pushes that touch build-relevant files
   push:
     branches: [ "main" ]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'proto/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'vcpkg.json'
+      - 'vcpkg-configuration.json'
+      - '.github/workflows/cmake-multi-platform.yml'
+  # Only run PRs that touch build-relevant files
   pull_request:
     branches: [ "main" ]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'proto/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'vcpkg.json'
+      - 'vcpkg-configuration.json'
+      - '.github/workflows/cmake-multi-platform.yml'
+
+# Cancel previous in-flight runs for the same ref to save time
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    # Allow skipping builds by commit message on push
+    if: ${{ !(github.event_name == 'push' && (contains(github.event.head_commit.message, '[skip ci]') || contains(github.event.head_commit.message, '[ci skip]'))) }}
     runs-on: ${{ matrix.os }}
+    env:
+      # Enable vcpkg's GitHub Actions cache provider for fast binary caching
+      VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+      VCPKG_FEATURE_FLAGS: manifests,binarycaching,registries
+      # Ensure Ninja is used everywhere
+      CMAKE_GENERATOR: Ninja
+      VCPKG_USE_NINJA: 1
 
     strategy:
       fail-fast: false
@@ -37,28 +83,56 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        submodules: true
+        submodules: recursive
+        fetch-depth: 1
+
+    - name: Cache vcpkg downloads
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ github.workspace }}/external/vcpkg/downloads
+        key: vcpkg-downloads-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+        restore-keys: |
+          vcpkg-downloads-${{ runner.os }}-
+
+    # Prepare MSVC environment on Windows runners
+    - name: Setup MSVC (Windows)
+      if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Setup Ninja
+      uses: seanmiddleditch/gha-setup-ninja@v4
 
     # Use vcpkg manifest mode via the repository submodule on all platforms
 
-    - name: Set reusable strings
-      id: strings
-      shell: bash
-      run: echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.3
 
     - name: Configure CMake
-      shell: bash
       run: >
-        cmake -B ${{ steps.strings.outputs.build-output-dir }}
-        -S ${{ github.workspace }}
+        cmake -G "Ninja" -B "${{ github.workspace }}/build"
+        -S "${{ github.workspace }}"
         -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
         -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
-        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-        -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake
+        -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}
+        -DCMAKE_C_COMPILER_LAUNCHER=sccache
+        -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+    - name: Upload vcpkg logs (on failure)
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: vcpkg-logs-${{ runner.os }}
+        path: |
+          ${{ github.workspace }}/build/vcpkg-manifest-install.log
+          ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.log
+          ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.txt
+        if-no-files-found: ignore
 
     - name: Build
-      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
+      run: cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }}
 
     - name: Test
-      working-directory: ${{ steps.strings.outputs.build-output-dir }}
+      working-directory: ${{ github.workspace }}/build
       run: ctest --build-config ${{ matrix.build_type }}
