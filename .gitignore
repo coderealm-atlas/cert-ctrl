@@ -3,6 +3,7 @@ config_dir/*.json
 config_dir/*.properties
 # Build and dependency folders
 build/
+build_test/
 
 # CMake files
 CMakeFiles/
