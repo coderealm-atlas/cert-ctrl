@@ -13,9 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         build_type: [Release]
-        c_compiler: [clang, cl] # Using manual args; gcc removed
+        c_compiler: [clang, cl]
         include:
           - os: windows-latest
             c_compiler: cl
@@ -23,19 +23,40 @@ jobs:
           - os: ubuntu-latest
             c_compiler: clang
             cpp_compiler: clang++
+          - os: macos-latest
+            c_compiler: clang
+            cpp_compiler: clang++
         exclude:
           - os: windows-latest
             c_compiler: clang
           - os: ubuntu-latest
             c_compiler: cl
+          - os: macos-latest
+            c_compiler: cl
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: true
 
-    # Optional: use Ninja for faster Linux builds
-    # - name: Install build tools (Linux)
-    #   if: runner.os == 'Linux'
-    #   run: sudo apt-get update && sudo apt-get install -y ninja-build
+    # Install Protobuf on Ubuntu using apt-get
+    - name: Install Protobuf (Ubuntu)
+      if: runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev
+
+    # Install Protobuf on macOS using Homebrew
+    - name: Install Protobuf (macOS)
+      if: runner.os == 'macOS'
+      run: brew install protobuf
+
+    # Setup vcpkg and install dependencies on Windows
+    - name: Setup vcpkg (Windows)
+      if: runner.os == 'Windows'
+      uses: microsoft/vcpkg-action@v0.1.2
+      with:
+        pkgs: protobuf
+        triplet: x64-windows
+        token: ${{ github.token }}
 
     - name: Set reusable strings
       id: strings
@@ -50,8 +71,7 @@ jobs:
         -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
         -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-        # If you installed Ninja on Linux, you can uncomment this to standardize the generator:
-        # -G Ninja
+        ${{ runner.os == 'Windows' && '-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake' || '' }}
 
     - name: Build
       run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
