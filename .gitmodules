@@ -1,0 +1,6 @@
+[submodule "external/vcpkg"]
+	path = external/vcpkg
+	url = https://github.com/microsoft/vcpkg
+[submodule "external/http_client"]
+	path = external/http_client
+	url = https://github.com/coderealm-atlas/http_client.git

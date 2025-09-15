@@ -1,0 +1,36 @@
+{
+  "name": "ct",
+  "version-string": "latest",
+  "dependencies": [
+    "benchmark",
+    "fmt",
+    "gtest",
+    "boost-json",
+    "date",
+    "openssl",
+    "boost-uuid",
+    "boost-url",
+    "boost-beast",
+    "boost-process",
+    "boost-iostreams",
+    "boost-interprocess",
+    "boost-program-options",
+    "boost-log",
+    "jwt-cpp",
+    {
+      "name": "boost-asio",
+      "features": [
+        "ssl"
+      ]
+    },
+    {
+      "name": "protobuf",
+      "features": [
+        "zlib"
+      ]
+    },
+    "minizip-ng",
+    "libsodium",
+    "zstd"
+  ]
+}

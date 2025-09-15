@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package cjj365.meta;
+
+message User {
+    enum State {
+        UNKNOWN = 0;
+        ACTIVE = 1;
+        INACTIVE = 2;
+        DELETED = 3;
+        OVER_USAGE = 4;
+    }
+    optional int64 id = 1;
+    optional string name = 2;
+    optional string email = 3;
+    optional bytes password = 4;
+    optional int64 created_at = 5;
+    optional int64 updated_at = 6;
+    optional State state = 7;
+    optional int64 level = 8;
+    optional int64 user_quota_id = 9;
+    optional bytes pk = 10;
+    repeated string roles = 11;
+    optional int64 email_verified_at = 12;
+}
+
+
+message JwkInStore{
+    optional string kty = 1;
+    optional string crv = 2;
+    optional string n = 3;
+    optional string e = 4;
+    optional string x = 5;
+    optional string y = 6;
+}
+
+// how acme recognize returning account?
+message AcmeAccount{
+    optional int64 id = 1;
+    optional int64 user_id = 2;
+    optional string name = 3;
+    optional string provider = 4;
+    optional string alg = 5;
+    optional string kid = 6;
+    optional JwkInStore jwk = 7; // it's useless here.
+    optional bytes der = 8;
+    optional string email = 9;
+    optional int64 created_at = 10;
+}
+
+//   acme::OrderIdentifier o1("dns", "cjj365.cc");
+//   acme::OrderIdentifier o2 = {"dns", "*.cjj365.cc"};
+message AcmeOrderIdentifier{
+    optional string type = 1;
+    optional string value = 2;
+}
+message AcmeOrderIdentifiers{
+    repeated AcmeOrderIdentifier identifiers = 1;
+}
+
+message CertRecord {
+    optional int64 id = 1;
+    optional int64 acct_id = 2;
+    optional string domain_name = 3;
+    // issuance attempt details (order id, per-attempt error and attempt number)
+    // are stored in `certrecord_issue_history`.
+    optional string sans = 5;
+    optional string cert = 6;
+    optional bytes der = 7; // LEGACY: plaintext private key DER (will be unset when enc_scheme > 0)
+    // validity is derived from cert data and checks; removed cached boolean.
+    optional string dhparam = 10;
+    optional string csr = 11;
+    optional int64 created_at = 13;
+    optional int64 updated_at = 14;
+    optional AcmeOrderIdentifiers orders = 15;
+    optional bool verified = 16;
+    optional int64 paid_till = 17;
+    optional bool self_signed = 18; // if true, the cert is self-signed, not issued by CA.
+    // New encrypted private key fields (post encryption migration)
+    optional bytes enc_privkey = 19; // Encrypted private key (AEAD ciphertext). Present when enc_scheme > 0.
+    optional bytes privkey_nonce = 20; // AEAD nonce. 12 bytes for AES-GCM, 24 bytes for XChaCha20-Poly1305.
+    optional bytes privkey_tag = 21; // AEAD tag if stored separately (e.g. AES-GCM 16 bytes). Empty if combined format used.
+    optional uint32 enc_scheme = 22; // 0=legacy plaintext (der used); 1=AES-256-GCM; 2=XChaCha20-Poly1305 (or adjust mapping as needed).
+    // New Csr fields
+    optional string organization = 23;
+    optional string organizational_unit = 24;
+    optional string country = 25;
+    optional string state = 26;
+    optional string locality = 27;
+
+    // serial number
+    optional string serial_number = 28;
+}

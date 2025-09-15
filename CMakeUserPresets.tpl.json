@@ -1,0 +1,15 @@
+{
+  "version": 4,
+  "configurePresets": [
+    {
+      "name": "debug-local",
+      "inherits": "debug",
+      "environment": {
+        "VCPKG_DEFAULT_BINARY_CACHE": "/home/jianglibo/vcpkg-dir/vcpkg_binary_cache"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "/home/jianglibo/vcpkg-dir/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      }
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "version": 4,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 19,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
+        "CMAKE_VERBOSE_MAKEFILE": "ON"
+      },
+      "environment": {
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "default",
+      "description": "Release build",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      },
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$env{CORES}"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "default",
+      "description": "Debug build t630",
+      "environment": {
+        "ASAN_OPTIONS": "allocator_may_return_null=1",
+        "CMAKE_BUILD_PARALLEL_LEVEL": "36",
+        "CMAKE_MAKE_PROGRAM": "colormake",
+        "VCPKG_DEFAULT_BINARY_CACHE": "/home/jianglibo/vcpkg-dir/vcpkg_binary_cache",
+        "BDE_CXX": "/usr/bin/clang++",
+        "BDE_CC": "/usr/bin/clang"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENABLE_ASAN": "OFF",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CUDA_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "CMAKE_C_COMPILER": "/usr/bin/clang",
+        "THREADS_PREFER_PTHREAD_FLAG": "ON",
+        "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld -pthread",
+        "BSLS_PLATFORM_CMP_CLANG": "1",
+        "CMAKE_CXX_FLAGS": "-DBSLS_PLATFORM_CMP_CLANG=1"
+      }
+    },
+    {
+      "name": "debug-asan",
+      "inherits": "default",
+      "description": "Debug build",
+      "environment": {
+        "CAN_ACCESS_IN_PORT": "by $ENV{CAN_ACCESS_IN_PORT}",
+        "ASAN_OPTIONS": "allocator_may_return_null=1",
+        "CMAKE_MAKE_PROGRAM": "colormake"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENABLE_ASAN": "ON",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CUDA_COMPILER_LAUNCHER": "ccache"
+      }
+    },
+    {
+      "name": "w64",
+      "inherits": "default",
+      "description": "Compile for Windows using Visual studio",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MAKE_PROGRAM": "$env{NINJA_BIN}",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_HOST_TRIPLET": "x64-windows",
+        "VCPKG_DEFAULT_TRIPLET": "x64-windows",
+        "VCPKG_DEFAULT_HOST_TRIPLET": "x64-windows",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "hidden": true,
+      "configurePreset": "default"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "w64",
+      "configurePreset": "w64"
+    }
+  ]
+}

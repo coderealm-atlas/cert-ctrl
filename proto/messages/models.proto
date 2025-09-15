@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package cjj365.ws;
+
+message Kv {
+    optional string key = 1;
+    optional string value = 2;
+}
+
+message WsMessage {
+	optional uint64 nid = 1; // number id
+	optional string sid = 2; // string id
+	optional string uuid = 3;
+	optional string source = 4;
+	optional string target = 5;
+	optional uint32 otype = 6;
+	optional string oname = 7;
+	optional string content = 8;
+	optional bytes bcontent = 9;
+	optional uint32 order = 10;
+	optional bool last = 11;
+	optional string secret = 12;
+	repeated Kv kvs = 13;
+	optional uint64 send_at = 14;
+	optional uint64 latency = 15;
+}

@@ -1,0 +1,30 @@
+# Ignore config files
+config_dir/*.json
+config_dir/*.properties
+# Build and dependency folders
+build/
+
+# CMake files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# User-specific files
+*.user
+*.swp
+*.swo
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*~
+*.bak
+
+# Ignore config_dir if needed
+# config_dir/
+.cache/
+.vscode/
