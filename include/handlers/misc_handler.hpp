@@ -1,7 +1,11 @@
 #pragma once
 
 #include <google/protobuf/util/json_util.h>
-#include <unistd.h>
+#ifdef _WIN32
+#  include <io.h>
+#else
+#  include <unistd.h>
+#endif
 
 #include <boost/asio/io_context.hpp>
 #include <boost/program_options.hpp>

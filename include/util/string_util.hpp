@@ -6,7 +6,6 @@
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
-#include <bits/chrono.h>
 #include <fmt/base.h>
 #include <stdint.h>
 #include <algorithm>
