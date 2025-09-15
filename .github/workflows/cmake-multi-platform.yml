@@ -11,6 +11,15 @@ on:
           - Release
           - Debug
         default: Release
+      os:
+        description: "Platform to run (use 'all' to run all)"
+        type: choice
+        options:
+          - all
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+        default: all
   # Only run on pushes that touch build-relevant files
   push:
     branches: [ "main" ]
@@ -44,9 +53,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  set-matrix:
+    name: Prepare matrix
+    runs-on: ubuntu-latest
+    outputs:
+      os-list: ${{ steps.set.outputs.os-list }}
+    steps:
+      - id: set
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.os }}" ] && [ "${{ github.event.inputs.os }}" != "all" ]; then
+            echo "os-list=[\"${{ github.event.inputs.os }}\"]" >> "$GITHUB_OUTPUT"
+          else
+            echo 'os-list=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: set-matrix
     # Allow skipping builds by commit message on push
-    if: ${{ !(github.event_name == 'push' && (contains(github.event.head_commit.message, '[skip ci]') || contains(github.event.head_commit.message, '[ci skip]'))) }}
+    if: >
+      !(github.event_name == 'push' && (contains(github.event.head_commit.message, '[skip ci]') || contains(github.event.head_commit.message, '[ci skip]'))) &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.os == 'all' || contains(needs.set-matrix.outputs.os-list, github.event.inputs.os))
     runs-on: ${{ matrix.os }}
     env:
       # Enable vcpkg's GitHub Actions cache provider for fast binary caching
@@ -59,26 +86,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.set-matrix.outputs.os-list) }}
         build_type: [Release]
-        c_compiler: [clang, cl]
-        include:
-          - os: windows-latest
-            c_compiler: cl
-            cpp_compiler: cl
-          - os: ubuntu-latest
-            c_compiler: clang
-            cpp_compiler: clang++
-          - os: macos-latest
-            c_compiler: clang
-            cpp_compiler: clang++
-        exclude:
-          - os: windows-latest
-            c_compiler: clang
-          - os: ubuntu-latest
-            c_compiler: cl
-          - os: macos-latest
-            c_compiler: cl
 
     steps:
       - uses: actions/checkout@v4
@@ -106,7 +115,10 @@ jobs:
       # Extra guard: ensure Ninja is installed per-OS (fallback if action fails)
       - name: Ensure Ninja on macOS
         if: runner.os == 'macOS'
-        run: brew update && brew install ninja
+        run: |
+          brew update
+          # Install Ninja and required autotools for libsodium
+          brew install ninja autoconf automake libtool pkg-config
 
       - name: Ensure Ninja on Ubuntu
         if: runner.os == 'Linux'
@@ -125,8 +137,8 @@ jobs:
         run: >
           cmake -G "Ninja" -B "${{ github.workspace }}/build"
           -S "${{ github.workspace }}"
-          -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
-          -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
           -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
