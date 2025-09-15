@@ -39,22 +39,53 @@ jobs:
       with:
         submodules: true
 
-    # Install Protobuf on Ubuntu using apt-get
-    - name: Install Protobuf (Ubuntu)
+    # Install dependencies on Ubuntu using apt-get
+    - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          protobuf-compiler \
+          libprotobuf-dev \
+          libboost-all-dev \
+          libssl-dev \
+          libfmt-dev \
+          libsodium-dev \
+          pkg-config
 
-    # Install Protobuf on macOS using Homebrew
-    - name: Install Protobuf (macOS)
+    # Install dependencies on macOS using Homebrew
+    - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
-      run: brew install protobuf
+      run: |
+        brew install \
+          protobuf \
+          boost \
+          openssl \
+          fmt \
+          libsodium \
+          pkg-config
 
     # Setup vcpkg and install dependencies on Windows
     - name: Setup vcpkg (Windows)
       if: runner.os == 'Windows'
       uses: microsoft/vcpkg-action@v0.1.2
       with:
-        pkgs: protobuf
+        pkgs: >
+          protobuf
+          boost-json
+          boost-uuid
+          boost-url
+          boost-asio[ssl]
+          boost-beast
+          boost-process
+          boost-iostreams
+          boost-program-options
+          boost-log
+          openssl
+          fmt
+          jwt-cpp
+          libsodium
+          minizip-ng
         triplet: x64-windows
         token: ${{ github.token }}
 
