@@ -168,11 +168,8 @@ set(HTTP_CLIENT_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/external/http_client/src/misc_util.cpp
 )
 
-if( CMAKE_BUILD_TYPE STREQUAL "Debug" )
-  set(CERT_CTRL_APP_NAME cert_ctrl_debug)
-else()
-  set(CERT_CTRL_APP_NAME cert_ctrl)
-endif()
+# Always use a stable target name; vary only the output file name per config
+set(CERT_CTRL_APP_NAME cert_ctrl)
 
 find_package(Protobuf CONFIG REQUIRED)
 set(PROTO_FILES
@@ -223,6 +220,14 @@ add_executable(${CERT_CTRL_APP_NAME}
     ${HTTP_CLIENT_SRCS}
     ${PROTO_SRCS}
     )
+
+# Name the produced binary by configuration to keep Release/Debug outputs distinct
+set_target_properties(${CERT_CTRL_APP_NAME} PROPERTIES
+    OUTPUT_NAME_DEBUG "cert_ctrl_debug"
+    OUTPUT_NAME_RELWITHDEBINFO "cert_ctrl"
+    OUTPUT_NAME_MINSIZEREL "cert_ctrl"
+    OUTPUT_NAME_RELEASE "cert_ctrl"
+)
 
 target_include_directories(${CERT_CTRL_APP_NAME} 
     PRIVATE include
