@@ -14,14 +14,9 @@ project(bbserver LANGUAGES CXX)
 add_library(di_config INTERFACE)
 target_compile_definitions(di_config INTERFACE BOOST_DI_CFG_CTOR_LIMIT_SIZE=16)
 
-# Set Clang and LLD as default compilers
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set(CMAKE_C_COMPILER "clang")
-    set(CMAKE_CXX_COMPILER "clang++")
-    set(CMAKE_EXE_LINKER_FLAGS "-fuse-ld=lld")
-endif()
+# Do not override the chosen compiler in CMake; honor what the user/toolchain sets.
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT WIN32)
     set(THREADS_PTHREADS_WEAK_SEARCH FALSE)
     set(CMAKE_THREAD_LIBS_INIT "-pthread")
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-pthread>")
@@ -34,13 +29,13 @@ endif()
 
 find_package(Threads REQUIRED)
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set(OpenMP_CXX_FLAGS "-fopenmp")
-    set(OpenMP_CXX_LIB_NAMES "omp")
-    set(OpenMP_omp_LIBRARY omp)
+option(ENABLE_OPENMP "Enable OpenMP (link if available)" ON)
+# Use imported OpenMP targets when present; don’t hard-fail if missing
+if(ENABLE_OPENMP)
+    find_package(OpenMP QUIET)
+else()
+    set(OpenMP_CXX_FOUND OFF)
 endif()
-
-find_package(OpenMP REQUIRED)
 
 set(BUILD_SHARED_LIBS OFF)  # Only build static libraries
 
@@ -58,14 +53,34 @@ include(cmake/CPM.cmake)
 # Enable precompiled headers for faster compilation
 set(CMAKE_PCH_ENABLE ON)
 
-find_package(Git REQUIRED)
+find_package(Git)
 
-execute_process(
-    COMMAND ${GIT_EXECUTABLE} describe --tags
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    OUTPUT_VARIABLE GIT_DESCRIBE
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
+set(GIT_DESCRIBE "")
+if(Git_FOUND)
+    # Prefer annotated tags; fallback to lightweight
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --tags --always
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_DESCRIBE
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
+if(NOT GIT_DESCRIBE)
+    # Use short commit hash when tags are absent or Git isn't available
+    if(Git_FOUND)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            OUTPUT_VARIABLE GIT_DESCRIBE
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+    endif()
+endif()
+if(NOT GIT_DESCRIBE)
+    set(GIT_DESCRIBE "unknown")
+endif()
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
@@ -119,7 +134,9 @@ else()
     add_definitions(-DRELEASE_BUILD)
     set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto=thin -DNDEBUG")
     set(CMAKE_C_FLAGS_RELEASE "-O3 -flto=thin -DNDEBUG")
-    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-fuse-ld=lld")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT WIN32)
+        set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-fuse-ld=lld")
+    endif()
 endif()
 
 message(STATUS "Current debug flags: ${CMAKE_CXX_FLAGS_DEBUG}")
@@ -252,3 +269,10 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE unofficial-sodium::sodium
     PRIVATE fmt::fmt
     )
+
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(${CERT_CTRL_APP_NAME} PRIVATE OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP enabled: using OpenMP::OpenMP_CXX")
+else()
+    message(STATUS "OpenMP not found or disabled; proceeding without OpenMP")
+endif()

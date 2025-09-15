@@ -93,7 +93,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 1
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Cache vcpkg downloads
         uses: actions/cache@v4
@@ -118,11 +119,13 @@ jobs:
         run: |
           brew update
           # Install Ninja and required autotools for libsodium
-          brew install ninja autoconf automake libtool pkg-config
+          brew install ninja autoconf automake libtool pkg-config libomp
 
       - name: Ensure Ninja on Ubuntu
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libomp-dev
 
       - name: Ensure Ninja on Windows
         if: runner.os == 'Windows'
