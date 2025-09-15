@@ -174,7 +174,11 @@ else()
   set(CERT_CTRL_APP_NAME cert_ctrl)
 endif()
 
-find_package(Protobuf CONFIG REQUIRED)
+# Try to find Protobuf using CONFIG mode first (vcpkg), then fallback to MODULE mode (system packages)
+find_package(Protobuf CONFIG QUIET)
+if(NOT Protobuf_FOUND)
+    find_package(Protobuf REQUIRED)
+endif()
 set(PROTO_FILES
     proto/messages/dicmeta.proto
     proto/messages/models.proto
@@ -235,8 +239,9 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE Boost::uuid
     PRIVATE Boost::asio
     PRIVATE Boost::url
-    PRIVATE protobuf::libprotoc
-    PRIVATE protobuf::libprotobuf
+    # Use CONFIG mode targets if available, otherwise use MODULE mode targets
+    PRIVATE $<IF:$<TARGET_EXISTS:protobuf::libprotoc>,protobuf::libprotoc,${Protobuf_PROTOC_LIBRARIES}>
+    PRIVATE $<IF:$<TARGET_EXISTS:protobuf::libprotobuf>,protobuf::libprotobuf,${Protobuf_LIBRARIES}>
     PRIVATE Boost::program_options
     PRIVATE Boost::process
     PRIVATE Boost::iostreams
