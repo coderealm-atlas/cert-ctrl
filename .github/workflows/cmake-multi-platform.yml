@@ -39,24 +39,7 @@ jobs:
       with:
         submodules: true
 
-    # Install Protobuf on Ubuntu using apt-get
-    - name: Install Protobuf (Ubuntu)
-      if: runner.os == 'Linux'
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev
-
-    # Install Protobuf on macOS using Homebrew
-    - name: Install Protobuf (macOS)
-      if: runner.os == 'macOS'
-      run: brew install protobuf
-
-    # Setup vcpkg and install dependencies on Windows
-    - name: Setup vcpkg (Windows)
-      if: runner.os == 'Windows'
-      uses: microsoft/vcpkg-action@v0.1.2
-      with:
-        pkgs: protobuf
-        triplet: x64-windows
-        token: ${{ github.token }}
+    # Use vcpkg manifest mode via the repository submodule on all platforms
 
     - name: Set reusable strings
       id: strings
@@ -71,7 +54,7 @@ jobs:
         -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
         -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-        ${{ runner.os == 'Windows' && '-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake' || '' }}
+        -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake
 
     - name: Build
       run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
