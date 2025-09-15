@@ -1,8 +1,7 @@
 #pragma once
 
-#include <bits/chrono.h>
-#include <mz_strm_os.h>
 #include <stdint.h>
+#include <minizip-ng/mz_strm_os.h>
 
 #include <filesystem>
 #include <string>

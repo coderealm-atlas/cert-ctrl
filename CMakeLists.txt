@@ -88,12 +88,16 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 message(STATUS "*******GIT_DESCRIBE: ${GIT_DESCRIBE}")
 message(STATUS "*******CMAKE_CURRENT_BINARY_DIR: ${CMAKE_CURRENT_BINARY_DIR}")
 
-# Check if ENABLE_ASAN is ON
+# AddressSanitizer: enable only for Clang/GCC by default; skip for MSVC
 if(ENABLE_ASAN)
-    set(ASAN_FLAGS "-fsanitize=address -fno-omit-frame-pointer -g")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ASAN_FLAGS}")
-    set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} ${ASAN_FLAGS}")
-    message(STATUS "AddressSanitizer enabled")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        set(ASAN_FLAGS "-fsanitize=address -fno-omit-frame-pointer -g")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ASAN_FLAGS}")
+        set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} ${ASAN_FLAGS}")
+        message(STATUS "AddressSanitizer enabled (Clang/GNU)")
+    else()
+        message(STATUS "ENABLE_ASAN requested, but MSVC is not configured here; skipping ASAN flags")
+    endif()
 else()
     message(STATUS "AddressSanitizer disabled")
 endif()
@@ -116,8 +120,14 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions(-DDEBUG_BUILD)
     # Fast debug builds - balance speed and functionality
-    set(CMAKE_CXX_FLAGS_DEBUG "-O1 -g1")  # Minimal optimization and debug info
-    set(CMAKE_C_FLAGS_DEBUG "-O1 -g1")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        set(CMAKE_CXX_FLAGS_DEBUG "-O1 -g1")  # Minimal optimization and debug info
+        set(CMAKE_C_FLAGS_DEBUG "-O1 -g1")
+    elseif(MSVC)
+        # Use MSVC defaults or set /Od /Zi if needed
+        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Zi /Od")
+        set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /Zi /Od")
+    endif()
     # option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
     
     # Minimal debug flags for Clang
@@ -132,10 +142,13 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "Test")
     
 else()
     add_definitions(-DRELEASE_BUILD)
-    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto=thin -DNDEBUG")
-    set(CMAKE_C_FLAGS_RELEASE "-O3 -flto=thin -DNDEBUG")
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT WIN32)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND NOT WIN32)
+        set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto=thin -DNDEBUG")
+        set(CMAKE_C_FLAGS_RELEASE "-O3 -flto=thin -DNDEBUG")
         set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-fuse-ld=lld")
+    elseif(MSVC)
+        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /DNDEBUG")
+        set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2 /DNDEBUG")
     endif()
 endif()
 
@@ -221,15 +234,9 @@ find_package(fmt CONFIG REQUIRED)
 
 
 
-option(ENABLE_ASAN "Enable AddressSanitizer" ON)
-# Check if ENABLE_ASAN is ON
-if(ENABLE_ASAN)
-    set(ASAN_FLAGS "-fsanitize=address -fno-omit-frame-pointer -g")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ASAN_FLAGS}")
-    set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} ${ASAN_FLAGS}")
-    message(STATUS "AddressSanitizer enabled")
-else()
-    message(STATUS "AddressSanitizer disabled")
+# Default ASAN to OFF to avoid MSVC issues unless explicitly enabled
+if(NOT DEFINED ENABLE_ASAN)
+    set(ENABLE_ASAN OFF)
 endif()
 
 add_executable(${CERT_CTRL_APP_NAME} 
