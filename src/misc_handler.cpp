@@ -17,20 +17,16 @@ VoidPureIO MiscHandler::start() {
         }
         output_hub_.info() << "Set auto_fetch_config to "
                            << (bool_value ? "true" : "false") << std::endl;
+      } else if( key == "verbose") {
+        certctrl_config_provider_.get().verbose = value;
+        certctrl_config_provider_.save({{"verbose", value}});
+        output_hub_.info() << "Set verbose to " << value << std::endl;
       } else {
         std::string msg = std::format("Unknown configuration key: {}, "
-                                      "supported keys are: auto_fetch_config",
+                                      "supported keys are: auto_fetch_config, verbose",
                                       key);
         return show_usage(msg);
       }
-      // Here you would typically save the updated configuration back to a file
-      // or database. For this example, we'll just print the updated config.
-      output_hub_.info() << "Updated configuration: "
-                         << "auto_fetch_config = "
-                         << (certctrl_config_provider_.get().auto_fetch_config
-                                 ? "true"
-                                 : "false")
-                         << std::endl;
     } else if (auto getv_r = cli_ctx_.get_get_k(); getv_r.is_ok()) {
       auto key = getv_r.value();
       if (key == "auto_fetch_config") {
@@ -39,9 +35,13 @@ VoidPureIO MiscHandler::start() {
                                    ? "true"
                                    : "false")
                            << std::endl;
+      } else if (key == "verbose") {
+        output_hub_.info() << "verbose = "
+                           << certctrl_config_provider_.get().verbose
+                           << std::endl;
       } else {
         std::string msg = std::format("Unknown configuration key: {}, "
-                                      "supported keys are: auto_fetch_config",
+                                      "supported keys are: auto_fetch_config, verbose",
                                       key);
         return show_usage(msg);
       }

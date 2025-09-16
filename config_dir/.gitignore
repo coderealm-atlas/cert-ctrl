@@ -1,0 +1,6 @@
+# Track only template files by default
+*
+!*.tpl
+
+# But allow this README to explain the rules if added later
+!README.md

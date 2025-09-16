@@ -8,7 +8,7 @@
 #include <filesystem>
 #include <string>
 
-#include "certctrl_config.hpp"
+#include "conf/certctrl_config.hpp"
 #include "common_macros.hpp"
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
@@ -39,62 +39,63 @@ struct CliParams {
   std::vector<std::string> profiles;
   std::string subcmd;
   bool keep_running = false;
-};
-
-struct CommonOptions {
   std::string verbose; // vvvv
   bool silent = false;
   size_t offset = 0;
   size_t limit = 10;
-
-  size_t verbosity_level() const {
-    if (silent) {
-      return 0;
-    }
-    if (verbose.empty()) {
-      return 3;
-    }
-    if (verbose == "trace") {
-      return 5;
-    } else if (verbose == "debug") {
-      return 4;
-    } else if (verbose == "info") {
-      return 3;
-    } else if (verbose == "warning") {
-      return 2;
-    } else if (verbose == "error") {
-      return 1;
-    }
-    return std::count(verbose.begin(), verbose.end(), 'v');
-  }
-  // override << operator
-  friend std::ostream &operator<<(std::ostream &os, const CommonOptions &co) {
-    os << "offset: " << co.offset << std::endl;
-    os << "limit: " << co.limit << std::endl;
-    return os;
-  }
 };
 
 struct CliCtx {
   po::variables_map vm;
-  CommonOptions common_options;
   std::vector<std::string> positionals;
   std::vector<std::string> unrecognized;
   certctrl::CliParams params_;
-  CliCtx(po::variables_map &&vm, CommonOptions &&common_options,
-         std::vector<std::string> &&positionals,
-         std::vector<std::string> &&unrecognized, certctrl::CliParams &&params)
-      : vm(std::move(vm)), common_options(std::move(common_options)),
-        positionals(std::move(positionals)),
+  CliCtx(po::variables_map &&vm,                  //
+         std::vector<std::string> &&positionals,  //
+         std::vector<std::string> &&unrecognized, //
+         certctrl::CliParams &&params)
+      : vm(std::move(vm)), positionals(std::move(positionals)),
         unrecognized(std::move(unrecognized)), params_(std::move(params)) {}
+  // Returns true iff the option exists in variables_map and was not defaulted,
+  // i.e., explicitly specified by the user on the command line or in a source
+  // that sets it as non-default.
+  bool is_specified_by_user(const std::string &opt_name) const {
+    auto it = vm.find(opt_name);
+    if (it == vm.end()) {
+      return false;
+    }
+    // defaulted() == true means value originated from a default_value
+    // (not explicitly provided). Hence user-specified is the negation.
+    return !it->second.defaulted();
+  }
   bool positional_contains(const std::string &name) const {
     return std::find(positionals.begin(), positionals.end(), name) !=
            positionals.end();
   }
   std::pair<size_t, size_t> offset_limit() const {
-    return std::make_pair(common_options.offset, common_options.limit);
+    return std::make_pair(params_.offset, params_.limit);
   }
 
+  size_t verbosity_level() const {
+    if (params_.silent) {
+      return 0;
+    }
+    if (params_.verbose.empty()) {
+      return 3;
+    }
+    if (params_.verbose == "trace") {
+      return 5;
+    } else if (params_.verbose == "debug") {
+      return 4;
+    } else if (params_.verbose == "info") {
+      return 3;
+    } else if (params_.verbose == "warning") {
+      return 2;
+    } else if (params_.verbose == "error") {
+      return 1;
+    }
+    return std::count(params_.verbose.begin(), params_.verbose.end(), 'v');
+  }
   ~CliCtx() { DEBUG_PRINT("CliCtx destroyed"); }
 
   bool is_create() { return positional_contains("create"); }

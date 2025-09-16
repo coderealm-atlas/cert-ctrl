@@ -6,7 +6,7 @@
 
 #include "boost/di.hpp"
 #include "certctrl_common.hpp"
-#include "certctrl_config.hpp"
+#include "conf/certctrl_config.hpp"
 #include "http_client_manager.hpp"
 #include "io_context_manager.hpp"
 #include "ioc_manager_config_provider.hpp"
@@ -70,7 +70,7 @@ public:
 
   void start() {
     static customio::ConsoleOutputWithColor output_hub(
-        cli_ctx_.common_options.verbosity_level());
+        cli_ctx_.verbosity_level());
     output_hub_ = &output_hub;
 
     auto injector = di::make_injector(
