@@ -2,7 +2,6 @@
 
 #include "cert_ctrl_entry.hpp"
 #include "certctrl_common.hpp"
-#include "common_macros.hpp"
 #include "util/my_logging.hpp"
 #include <boost/program_options.hpp>
 
@@ -116,7 +115,7 @@ int main(int argc, char *argv[]) {
           certctrl_config_result.value());
       std::cerr << "using verbose from configuration: " << certctrl_config.verbose
                 << std::endl;
-      cli_ctx.params_.verbose = certctrl_config.verbose;
+      cli_ctx.params.verbose = certctrl_config.verbose;
     }
 
     // clang-format off

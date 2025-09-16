@@ -22,10 +22,22 @@ target_include_directories(test_program_options PRIVATE
 target_link_libraries(test_program_options PRIVATE
   GTest::gtest_main
   Boost::program_options
-  Boost::json
   fmt::fmt
   protobuf::libprotobuf
 )
+
+# Ensure Boost.JSON actually links (vcpkg/Boost provides Boost::json;
+# some environments expose boost_json or require an explicit find_library)
+if(TARGET Boost::json)
+  target_link_libraries(test_program_options PRIVATE Boost::json)
+elseif(TARGET boost_json)
+  target_link_libraries(test_program_options PRIVATE boost_json)
+else()
+  find_library(BOOST_JSON_LIB NAMES boost_json)
+  if(BOOST_JSON_LIB)
+    target_link_libraries(test_program_options PRIVATE ${BOOST_JSON_LIB})
+  endif()
+endif()
 
 include(GoogleTest)
 gtest_discover_tests(test_program_options)
