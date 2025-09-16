@@ -22,6 +22,9 @@ inline const std::string an_empty_str = "";
 
 struct CertctrlConfig {
   bool auto_fetch_config{false};
+  std::string verbose{};
+  std::string base_url{"https://api.cjj365.cc"};
+  
 
   friend CertctrlConfig tag_invoke(const json::value_to_tag<CertctrlConfig> &,
                                    const json::value &jv) {
@@ -29,9 +32,10 @@ struct CertctrlConfig {
       if (auto *jo_p = jv.if_object()) {
         CertctrlConfig cc{};
         cc.auto_fetch_config = jv.at("auto_fetch_config").as_bool();
+        cc.verbose = jv.at("verbose").as_string().c_str();
+        cc.base_url = jv.at("url_base").as_string().c_str();
         return cc;
       } else {
-
         throw std::runtime_error("CertctrlConfig is not an object");
       }
 

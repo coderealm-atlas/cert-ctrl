@@ -1,8 +1,8 @@
 #include <boost/json/value.hpp>
 
+#include "cert_ctrl_entry.hpp"
 #include "certctrl_common.hpp"
 #include "common_macros.hpp"
-#include "cert_ctrl_entry.hpp"
 #include "util/my_logging.hpp"
 #include <boost/program_options.hpp>
 
@@ -36,6 +36,15 @@ int main(int argc, char *argv[]) {
                }
              }),
          "profiles to use from the configuration file.") //
+        ("verbose",
+         po::value<std::string>(&cli_params.verbose)->default_value("info"),
+         "verbosity level, like info, trace, vvvv.") //
+        ("silent", po::bool_switch(&cli_params.silent)->default_value(false),
+         "suppress all output.") //
+        ("offset", po::value<size_t>(&cli_params.offset)->default_value(0),
+         "offset") //
+        ("limit", po::value<size_t>(&cli_params.limit)->default_value(10),
+         "limit") //
         ("keep-running",
          po::bool_switch(&cli_params.keep_running)->default_value(false),
          "keep running after processing the command.") //
@@ -47,22 +56,8 @@ int main(int argc, char *argv[]) {
          po::value<std::vector<std::string>>()->default_value({}, ""),
          "all positional arguments");
 
-    certctrl::CommonOptions common_options;
-    po::options_description common_desc("common options");
-    common_desc.add_options() //
-        ("verbose",
-         po::value<std::string>(&common_options.verbose)->default_value("info"),
-         "verbosity level, like info, trace, vvvv.") //
-        ("silent",
-         po::bool_switch(&common_options.silent)->default_value(false),
-         "suppress all output.") //
-        ("offset", po::value<size_t>(&common_options.offset)->default_value(0),
-         "offset") //
-        ("limit", po::value<size_t>(&common_options.limit)->default_value(10),
-         "limit"); //
-
     po::options_description cmdline_options("Allowed options");
-    cmdline_options.add(generic_desc).add(common_desc).add(hidden_desc);
+    cmdline_options.add(generic_desc).add(hidden_desc);
 
     po::positional_options_description p;
     p.add("positionals", -1); // command will get all positional arguments.
@@ -89,7 +84,6 @@ int main(int argc, char *argv[]) {
       std::cerr << "  login          Login the device." << std::endl;
       std::cerr << "  conf           Configure the device." << std::endl
                 << std::endl;
-      std::cerr << common_desc << std::endl;
     };
 
     if (cli_params.subcmd.empty() && !cli_params.keep_running) {
@@ -98,21 +92,32 @@ int main(int argc, char *argv[]) {
     }
     static cjj365::ConfigSources config_sources(cli_params.config_dirs,
                                                 cli_params.profiles);
-    auto log_config_result = config_sources.json_content("log_config");
-    if (log_config_result.is_err()) {
-      std::cerr << "Failed to load log_config: " << log_config_result.error()
-                << std::endl;
-      return EXIT_FAILURE;
-    }
-    cjj365::LoggingConfig logging_config =
-        json::value_to<cjj365::LoggingConfig>(log_config_result.value());
+    {
+      auto log_config_result = config_sources.json_content("log_config");
+      if (log_config_result.is_err()) {
+        std::cerr << "Failed to load log_config: " << log_config_result.error()
+                  << std::endl;
+        return EXIT_FAILURE;
+      }
+      cjj365::LoggingConfig logging_config =
+          json::value_to<cjj365::LoggingConfig>(log_config_result.value());
 
-    init_my_log(logging_config);
+      init_my_log(logging_config);
+    }
 
     // reference variable be here.
-    static certctrl::CliCtx cli_ctx(
-        std::move(vm), std::move(common_options), std::move(positionals),
-        std::move(unrecognized), std::move(cli_params));
+    static certctrl::CliCtx cli_ctx(std::move(vm), std::move(positionals),
+                                    std::move(unrecognized),
+                                    std::move(cli_params));
+
+    if (!cli_ctx.is_specified_by_user("verbose")) {
+      auto certctrl_config_result = config_sources.json_content("application");
+      auto certctrl_config = json::value_to<certctrl::CertctrlConfig>(
+          certctrl_config_result.value());
+      std::cerr << "using verbose from configuration: " << certctrl_config.verbose
+                << std::endl;
+      cli_ctx.params_.verbose = certctrl_config.verbose;
+    }
 
     // clang-format off
     // gdb --args ./build/apps/certctrl/certctrl_debug -c  apps/certctrl/config_dir account list --verbose trace
@@ -126,7 +131,7 @@ int main(int argc, char *argv[]) {
       using namespace certctrl;
       using namespace certctrl::type_tags;
 
-      AppKind sk =  AppKind::One;
+      AppKind sk = AppKind::One;
 
       if (sk == AppKind::One) {
         launch<OneTag>(config_sources, cli_ctx);

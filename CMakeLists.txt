@@ -283,3 +283,6 @@ if(OpenMP_CXX_FOUND)
 else()
     message(STATUS "OpenMP not found or disabled; proceeding without OpenMP")
 endif()
+
+# Add tests subdirectory
+add_subdirectory(tests)

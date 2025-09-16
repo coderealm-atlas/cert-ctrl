@@ -24,10 +24,10 @@ namespace po = boost::program_options;
 
 namespace certctrl {
 
-struct MiscHandlerOptions {
+struct LoginHandlerOptions {
 };
 
-class MiscHandler : public std::enable_shared_from_this<MiscHandler> {
+class LoginHandler : public std::enable_shared_from_this<LoginHandler> {
   asio::io_context &ioc_;
   certctrl::ICertctrlConfigProvider &certctrl_config_provider_;
   customio::IOutput &output_hub_;
@@ -37,12 +37,12 @@ class MiscHandler : public std::enable_shared_from_this<MiscHandler> {
   cjj365::meta::AcmeAccount acct_;
 
   po::options_description opt_desc_;
-  MiscHandlerOptions options_;
+  LoginHandlerOptions options_;
   cjj365::meta::User user_;
   bool call_notify_ = true;
 
 public:
-  MiscHandler(cjj365::IoContextManager &io_context_manager,
+  LoginHandler(cjj365::IoContextManager &io_context_manager,
               certctrl::ICertctrlConfigProvider &certctrl_config_provider,
               CliCtx &cli_ctx, //
               customio::IOutput &output_hub)
@@ -58,7 +58,7 @@ public:
                                     .run();
     po::store(parsed, cli_ctx_.vm);
     po::notify(cli_ctx_.vm);
-    output_hub_.trace() << "MiscHandler initialized with options: " << opt_desc_
+    output_hub_.trace() << "LoginHandler initialized with options: " << opt_desc_
                         << std::endl;
   }
 
