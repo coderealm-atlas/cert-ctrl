@@ -3,16 +3,21 @@
 #include <iostream>
 #include <memory>
 #include <type_traits>
+#include <vector>
+#include <algorithm>
 
 #include "boost/di.hpp"
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
+#include "handlers/conf_handler.hpp"
+#include "handlers/login_handler.hpp"
+#include "handlers/i_handler.hpp"
+#include "handlers/handler_dispatcher.hpp"
 #include "http_client_manager.hpp"
 #include "io_context_manager.hpp"
 #include "ioc_manager_config_provider.hpp"
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
-#include "handlers/misc_handler.hpp"
 
 namespace di = boost::di;
 namespace certctrl {
@@ -37,9 +42,6 @@ class App : public std::enable_shared_from_this<App<AppTag>> {
   misc::Blocker blocker_;
   certctrl::CliCtx &cli_ctx_;
   client_async::HttpClientManager *http_client_;
-  // std::shared_ptr<acme::ICertRecordDbEventSender>
-  // cert_record_db_event_sender_; std::shared_ptr<acme::IIssueEventTrigger>
-  // issue_event_trigger_;
   customio::IOutput *output_hub_;
   std::once_flag shutdown_once_flag_;
   std::unique_ptr<boost::asio::signal_set> signals_;
@@ -48,11 +50,6 @@ class App : public std::enable_shared_from_this<App<AppTag>> {
   const certctrl::CertctrlConfig *certctrl_config_;
 
 public:
-  // using Trigger = typename type_tags::TriggerTagTraits<TriggerTag>::Trigger;
-  // using Sender = typename type_tags::TriggerTagTraits<TriggerTag>::Sender;
-  // using Store = typename type_tags::StoreTypeTraits<StoreTag>::Store;
-  // using UserService =
-  //     typename type_tags::StoreTypeTraits<StoreTag>::UserService;
   App(cjj365::ConfigSources &config_sources, certctrl::CliCtx &cli_ctx)
       : config_sources_(config_sources), cli_ctx_(cli_ctx) {}
 
@@ -73,62 +70,41 @@ public:
         cli_ctx_.verbosity_level());
     output_hub_ = &output_hub;
 
-    auto injector = di::make_injector(
-        di::bind<cjj365::ConfigSources>().to(config_sources_),
-        di::bind<cjj365::IIocConfigProvider>()
-            .to<cjj365::IocConfigProviderFile>(),
-        di::bind<certctrl::ICertctrlConfigProvider>()
-            .to<certctrl::CertctrlConfigProviderFile>(),
-        // di::bind<acme::IAcmeConfigProvider>()
-        //     .to<acme::AcmeConfigProviderFile>(),
-        // di::bind<certctrl::ICerttoolConfigProvider>()
-        //     .to<certctrl::CerttoolConfigProviderFile>(),
-        di::bind<cjj365::IHttpclientConfigProvider>()
-            .to<cjj365::HttpclientConfigProviderFile>(),
-        // bind_shared_factory<monad::MonadicMysqlSession>(),
-        di::bind<customio::IOutput>().to(*output_hub_),
-        // di::bind<acme::IIssueEventTrigger>().to<Trigger>().in(di::singleton),
-        // di::bind<acme::ICertRecordDbEventSender>().to<Sender>(),
-        // di::bind<service::IUserService>().to<UserService>().in(di::singleton),
-        // bind_shared_factory<acme::IIssueEventProcessor,
-        //                     acme::CertIssueEventProcessorLetsencrypt>(),
-        // di::bind<certctrl::CertIssuer>().in(di::unique),
-        di::bind<certctrl::CliCtx>().to(cli_ctx_) //,
-        // di::bind<certctrl::CertAccountProcessor>().in(di::unique),
-        // di::bind<certctrl::CertProcessor>().in(di::unique),
-        // di::bind<dns::IDnsProviderFactory>()
-        //     .to<dns::DefaultDnsProviderFactory>()
-        //     .in(di::singleton),
-        // di::bind<acme::IAcmeStore>().to<acme::AcmeStoreFileSystem>(),
-        // di::bind<acme::ICertExporter>()
-        //     .to<acme::CertExporterFileSystemSingleton>(),
-        // bind_shared_factory<acme::AcmeClient>(),
-        // di::bind<ali::AliyunDnsApi>().in(di::unique),
-        // di::bind<acme::AcmeProviders>().in(di::singleton)
-    );
+  auto injector = di::make_injector(
+    di::bind<cjj365::ConfigSources>().to(config_sources_),
+    di::bind<cjj365::IIocConfigProvider>().to<cjj365::IocConfigProviderFile>(),
+    di::bind<certctrl::ICertctrlConfigProvider>().to<certctrl::CertctrlConfigProviderFile>(),
+    di::bind<cjj365::IHttpclientConfigProvider>().to<cjj365::HttpclientConfigProviderFile>(),
+    di::bind<customio::IOutput>().to(*output_hub_),
+    di::bind<certctrl::CliCtx>().to(cli_ctx_),
+    // Register all handlers for aggregate injection; DI will convert to vector<unique_ptr<IHandler>>
+    di::bind<certctrl::IHandler*[]>.to<certctrl::ConfHandler, certctrl::LoginHandler>()
+  );
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
 
     io_context_manager_ =
         &injector.template create<cjj365::IoContextManager &>();
-    auto &http_client =
-        injector.template create<client_async::HttpClientManager &>();
-    http_client_ = &http_client;
+    http_client_ =
+        &injector.template create<client_async::HttpClientManager &>();
     auto self = this->shared_from_this();
-    if (cli_ctx_.params_.subcmd == "conf") {
-      auto misc_handler =
-          injector.template
-          create<std::shared_ptr<certctrl::MiscHandler>>();
-      misc_handler->start().run([self, misc_handler](auto r) {
+
+  // Use dispatcher injected with all handlers (as vector<unique_ptr<IHandler>>)
+  auto &dispatcher = injector.template create<certctrl::HandlerDispatcher &>();
+
+    if (dispatcher.dispatch_run(cli_ctx_.params.subcmd, [self](auto r) {
         if (r.is_err()) {
           self->print_error(r.error());
         } else {
-          self->info("Cert processing completed successfully.");
+          self->info("Handler completed successfully.");
         }
         return self->blocker_.stop();
-      });
-    } else if (cli_ctx_.params_.subcmd == "account") {
+      })) {
+      // Dispatched
+    } else if (cli_ctx_.params.subcmd == "account") {
+      // legacy TODO
+    } else if (cli_ctx_.params.subcmd == "account") {
       // auto cert_account_processor = injector.template create<
       //     std::shared_ptr<certctrl::CertAccountProcessor>>();
       // output_hub_->trace() << "Created CertAccountProcessor." << std::endl;
@@ -142,12 +118,19 @@ public:
       //       return self->blocker_.stop();
       //     });
     } else {
-      if (cli_ctx_.params_.keep_running) {
+      if (cli_ctx_.params.keep_running) {
         output_hub_->info() << "Running in keep running mode." << std::endl;
       } else {
-        output_hub_->error()
-            << "No valid subcommand provided. Use 'cert' or 'account'."
-            << std::endl;
+        // Build available commands string
+        std::string cmds;
+        auto v = dispatcher.commands();
+        for (size_t i = 0; i < v.size(); ++i) {
+          if (i) cmds += ", ";
+          cmds += v[i];
+        }
+        output_hub_->error() << "No valid subcommand provided. Available: "
+                             << cmds << ". Also 'account' (TBD)."
+                             << std::endl;
         return shutdown();
       }
     }

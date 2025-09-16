@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <string>
 
-#include "conf/certctrl_config.hpp"
 #include "common_macros.hpp"
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
@@ -49,13 +48,13 @@ struct CliCtx {
   po::variables_map vm;
   std::vector<std::string> positionals;
   std::vector<std::string> unrecognized;
-  certctrl::CliParams params_;
+  certctrl::CliParams params;
   CliCtx(po::variables_map &&vm,                  //
          std::vector<std::string> &&positionals,  //
          std::vector<std::string> &&unrecognized, //
-         certctrl::CliParams &&params)
+         certctrl::CliParams &&params_)
       : vm(std::move(vm)), positionals(std::move(positionals)),
-        unrecognized(std::move(unrecognized)), params_(std::move(params)) {}
+        unrecognized(std::move(unrecognized)), params(std::move(params_)) {}
   // Returns true iff the option exists in variables_map and was not defaulted,
   // i.e., explicitly specified by the user on the command line or in a source
   // that sets it as non-default.
@@ -73,28 +72,28 @@ struct CliCtx {
            positionals.end();
   }
   std::pair<size_t, size_t> offset_limit() const {
-    return std::make_pair(params_.offset, params_.limit);
+    return std::make_pair(params.offset, params.limit);
   }
 
   size_t verbosity_level() const {
-    if (params_.silent) {
+    if (params.silent) {
       return 0;
     }
-    if (params_.verbose.empty()) {
+    if (params.verbose.empty()) {
       return 3;
     }
-    if (params_.verbose == "trace") {
+    if (params.verbose == "trace") {
       return 5;
-    } else if (params_.verbose == "debug") {
+    } else if (params.verbose == "debug") {
       return 4;
-    } else if (params_.verbose == "info") {
+    } else if (params.verbose == "info") {
       return 3;
-    } else if (params_.verbose == "warning") {
+    } else if (params.verbose == "warning") {
       return 2;
-    } else if (params_.verbose == "error") {
+    } else if (params.verbose == "error") {
       return 1;
     }
-    return std::count(params_.verbose.begin(), params_.verbose.end(), 'v');
+    return std::count(params.verbose.begin(), params.verbose.end(), 'v');
   }
   ~CliCtx() { DEBUG_PRINT("CliCtx destroyed"); }
 

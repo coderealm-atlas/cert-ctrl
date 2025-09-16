@@ -1,10 +1,11 @@
 #pragma once
 
+#include "http_client_manager.hpp"
 #include <google/protobuf/util/json_util.h>
 #ifdef _WIN32
-#  include <io.h>
+#include <io.h>
 #else
-#  include <unistd.h>
+#include <unistd.h>
 #endif
 
 #include <boost/asio/io_context.hpp>
@@ -19,17 +20,18 @@
 #include "io_monad.hpp"
 #include "my_error_codes.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
+#include "handlers/i_handler.hpp"
 
 namespace po = boost::program_options;
 
 namespace certctrl {
 
-struct LoginHandlerOptions {
-};
+struct LoginHandlerOptions {};
 
-class LoginHandler : public std::enable_shared_from_this<LoginHandler> {
+class LoginHandler : public certctrl::IHandler, public std::enable_shared_from_this<LoginHandler> {
   asio::io_context &ioc_;
   certctrl::ICertctrlConfigProvider &certctrl_config_provider_;
+  client_async::HttpClientManager &http_client_;
   customio::IOutput &output_hub_;
   CliCtx &cli_ctx_;
   src::severity_logger<trivial::severity_level> lg;
@@ -43,12 +45,13 @@ class LoginHandler : public std::enable_shared_from_this<LoginHandler> {
 
 public:
   LoginHandler(cjj365::IoContextManager &io_context_manager,
-              certctrl::ICertctrlConfigProvider &certctrl_config_provider,
-              CliCtx &cli_ctx, //
-              customio::IOutput &output_hub)
+               certctrl::ICertctrlConfigProvider &certctrl_config_provider,
+               CliCtx &cli_ctx, //
+               customio::IOutput &output_hub,
+               client_async::HttpClientManager &http_client)
       : ioc_(io_context_manager.ioc()),
         certctrl_config_provider_(certctrl_config_provider),
-        output_hub_(output_hub), cli_ctx_(cli_ctx),
+        output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
         opt_desc_("misc subcommand options") {
     boost::program_options::options_description create_opts("conf Options");
     opt_desc_.add(create_opts);
@@ -58,9 +61,12 @@ public:
                                     .run();
     po::store(parsed, cli_ctx_.vm);
     po::notify(cli_ctx_.vm);
-    output_hub_.trace() << "LoginHandler initialized with options: " << opt_desc_
-                        << std::endl;
+    output_hub_.trace() << "LoginHandler initialized with options: "
+                        << opt_desc_ << std::endl;
   }
+
+  // IHandler
+  std::string command() const override { return "login"; }
 
   std::string print_opt_desc() const {
     std::ostringstream oss;
@@ -76,7 +82,7 @@ public:
         {.code = my_errors::GENERAL::SHOW_OPT_DESC, .what = print_opt_desc()});
   }
 
-  monad::IO<void> start();
+  monad::IO<void> start() override;
 
   inline fs::path createOrderDir(const fs::path &cert_wkdir,
                                  const std::string &user_id,
