@@ -10,19 +10,18 @@
       "name": "default",
       "hidden": true,
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
         "CMAKE_VERBOSE_MAKEFILE": "ON"
       },
-      "environment": {
-      }
+      "environment": {}
     },
     {
       "name": "release",
       "inherits": "default",
       "description": "Release build",
       "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
@@ -36,6 +35,7 @@
       "name": "debug",
       "inherits": "default",
       "description": "Debug build t630",
+      "binaryDir": "${sourceDir}/build/debug",
       "environment": {
         "ASAN_OPTIONS": "allocator_may_return_null=1",
         "CMAKE_BUILD_PARALLEL_LEVEL": "36",
@@ -62,27 +62,18 @@
     },
     {
       "name": "debug-asan",
-      "inherits": "default",
-      "description": "Debug build",
-      "environment": {
-        "CAN_ACCESS_IN_PORT": "by $ENV{CAN_ACCESS_IN_PORT}",
-        "ASAN_OPTIONS": "allocator_may_return_null=1",
-        "CMAKE_MAKE_PROGRAM": "colormake"
-      },
+      "inherits": "debug",
+      "description": "Debug build with AddressSanitizer",
+      "binaryDir": "${sourceDir}/build/debug-asan",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "ENABLE_ASAN": "ON",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CUDA_COMPILER_LAUNCHER": "ccache"
+        "ENABLE_ASAN": "ON"
       }
     },
     {
       "name": "w64",
       "inherits": "default",
       "description": "Compile for Windows using Visual studio",
+      "binaryDir": "${sourceDir}/build/w64",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_MAKE_PROGRAM": "$env{NINJA_BIN}",

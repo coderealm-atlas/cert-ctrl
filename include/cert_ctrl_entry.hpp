@@ -1,18 +1,20 @@
 #pragma once
 
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <type_traits>
 #include <vector>
-#include <algorithm>
 
 #include "boost/di.hpp"
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
+#include "customio/console_output.hpp"
 #include "handlers/conf_handler.hpp"
-#include "handlers/login_handler.hpp"
-#include "handlers/i_handler.hpp"
 #include "handlers/handler_dispatcher.hpp"
+#include "handlers/i_handler.hpp"
+#include "handlers/login_handler.hpp"
+#include "handlers/updates_polling_handler.hpp"
 #include "http_client_manager.hpp"
 #include "io_context_manager.hpp"
 #include "ioc_manager_config_provider.hpp"
@@ -42,7 +44,7 @@ class App : public std::enable_shared_from_this<App<AppTag>> {
   misc::Blocker blocker_;
   certctrl::CliCtx &cli_ctx_;
   client_async::HttpClientManager *http_client_;
-  customio::IOutput *output_hub_;
+  customio::ConsoleOutput *output_hub_;
   std::once_flag shutdown_once_flag_;
   std::unique_ptr<boost::asio::signal_set> signals_;
   cjj365::ConfigSources &config_sources_;
@@ -57,29 +59,31 @@ public:
     if (err.code == my_errors::GENERAL::SHOW_OPT_DESC) {
       std::cerr << err.what << std::endl;
     } else {
-      output_hub_->error() << err << std::endl;
+      output_hub_->logger().error() << err << std::endl;
     }
   }
 
   void info(const std::string &message) {
-    output_hub_->info() << message << std::endl;
+    output_hub_->logger().info() << message << std::endl;
   }
 
   void start() {
     static customio::ConsoleOutputWithColor output_hub(
         cli_ctx_.verbosity_level());
-    output_hub_ = &output_hub;
 
-  auto injector = di::make_injector(
-    di::bind<cjj365::ConfigSources>().to(config_sources_),
-    di::bind<cjj365::IIocConfigProvider>().to<cjj365::IocConfigProviderFile>(),
-    di::bind<certctrl::ICertctrlConfigProvider>().to<certctrl::CertctrlConfigProviderFile>(),
-    di::bind<cjj365::IHttpclientConfigProvider>().to<cjj365::HttpclientConfigProviderFile>(),
-    di::bind<customio::IOutput>().to(*output_hub_),
-    di::bind<certctrl::CliCtx>().to(cli_ctx_),
-    // Register all handlers for aggregate injection; DI will convert to vector<unique_ptr<IHandler>>
-    di::bind<certctrl::IHandler*[]>.to<certctrl::ConfHandler, certctrl::LoginHandler>()
-  );
+    auto injector = di::make_injector(
+        di::bind<cjj365::ConfigSources>().to(config_sources_),
+        di::bind<cjj365::IIocConfigProvider>()
+            .to<cjj365::IocConfigProviderFile>(),
+        di::bind<certctrl::ICertctrlConfigProvider>()
+            .to<certctrl::CertctrlConfigProviderFile>(),
+        di::bind<cjj365::IHttpclientConfigProvider>()
+            .to<cjj365::HttpclientConfigProviderFile>(),
+        di::bind<customio::IOutput>().to(output_hub),
+        di::bind<certctrl::CliCtx>().to(cli_ctx_),
+        // Register all handlers for aggregate injection; DI will convert to
+        // vector<unique_ptr<IHandler>>
+  di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::LoginHandler, certctrl::UpdatesPollingHandler>());
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
@@ -88,19 +92,22 @@ public:
         &injector.template create<cjj365::IoContextManager &>();
     http_client_ =
         &injector.template create<client_async::HttpClientManager &>();
+    output_hub_ = &injector.template create<customio::ConsoleOutput &>();
     auto self = this->shared_from_this();
 
-  // Use dispatcher injected with all handlers (as vector<unique_ptr<IHandler>>)
-  auto &dispatcher = injector.template create<certctrl::HandlerDispatcher &>();
+    // Use dispatcher injected with all handlers (as
+    // vector<unique_ptr<IHandler>>)
+    auto &dispatcher =
+        injector.template create<certctrl::HandlerDispatcher &>();
 
     if (dispatcher.dispatch_run(cli_ctx_.params.subcmd, [self](auto r) {
-        if (r.is_err()) {
-          self->print_error(r.error());
-        } else {
-          self->info("Handler completed successfully.");
-        }
-        return self->blocker_.stop();
-      })) {
+          if (r.is_err()) {
+            self->print_error(r.error());
+          } else {
+            self->info("Handler completed successfully.");
+          }
+          return self->blocker_.stop();
+        })) {
       // Dispatched
     } else if (cli_ctx_.params.subcmd == "account") {
       // legacy TODO
@@ -119,18 +126,20 @@ public:
       //     });
     } else {
       if (cli_ctx_.params.keep_running) {
-        output_hub_->info() << "Running in keep running mode." << std::endl;
+        output_hub_->logger().info()
+            << "Running in keep running mode." << std::endl;
       } else {
         // Build available commands string
         std::string cmds;
         auto v = dispatcher.commands();
         for (size_t i = 0; i < v.size(); ++i) {
-          if (i) cmds += ", ";
+          if (i)
+            cmds += ", ";
           cmds += v[i];
         }
-        output_hub_->error() << "No valid subcommand provided. Available: "
-                             << cmds << ". Also 'account' (TBD)."
-                             << std::endl;
+        output_hub_->logger().error()
+            << "No valid subcommand provided. Available: " << cmds
+            << ". Also 'account' (TBD)." << std::endl;
         return shutdown();
       }
     }
@@ -146,8 +155,8 @@ public:
           }
         });
     blocker_.wait();
-    output_hub_->debug() << "blocker_.wait() returned, start() exiting."
-                         << std::endl;
+    output_hub_->logger().debug()
+        << "blocker_.wait() returned, start() exiting." << std::endl;
     // shutdown now
     shutdown();
   }
@@ -158,24 +167,24 @@ public:
       self->info("Shutting down App...");
       // 1. Disable further signal handling early
       if (self->signals_) {
-        self->output_hub_->debug() << "Shutdown: cancel signals" << std::endl;
+        self->output_hub_->logger().debug() << "Shutdown: cancel signals" << std::endl;
         boost::system::error_code ec;
         auto n = self->signals_->cancel(ec);
-        self->output_hub_->debug()
+        self->output_hub_->logger().debug()
             << "Shutdown: signal handlers canceled=" << n
             << (ec ? ", ec=" + ec.message() : ", ok") << std::endl;
         self->signals_.reset();
       }
       // 3. Stop outbound http client pool
       if (self->http_client_) {
-        self->output_hub_->debug()
+        self->output_hub_->logger().debug()
             << "Shutdown: stop http_client_" << std::endl;
         self->http_client_->stop();
         self->http_client_ = nullptr;
       }
       // 4. Stop io_context (joins threads)
       // if (io_context_manager_) {
-      self->output_hub_->debug()
+      self->output_hub_->logger().debug()
           << "Shutdown: stop io_context_manager_" << std::endl;
       self->io_context_manager_->stop();
       self->info("App shutdown completed.");

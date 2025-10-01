@@ -14,12 +14,12 @@ VoidPureIO ConfHandler::start() {
         certctrl_config_provider_.get().auto_fetch_config = bool_value;
         certctrl_config_provider_.save({{"auto_fetch_config", bool_value}});
       }
-      output_hub_.info() << "Set auto_fetch_config to "
+      output_hub_.logger().info() << "Set auto_fetch_config to "
                          << (bool_value ? "true" : "false") << std::endl;
     } else if (key == "verbose") {
       certctrl_config_provider_.get().verbose = value;
       certctrl_config_provider_.save({{"verbose", value}});
-      output_hub_.info() << "Set verbose to " << value << std::endl;
+      output_hub_.logger().info() << "Set verbose to " << value << std::endl;
     } else {
       std::string msg =
           std::format("Unknown configuration key: {}, "
@@ -30,13 +30,13 @@ VoidPureIO ConfHandler::start() {
   } else if (auto getv_r = cli_ctx_.get_get_k(); getv_r.is_ok()) {
     auto key = getv_r.value();
     if (key == "auto_fetch_config") {
-      output_hub_.info() << "auto_fetch_config = "
+      output_hub_.logger().info() << "auto_fetch_config = "
                          << (certctrl_config_provider_.get().auto_fetch_config
                                  ? "true"
                                  : "false")
                          << std::endl;
     } else if (key == "verbose") {
-      output_hub_.info() << "verbose = "
+      output_hub_.logger().info() << "verbose = "
                          << certctrl_config_provider_.get().verbose
                          << std::endl;
     } else {

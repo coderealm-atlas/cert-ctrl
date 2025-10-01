@@ -2,6 +2,8 @@
 
 This document describes how to cut a release, how versioning works in this repo, and how to run CI for a single platform.
 
+For a step-by-step checklist, see `docs/RELEASE_WORKFLOW.md`.
+
 ## Versioning source of truth
 
 - The version baked into the binary comes from Git via `git describe`.

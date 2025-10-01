@@ -29,3 +29,5 @@ Thumbs.db
 # config_dir/
 .cache/
 .vscode/
+Testing/
+t.json

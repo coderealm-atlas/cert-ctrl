@@ -56,30 +56,50 @@ set(CMAKE_PCH_ENABLE ON)
 find_package(Git)
 
 set(GIT_DESCRIBE "")
+set(_GIT_DIFF_RESULT 0)
 if(Git_FOUND)
-    # Prefer annotated tags; fallback to lightweight
+    # Prefer semver-like tags (v*) and include commit metadata when available
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} describe --tags --always
+        COMMAND ${GIT_EXECUTABLE} describe --tags --long --dirty --match "v*"
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         OUTPUT_VARIABLE GIT_DESCRIBE
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET
     )
-endif()
-if(NOT GIT_DESCRIBE)
-    # Use short commit hash when tags are absent or Git isn't available
-    if(Git_FOUND)
+
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} diff --quiet HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        RESULT_VARIABLE _GIT_DIFF_RESULT
+        ERROR_QUIET
+    )
+
+    if(NOT GIT_DESCRIBE)
         execute_process(
             COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-            OUTPUT_VARIABLE GIT_DESCRIBE
+            OUTPUT_VARIABLE _GIT_SHA
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET
         )
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} rev-list --count HEAD
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            OUTPUT_VARIABLE _GIT_COMMIT_COUNT
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(_GIT_SHA AND _GIT_COMMIT_COUNT)
+            set(GIT_DESCRIBE "v0.0.${_GIT_COMMIT_COUNT}-${_GIT_SHA}")
+            if(NOT _GIT_DIFF_RESULT EQUAL 0 AND NOT _GIT_DIFF_RESULT EQUAL 128)
+                set(GIT_DESCRIBE "${GIT_DESCRIBE}-dirty")
+            endif()
+        endif()
     endif()
 endif()
+
 if(NOT GIT_DESCRIBE)
-    set(GIT_DESCRIBE "unknown")
+    set(GIT_DESCRIBE "v0.0.0-unknown")
 endif()
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
@@ -179,8 +199,12 @@ add_definitions(-DEIGEN_NO_DEBUG)
 
 add_definitions(-DBOOST_PROCESS_VERSION=2)
 
+# Auto-regenerate when new source files are added under src/
+# Note: CONFIGURE_DEPENDS makes CMake re-run when the glob results change
+# (supported since CMake 3.12+). Keep the pattern shallow to avoid pulling
+# unintended files; add more patterns if you later add nested src directories.
 # file(GLOB_RECURSE APP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-file(GLOB APP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
+file(GLOB APP_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
 
 # Prefer submodule http_client sources over local duplicates
 set(_LOCAL_DUP_SRC
@@ -232,12 +256,32 @@ find_package(unofficial-sodium CONFIG REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 
+if(ENABLE_ASAN)
+    if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU"))
+        message(FATAL_ERROR "ENABLE_ASAN requires Clang or GCC toolchains")
+    endif()
 
+    add_compile_options(
+        "$<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address>"
+        "$<$<COMPILE_LANGUAGE:CXX>:-fno-omit-frame-pointer>"
+        "$<$<COMPILE_LANGUAGE:C>:-fsanitize=address>"
+        "$<$<COMPILE_LANGUAGE:C>:-fno-omit-frame-pointer>"
+    )
 
-# Default ASAN to OFF to avoid MSVC issues unless explicitly enabled
-if(NOT DEFINED ENABLE_ASAN)
-    set(ENABLE_ASAN OFF)
+    add_link_options(-fsanitize=address -fno-omit-frame-pointer)
+
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_compile_options(
+            "$<$<COMPILE_LANGUAGE:CXX>:-fdiagnostics-color=always>"
+            "$<$<COMPILE_LANGUAGE:C>:-fdiagnostics-color=always>"
+        )
+    endif()
+
+    message(STATUS "AddressSanitizer enabled (ENABLE_ASAN=ON)")
+else()
+    message(STATUS "AddressSanitizer disabled (ENABLE_ASAN=OFF)")
 endif()
+
 
 add_executable(${CERT_CTRL_APP_NAME} 
     ${APP_SOURCES}
