@@ -51,6 +51,16 @@ constexpr int SSL_ERROR = 5204;  // SSL error
 constexpr int SSL_HANDSHAKE_ERROR = 5205;  // SSL handshake error
 }  // namespace NETWORK
 
+namespace JSON {  // Json errors
+
+constexpr int MALFORMED = 9000;  // Malformed JSON text
+constexpr int DECODE_ERROR = 9001;  // Failed to decode/parse JSON (low-level)
+constexpr int ENCODE_ERROR = 9002;  // Failed to encode/serialize JSON
+constexpr int TYPE_MISMATCH = 9003;  // JSON type mismatch
+constexpr int MISSING_JSON_FIELD = 9004;  // Required JSON field missing
+constexpr int INVALID_SCHEMA = 9005;  // JSON does not conform to expected schema
+}  // namespace JSON
+
 namespace ACME {  // ACME errors
 
 constexpr int NO_KID = 6000;  // For account can only update the KID

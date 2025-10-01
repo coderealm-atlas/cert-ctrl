@@ -70,8 +70,11 @@ public:
       output_.error() << "Failed to load App config." << std::endl;
       throw std::runtime_error("Failed to load App config.");
     }
-    json::value jv = config_sources.application_json.value();
-    jsonutil::substitue_envs(jv, app_properties.properties);
+  json::value jv = config_sources.application_json.value();
+  // substitue_envs requires both CLI map and properties map. For this provider
+  // we currently do not have a dedicated CLI substitution map, so pass an empty one.
+  static const std::map<std::string, std::string> empty_cli_map{};
+  jsonutil::substitue_envs(jv, empty_cli_map, app_properties.properties);
     config_ = json::value_to<CertctrlConfig>(std::move(jv));
   }
 

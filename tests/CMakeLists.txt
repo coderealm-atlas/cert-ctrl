@@ -9,9 +9,10 @@ if(NOT BUILD_TESTING)
 endif()
 
 find_package(GTest CONFIG REQUIRED)
-find_package(Boost REQUIRED COMPONENTS program_options json)
+find_package(Boost REQUIRED COMPONENTS program_options json asio url uuid process iostreams log log_setup system)
 find_package(fmt CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 add_executable(test_program_options test_program_options.cpp)
 target_compile_features(test_program_options PRIVATE cxx_std_20)
@@ -41,3 +42,135 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(test_program_options)
+
+add_executable(test_login_handler_workflow
+  test_login_handler_workflow.cpp
+  ${CMAKE_SOURCE_DIR}/src/login_handler.cpp
+  ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
+  ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
+  ${HTTP_CLIENT_SRCS}
+)
+target_compile_features(test_login_handler_workflow PRIVATE cxx_std_20)
+target_include_directories(test_login_handler_workflow PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+  ${CMAKE_SOURCE_DIR}/external/http_client
+)
+target_link_libraries(test_login_handler_workflow PRIVATE
+  GTest::gtest_main
+  Boost::program_options
+  Boost::json
+  Boost::asio
+  Boost::system
+  Boost::url
+  Boost::uuid
+  Boost::process
+  Boost::iostreams
+  Boost::log
+  Boost::log_setup
+  MINIZIP::minizip-ng
+  jwt-cpp::jwt-cpp
+  unofficial-sodium::sodium
+  fmt::fmt
+  protobuf::libprotobuf
+  OpenSSL::SSL
+  OpenSSL::Crypto
+)
+
+gtest_discover_tests(test_login_handler_workflow)
+
+# Real server integration login test (requires running external server)
+add_executable(test_login_real_server
+  test_login_real_server.cpp
+  ${HTTP_CLIENT_SRCS}
+)
+target_compile_features(test_login_real_server PRIVATE cxx_std_20)
+target_include_directories(test_login_real_server PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/include/util
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+  ${CMAKE_SOURCE_DIR}/external/http_client
+  ${CMAKE_SOURCE_DIR}/tests/include
+)
+target_link_libraries(test_login_real_server PRIVATE
+  GTest::gtest_main
+  Boost::program_options
+  Boost::json
+  Boost::asio
+  Boost::system
+  Boost::url
+  Boost::uuid
+  Boost::process
+  Boost::iostreams
+  fmt::fmt
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  Boost::log
+  Boost::log_setup
+  unofficial-sodium::sodium
+)
+
+gtest_discover_tests(test_login_real_server DISCOVERY_TIMEOUT 60)
+
+# Monadic device registration/login integration test using HttpClientManager + IO monad
+add_executable(test_device_registration_monadic
+  test_device_registration_monadic.cpp
+  ${HTTP_CLIENT_SRCS}
+)
+target_compile_features(test_device_registration_monadic PRIVATE cxx_std_20)
+target_include_directories(test_device_registration_monadic PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+  ${CMAKE_SOURCE_DIR}/external/http_client
+  ${CMAKE_SOURCE_DIR}/tests/include
+)
+target_link_libraries(test_device_registration_monadic PRIVATE
+  GTest::gtest_main
+  Boost::program_options
+  Boost::json
+  Boost::asio
+  Boost::system
+  Boost::url
+  Boost::uuid
+  Boost::process
+  Boost::iostreams
+  Boost::log
+  Boost::log_setup
+  fmt::fmt
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  unofficial-sodium::sodium
+)
+
+gtest_discover_tests(test_device_registration_monadic DISCOVERY_TIMEOUT 60)
+
+# Updates polling handler test
+add_executable(test_updates_polling_handler
+  test_updates_polling_handler.cpp
+  ${HTTP_CLIENT_SRCS}
+)
+target_compile_features(test_updates_polling_handler PRIVATE cxx_std_20)
+target_include_directories(test_updates_polling_handler PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+  ${CMAKE_SOURCE_DIR}/external/http_client
+  ${CMAKE_SOURCE_DIR}/tests/include
+)
+target_link_libraries(test_updates_polling_handler PRIVATE
+  GTest::gtest_main
+  Boost::program_options
+  Boost::json
+  Boost::asio
+  Boost::system
+  Boost::url
+  Boost::uuid
+  Boost::process
+  Boost::iostreams
+  Boost::log
+  Boost::log_setup
+  fmt::fmt
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  unofficial-sodium::sodium
+)
+gtest_discover_tests(test_updates_polling_handler DISCOVERY_TIMEOUT 30)

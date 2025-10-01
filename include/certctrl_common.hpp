@@ -9,6 +9,7 @@
 #include <string>
 
 #include "common_macros.hpp"
+#include "customio/console_output.hpp"
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
 

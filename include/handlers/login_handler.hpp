@@ -1,5 +1,7 @@
 #pragma once
 
+#include "customio/console_output.hpp"
+#include "handlers/device_auth_types.hpp"
 #include "http_client_manager.hpp"
 #include <google/protobuf/util/json_util.h>
 #ifdef _WIN32
@@ -9,18 +11,20 @@
 #endif
 
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/program_options.hpp>
 #include <iostream>
 #include <string>
 
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
-#include "dicmeta.pb.h"
+#include "handlers/i_handler.hpp"
 #include "io_context_manager.hpp"
 #include "io_monad.hpp"
 #include "my_error_codes.hpp"
+#include "simple_data.hpp"
+#include "util/device_fingerprint.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
-#include "handlers/i_handler.hpp"
 
 namespace po = boost::program_options;
 
@@ -28,31 +32,37 @@ namespace certctrl {
 
 struct LoginHandlerOptions {};
 
-class LoginHandler : public certctrl::IHandler, public std::enable_shared_from_this<LoginHandler> {
+class LoginHandler : public certctrl::IHandler,
+                     public std::enable_shared_from_this<LoginHandler> {
   asio::io_context &ioc_;
+  cjj365::ConfigSources &config_sources_;
   certctrl::ICertctrlConfigProvider &certctrl_config_provider_;
   client_async::HttpClientManager &http_client_;
-  customio::IOutput &output_hub_;
+  customio::ConsoleOutput &output_hub_;
   CliCtx &cli_ctx_;
   src::severity_logger<trivial::severity_level> lg;
-  std::optional<cjj365::meta::CertRecord> cert_record_;
-  cjj365::meta::AcmeAccount acct_;
-
   po::options_description opt_desc_;
   LoginHandlerOptions options_;
-  cjj365::meta::User user_;
-  bool call_notify_ = true;
+  std::string device_auth_url_;
+  std::optional<httphandler::deviceauth::StartResp> start_resp_;
+  std::optional<httphandler::deviceauth::PollResp> poll_resp_;
+  boost::asio::any_io_executor exec_;
 
 public:
   LoginHandler(cjj365::IoContextManager &io_context_manager,
+               cjj365::ConfigSources &config_sources,
                certctrl::ICertctrlConfigProvider &certctrl_config_provider,
                CliCtx &cli_ctx, //
-               customio::IOutput &output_hub,
+               customio::ConsoleOutput &output_hub,
                client_async::HttpClientManager &http_client)
       : ioc_(io_context_manager.ioc()),
+        config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
         output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
+        device_auth_url_(std::format("{}/auth/device",
+                                     certctrl_config_provider_.get().base_url)),
         opt_desc_("misc subcommand options") {
+    exec_ = boost::asio::make_strand(ioc_);
     boost::program_options::options_description create_opts("conf Options");
     opt_desc_.add(create_opts);
     po::parsed_options parsed = po::command_line_parser(cli_ctx_.unrecognized)
@@ -61,8 +71,8 @@ public:
                                     .run();
     po::store(parsed, cli_ctx_.vm);
     po::notify(cli_ctx_.vm);
-    output_hub_.trace() << "LoginHandler initialized with options: "
-                        << opt_desc_ << std::endl;
+    output_hub_.logger().trace()
+        << "LoginHandler initialized with options: " << opt_desc_ << std::endl;
   }
 
   // IHandler
@@ -76,38 +86,14 @@ public:
 
   monad::IO<void> show_usage(const std::string &msg = "") {
     if (!msg.empty()) {
-      output_hub_.error() << msg << std::endl;
+      output_hub_.logger().error() << msg << std::endl;
     }
     return monad::IO<void>::fail(
         {.code = my_errors::GENERAL::SHOW_OPT_DESC, .what = print_opt_desc()});
   }
 
   monad::IO<void> start() override;
-
-  inline fs::path createOrderDir(const fs::path &cert_wkdir,
-                                 const std::string &user_id,
-                                 const std::string &dn) {
-    fs::path dn_orders_dir = cert_wkdir / "orders" / user_id / dn;
-    fs::path this_order{};
-    fs::create_directories(this_order);
-    return this_order;
-  }
-
-  monad::IO<cjj365::meta::CertRecord> createCert(const std::string &dn);
-
-private:
-  inline std::string
-  acmeOrdersToString(const google::protobuf::RepeatedPtrField<
-                     cjj365::meta::AcmeOrderIdentifier> &orders) {
-    std::string str;
-    for (size_t i = 0; i < orders.size(); i++) {
-      str += orders[i].type() + ":" + orders[i].value();
-      if (i != orders.size() - 1) {
-        str += ", ";
-      }
-    }
-    return str;
-  }
-  monad::IO<fs::path> export_cert(const cjj365::meta::CertRecord &cert_record_);
+  monad::IO<void> poll();
+  monad::IO<void> register_device();
 };
 } // namespace certctrl
