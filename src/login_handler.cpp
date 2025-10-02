@@ -1,7 +1,7 @@
 #include "handlers/login_handler.hpp"
 #include "base64.h"
 #include "customio/spinner.hpp"
-#include "handlers/device_auth_types.hpp"
+#include "data/device_auth_types.hpp"
 #include "http_client_monad.hpp"
 #include "util/device_fingerprint.hpp"
 #include "util/user_key_crypto.hpp"
@@ -21,7 +21,23 @@ using VoidPureIO = monad::IO<void>;
 
 VoidPureIO LoginHandler::start() {
   using namespace monad;
-  using httphandler::deviceauth::StartResp;
+
+  return start_device_authorization().then([this](auto start_resp) {
+    output_hub_.printer().yellow()
+        << "Device Authorization started.\n"
+        << "User Code: " << start_resp.user_code << "\n"
+        << "Verification URI: " << start_resp.verification_uri << "\n"
+        << "Verification URI complete: "
+        << start_resp.verification_uri_complete << "\n"
+        << "Complete the authorization in your browser." << std::endl;
+    return poll();
+  });
+}
+
+monad::IO<data::deviceauth::StartResp>
+LoginHandler::start_device_authorization() {
+  using namespace monad;
+  using data::deviceauth::StartResp;
 
   return http_io<PostJsonTag>(device_auth_url_)
       .map([](auto ex) {
@@ -37,37 +53,48 @@ VoidPureIO LoginHandler::start() {
         return monad::IO<StartResp>::from_result(
             ex->template parseJsonResponse<StartResp>());
       })
-      .then([this](auto start_resp) {
-        output_hub_.printer().yellow()
-            << "Device Authorization started.\n"
-            << "User Code: " << start_resp.user_code << "\n"
-            << "Verification URI: " << start_resp.verification_uri << "\n"
-            << "Verification URI complete: "
-            << start_resp.verification_uri_complete << "\n"
-            << "Complete the authorization in your browser." << std::endl;
+      .then([this](StartResp start_resp) {
         start_resp_ = std::move(start_resp);
-        return poll();
+        return monad::IO<StartResp>::pure(*start_resp_);
+      });
+}
+
+monad::IO<data::deviceauth::PollResp> LoginHandler::poll_device_once() {
+  using namespace monad;
+  using data::deviceauth::PollResp;
+
+  if (!start_resp_) {
+    return monad::IO<PollResp>::fail(
+        {.code = my_errors::GENERAL::INVALID_ARGUMENT,
+         .what = "Device authorization has not been started"});
+  }
+
+  return http_io<PostJsonTag>(device_auth_url_)
+      .map([this](auto ex) {
+        json::value body{{"action", "device_poll"},
+                         {"device_code", start_resp_->device_code}};
+        ex->setRequestJsonBody(std::move(body));
+        return ex;
+      })
+      .then(http_request_io<PostJsonTag>(http_client_))
+      .then([](auto ex) {
+        return monad::IO<PollResp>::from_result(
+            ex->template parseJsonResponse<PollResp>());
+      })
+      .then([this](PollResp resp) {
+        poll_resp_ = resp;
+        return monad::IO<PollResp>::pure(std::move(resp));
       });
 }
 
 VoidPureIO LoginHandler::poll() {
   using namespace monad;
-  using httphandler::deviceauth::PollResp;
-  // Build a single poll IO that performs one HTTP request and parses PollResp
-  auto poll_once = [this]() {
-    return http_io<PostJsonTag>(device_auth_url_)
-        .map([this](auto ex) {
-          json::value body{{"action", "device_poll"},
-                           {"device_code", start_resp_->device_code}};
-          ex->setRequestJsonBody(std::move(body));
-          return ex;
-        })
-        .then(http_request_io<PostJsonTag>(http_client_))
-        .then([](auto ex) {
-          return monad::IO<PollResp>::from_result(
-              ex->template parseJsonResponse<PollResp>());
-        });
-  };
+  using data::deviceauth::PollResp;
+
+  if (!start_resp_) {
+    return IO<void>::fail({.code = my_errors::GENERAL::INVALID_ARGUMENT,
+                           .what = "Device authorization has not been started"});
+  }
 
   const int max_retries = start_resp_->expires_in / start_resp_->interval;
   const auto interval = std::chrono::seconds(start_resp_->interval);
@@ -78,6 +105,8 @@ VoidPureIO LoginHandler::poll() {
       std::chrono::milliseconds(120),
       /*enabled=*/true);
   spinner->start();
+
+  auto poll_once = [this]() { return this->poll_device_once(); };
 
   return poll_once()
       .poll_if(max_retries, interval, this->exec_,

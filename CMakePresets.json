@@ -100,6 +100,10 @@
       "configurePreset": "debug"
     },
     {
+      "name": "debug-asan",
+      "configurePreset": "debug-asan"
+    },
+    {
       "name": "w64",
       "configurePreset": "w64"
     }

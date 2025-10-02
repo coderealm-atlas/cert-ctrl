@@ -11,7 +11,7 @@
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
 
-namespace httphandler {
+namespace data {
 
 namespace json = boost::json;
 
@@ -379,4 +379,4 @@ struct VerifyResp {
 };
 } // namespace deviceauth
 
-} // namespace httphandler
+} // namespace data

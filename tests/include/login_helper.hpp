@@ -1,13 +1,13 @@
 #pragma once
 
 #include <boost/json.hpp>
+#include <cctype>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "api_response_result.hpp"
-#include "common_macros.hpp"
 #include "data/data_shape.hpp"
+#include "data/device_auth_types.hpp"
 #include "http_client_manager.hpp"
 #include "http_client_monad.hpp"
 
@@ -30,28 +30,50 @@ using LoginResponseResult = apihandler::ApiResponseResult<data::LoginSuccess>;
 using loginSuccessResult = monad::MyResult<data::LoginSuccess>;
 using LoginSuccessIO = monad::IO<data::LoginSuccess>;
 
-constexpr const char *LOGIN_EMAIL = "jianglibo@hotmail.com";
-constexpr const char *LOGIN_PASSWORD = "StrongPass1!";
+inline std::optional<std::string> read_trimmed_env(const char *key) {
+  if (const char *envv = std::getenv(key); envv && *envv) {
+    std::string value(envv);
+    auto is_ws = [](unsigned char ch) {
+      return static_cast<bool>(std::isspace(ch));
+    };
+    while (!value.empty() && is_ws(static_cast<unsigned char>(value.back()))) {
+      value.pop_back();
+    }
+    size_t start = 0;
+    while (start < value.size() &&
+           is_ws(static_cast<unsigned char>(value[start]))) {
+      ++start;
+    }
+    if (start > 0) {
+      value.erase(0, start);
+    }
+    return value;
+  }
+  return std::nullopt;
+}
 
 inline std::string login_email() {
-  const char *envv = std::getenv("CERT_CTRL_TEST_EMAIL");
-  if (envv && *envv)
-    return std::string(envv);
-  return std::string(LOGIN_EMAIL);
+  auto value = read_trimmed_env("CERT_CTRL_TEST_EMAIL");
+  if (value && !value->empty()) {
+    return *value;
+  }
+  throw std::runtime_error("CERT_CTRL_TEST_EMAIL env var not set");
 }
 
 inline std::string login_password() {
-  const char *envv = std::getenv("CERT_CTRL_TEST_PASSWORD");
-  if (envv && *envv)
-    return std::string(envv);
-  return std::string(LOGIN_PASSWORD);
+  auto value = read_trimmed_env("CERT_CTRL_TEST_PASSWORD");
+  if (value && !value->empty()) {
+    return *value;
+  }
+  throw std::runtime_error("CERT_CTRL_TEST_PASSWORD env var not set");
 }
 
 inline std::string url_base() {
-  const char *envv = std::getenv("CERT_CTRL_TEST_URL_BASE");
-  if (envv && *envv)
-    return std::string(envv);
-  return std::string("http://localhost:8080"); // 8080 default
+  auto value = read_trimmed_env("CERT_CTRL_TEST_URL_BASE");
+  if (value && !value->empty()) {
+    return *value;
+  }
+  return std::string("https://test-api.cjj365.cc"); // 8080 default
 }
 
 inline std::string first_cookie_pair(
@@ -78,7 +100,6 @@ inline LoginSuccessIO login_io(client_async::HttpClientManager &mgr,
   // Contract per docs: POST /auth { action: login, email, password }
   std::string login_url =
       base_url + "/auth/general"; // unified multi-action endpoint
-  DEBUG_PRINT("login_url: " << login_url);
   return http_io<PostJsonTag>(login_url)
       .map([email, password](auto ex) {
         json::object body{
@@ -102,28 +123,12 @@ inline LoginSuccessIO login_io(client_async::HttpClientManager &mgr,
       });
 }
 
-struct DeviceStartData {
-  std::string device_code;
-  json::value body;
-};
-
-inline std::string extract_device_code(const json::value &v) {
-  if (!v.is_object())
-    return {};
-  auto &o = v.as_object();
-  if (auto dc = o.if_contains("device_code"); dc && dc->is_string())
-    return std::string(dc->as_string());
-  if (auto data = o.if_contains("data"); data && data->is_object()) {
-    if (auto dc2 = data->as_object().if_contains("device_code");
-        dc2 && dc2->is_string())
-      return std::string(dc2->as_string());
-  }
-  return {};
-}
-
-inline monad::IO<DeviceStartData>
+inline monad::IO<data::deviceauth::StartResp>
 device_start_io(client_async::HttpClientManager &mgr,
                 const std::string &base_url, const std::string &cookie) {
+  using StartRespResult = monad::MyResult<data::deviceauth::StartResp>;
+  using StartRespIO = monad::IO<data::deviceauth::StartResp>;
+
   std::string url = base_url + "/auth/device";
   return http_io<PostJsonTag>(url)
       .map([&](auto ex) {
@@ -136,48 +141,17 @@ device_start_io(client_async::HttpClientManager &mgr,
       })
       .then(http_request_io<PostJsonTag>(mgr))
       .then([](auto ex) {
-        auto jr = ex->getJsonResponse();
-        if (jr.is_err())
-          return monad::IO<DeviceStartData>::fail(jr.error());
-        auto dc = extract_device_code(jr.value());
-        if (dc.empty())
-          return monad::IO<DeviceStartData>::fail(
-              monad::Error{400, "missing device_code"});
-        return monad::IO<DeviceStartData>::pure(
-            DeviceStartData{dc, jr.value()});
+        return StartRespIO::from_result(
+            ex->template parseJsonResponse<data::deviceauth::StartResp>());
       });
 }
 
-struct DevicePollData {
-  std::string status;
-  std::string access_token;
-  std::string refresh_token;
-  json::value body;
-};
-
-inline DevicePollData parse_poll(const json::value &v) {
-  DevicePollData out;
-  out.body = v;
-  if (v.is_object()) {
-    auto &o = v.as_object();
-    auto extract = [&](auto &obj) {
-      if (auto s = obj.if_contains("status"); s && s->is_string())
-        out.status = std::string(s->as_string());
-      if (auto at = obj.if_contains("access_token"); at && at->is_string())
-        out.access_token = std::string(at->as_string());
-      if (auto rt = obj.if_contains("refresh_token"); rt && rt->is_string())
-        out.refresh_token = std::string(rt->as_string());
-    };
-    extract(o);
-    if (auto data = o.if_contains("data"); data && data->is_object())
-      extract(data->as_object());
-  }
-  return out;
-}
-
-inline monad::IO<DevicePollData>
+inline monad::IO<data::deviceauth::PollResp>
 device_poll_io(client_async::HttpClientManager &mgr,
                const std::string &base_url, const std::string &device_code) {
+  using PollRespResult = monad::MyResult<data::deviceauth::PollResp>;
+  using PollRespIO = monad::IO<data::deviceauth::PollResp>;
+
   std::string url = base_url + "/auth/device";
   return http_io<PostJsonTag>(url)
       .map([&](auto ex) {
@@ -187,14 +161,9 @@ device_poll_io(client_async::HttpClientManager &mgr,
       })
       .then(http_request_io<PostJsonTag>(mgr))
       .then([](auto ex) {
-        auto jr = ex->getJsonResponse();
-        if (jr.is_err())
-          return monad::IO<DevicePollData>::fail(jr.error());
-        auto parsed = parse_poll(jr.value());
-        if (parsed.status.empty())
-          return monad::IO<DevicePollData>::fail(
-              monad::Error{400, "missing status"});
-        return monad::IO<DevicePollData>::pure(std::move(parsed));
+        return PollRespIO::from_result(
+            ex->template parseJsonResponse<data::deviceauth::PollResp>()
+        );
       });
 }
 

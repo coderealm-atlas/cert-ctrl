@@ -10,7 +10,7 @@
 ## Quick Start for Agents
 
 ### Build & Test
-Use the CMake presets baked into the repo. All paths are project-root relative.
+Use the CMake presets baked into the repo (see `CMakePresets.json`). All paths are project-root relative.
 
 ```bash
 cmake --preset debug
@@ -18,6 +18,15 @@ cmake --build --preset debug --parallel 4
 cmake --build --preset debug --target test_program_options
 ctest --output-on-failure -j4 --test-dir build
 ```
+
+Need AddressSanitizer? There is a dedicated preset inherited from `debug`:
+
+```bash
+cmake --preset debug-asan
+cmake --build --preset debug-asan --parallel 4
+ctest --output-on-failure --test-dir build/debug-asan/tests
+```
+The `debug-asan` preset simply flips `ENABLE_ASAN` to `ON`, while keeping the rest of the debug toolchain identical.
 
 ### Run the CLI
 The primary binary lands at `build/cert_ctrl_debug`.
@@ -52,6 +61,15 @@ Tips:
 ## Testing Guidance
 - Shell harnesses in the repo (`device_registration_workflow.sh`, etc.) exercise end-to-end flows. Prefer them for smoke checks after major changes.
 - Unit tests live under `tests/`. Add coverage alongside new behavior, especially around CLI parsing and HTTP client logic.
+- GoogleTest executables are emitted to `build/<preset>/tests`. List the discovered targets with
+  ```bash
+  ctest --test-dir build/debug/tests -N
+  ```
+  and run an individual suite directly, e.g.
+  ```bash
+  ./build/debug/tests/test_device_registration --gtest_filter=RealServerLoginHandlerFixture.*
+  ```
+  (swap `debug` for another preset such as `debug-asan` as needed).
 - When mocking the server, ensure parity with API contracts from `../bb` — copy fixtures from that repo rather than inventing new ones.
 - A ready-to-run Docker stack described in `docs/DOCKER_TEST_ENVIRONMENT.md` exposes a full `bbserver`. Default admin credentials are `jianglibo@hotmail.com` / `StrongPass1!`; use these when scripting login or provisioning flows.
 
