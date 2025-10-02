@@ -1,7 +1,7 @@
 #pragma once
 
 #include "customio/console_output.hpp"
-#include "handlers/device_auth_types.hpp"
+#include "data/device_auth_types.hpp"
 #include "http_client_manager.hpp"
 #include <google/protobuf/util/json_util.h>
 #ifdef _WIN32
@@ -44,8 +44,8 @@ class LoginHandler : public certctrl::IHandler,
   po::options_description opt_desc_;
   LoginHandlerOptions options_;
   std::string device_auth_url_;
-  std::optional<httphandler::deviceauth::StartResp> start_resp_;
-  std::optional<httphandler::deviceauth::PollResp> poll_resp_;
+  std::optional<data::deviceauth::StartResp> start_resp_;
+  std::optional<data::deviceauth::PollResp> poll_resp_;
   boost::asio::any_io_executor exec_;
 
 public:
@@ -95,5 +95,8 @@ public:
   monad::IO<void> start() override;
   monad::IO<void> poll();
   monad::IO<void> register_device();
+
+  monad::IO<data::deviceauth::StartResp> start_device_authorization();
+  monad::IO<data::deviceauth::PollResp> poll_device_once();
 };
 } // namespace certctrl

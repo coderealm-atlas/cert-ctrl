@@ -42,13 +42,15 @@ class Spinner : public std::enable_shared_from_this<Spinner> {
 
  private:
   void schedule() {
-    auto self = shared_from_this();
+    std::weak_ptr<Spinner> self = weak_from_this();
     timer_->expires_after(interval_);
     timer_->async_wait([self](const boost::system::error_code& ec) {
+      auto locked = self.lock();
+      if (!locked) return;
       if (ec) return; // cancelled
-      if (!self->running_.load()) return;
-      self->tick();
-      self->schedule();
+      if (!locked->running_.load()) return;
+      locked->tick();
+      locked->schedule();
     });
   }
 

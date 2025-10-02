@@ -3,10 +3,13 @@
 #include <fmt/format.h>
 #include <google/protobuf/repeated_field.h> // For RepeatedPtrField
 
+#include <algorithm>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
 #include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "common_macros.hpp"
 #include "customio/console_output.hpp"

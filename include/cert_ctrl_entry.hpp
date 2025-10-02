@@ -83,7 +83,7 @@ public:
         di::bind<certctrl::CliCtx>().to(cli_ctx_),
         // Register all handlers for aggregate injection; DI will convert to
         // vector<unique_ptr<IHandler>>
-  di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::LoginHandler, certctrl::UpdatesPollingHandler>());
+        di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::LoginHandler, certctrl::UpdatesPollingHandler>());
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
@@ -109,21 +109,6 @@ public:
           return self->blocker_.stop();
         })) {
       // Dispatched
-    } else if (cli_ctx_.params.subcmd == "account") {
-      // legacy TODO
-    } else if (cli_ctx_.params.subcmd == "account") {
-      // auto cert_account_processor = injector.template create<
-      //     std::shared_ptr<certctrl::CertAccountProcessor>>();
-      // output_hub_->trace() << "Created CertAccountProcessor." << std::endl;
-      // cert_account_processor->process_account().run(
-      //     [self, cert_account_processor](auto r) {
-      //       if (r.is_err()) {
-      //         self->print_error(r.error());
-      //       } else {
-      //         self->info("Account processing completed successfully.");
-      //       }
-      //       return self->blocker_.stop();
-      //     });
     } else {
       if (cli_ctx_.params.keep_running) {
         output_hub_->logger().info()
@@ -167,7 +152,8 @@ public:
       self->info("Shutting down App...");
       // 1. Disable further signal handling early
       if (self->signals_) {
-        self->output_hub_->logger().debug() << "Shutdown: cancel signals" << std::endl;
+        self->output_hub_->logger().debug()
+            << "Shutdown: cancel signals" << std::endl;
         boost::system::error_code ec;
         auto n = self->signals_->cancel(ec);
         self->output_hub_->logger().debug()

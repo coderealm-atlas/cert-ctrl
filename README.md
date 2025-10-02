@@ -59,7 +59,7 @@ Additional integration workflows are described in the docs under `Testing/` and 
 - Point the agent at this endpoint when exercising integration workflows in QA or CI.
 - To create a disposable test user, run:
   ```bash
-  curl -k \
+  curl \
     -X POST https://test-api.cjj365.cc/apiv1/iroiro \
     -H "Content-Type: application/json" \
     -d '{"action":"create_test_user","email":"demo-user@example.com"}'
@@ -83,7 +83,24 @@ Additional integration workflows are described in the docs under `Testing/` and 
   		"pk": null
   	}
   }
-```
+  ```
+
+  Verify login works with the new user:
+
+  ```bash
+  curl \
+    -X POST https://test-api.cjj365.cc/auth/general \
+    -H "Content-Type: application/json" \
+    -d '{"action":"login","email":"demo-user@example.com","password":"6SJYP9Bd6DKnLsj9rJfUnCuKQsnxGWGb"}'
+  ```
+
+  Delete user:
+  ```bash
+  curl \
+  -X POST https://test-api.cjj365.cc/apiv1/iroiro \
+  -H "Content-Type: application/json" \
+  -d '{"action":"delete_test_user","email":"demo-user@example.com", "password": "6SJYP9Bd6DKnLsj9rJfUnCuKQsnxGWGb"}'
+  ```
 
   ```bash
   export CERT_CTRL_TEST_EMAIL="demo-user@example.com"

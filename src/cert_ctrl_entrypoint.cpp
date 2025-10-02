@@ -4,6 +4,7 @@
 #include "certctrl_common.hpp"
 #include "util/my_logging.hpp"
 #include <boost/program_options.hpp>
+#include "version.h"
 
 namespace po = boost::program_options;
 
@@ -68,6 +69,7 @@ int main(int argc, char *argv[]) {
                                     .run();
     po::store(parsed, vm);
     po::notify(vm);
+
     std::vector<std::string> positionals =
         vm["positionals"].as<std::vector<std::string>>();
     if (positionals.size() > 0) {
@@ -84,6 +86,17 @@ int main(int argc, char *argv[]) {
       std::cerr << "  conf           Configure the device." << std::endl
                 << std::endl;
     };
+
+    if (vm.count("help")) {
+      showUsage();
+      return 0;
+    }
+
+    if (vm.count("version")) {
+      std::cout << MYAPP_VERSION << std::endl;
+      return 0;
+    }
+
 
     if (cli_params.subcmd.empty() && !cli_params.keep_running) {
       showUsage();
@@ -113,8 +126,8 @@ int main(int argc, char *argv[]) {
       auto certctrl_config_result = config_sources.json_content("application");
       auto certctrl_config = json::value_to<certctrl::CertctrlConfig>(
           certctrl_config_result.value());
-      std::cerr << "using verbose from configuration: " << certctrl_config.verbose
-                << std::endl;
+      std::cerr << "using verbose from configuration: "
+                << certctrl_config.verbose << std::endl;
       cli_ctx.params.verbose = certctrl_config.verbose;
     }
 

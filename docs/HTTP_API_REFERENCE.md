@@ -1,0 +1,394 @@
+# BB HTTP API Reference (Client-Facing)
+
+This document consolidates all HTTP endpoints registered by the server handlers and provides a client-facing reference. It complements existing deep-dive docs (linked where available) and offers a single place to discover paths, auth requirements, and response conventions.
+
+- Base URL (local dev): http://localhost:8080 or via TLS proxy https://localhost:10000
+- Auth cookie: cjj365=<session_id>
+- Response wrapper:
+  - success: 200/201/204 with optional body `{ "data": ... }`
+  - error: status >= 400 with body `{ "error": { "code": int, "what": string } }`
+- CORS: Client must send credentials if needed; server mirrors origin and sets `Access-Control-Allow-Credentials: true`.
+- Pagination (when applicable): cursor or offset parameters are noted per endpoint.
+
+Links to related docs:
+- Login & session: LOGIN_WORKFLOW.md
+- Device OAuth-like flow: DEVICE_AUTH_TESTING.md
+- Device updates long-poll: DEVICE_POLLING_UPDATES.md
+- Refresh token: REFRESH_TOKEN_SYSTEM.md
+- Device registration overview: USER_DEVICE_REGISTRATION_WORKFLOW.md
+- Device certificate assignment: DEVICE_CERTIFICATE_ASSIGNMENT.md
+- Payments domain plan: PAYMENT_WORKFLOW.md
+
+Note: Schemas below reflect current server behavior and conventions. Some domains (payments) are being built out; treat those as stable path contracts with evolving payloads.
+
+## Auth & Session
+
+### General Login and Session (LoginHandler)
+Paths:
+- GET /auth/general — Auxiliary (e.g., name availability)
+- GET /auth/status — Inspect current session
+- POST /auth/logout — Logout; clears session
+- GET /auth/profile — Current profile summary
+- GET /auth/third-party-bindings — Linked auth providers
+
+Auth:
+- Most endpoints work with or without a session to report status; logout/profile/bindings require a session.
+
+See: ai_docs/LOGIN_WORKFLOW.md for request/response examples of /auth/general and /auth/status.
+
+### WebAuthn (WebAuthnHandler)
+Paths:
+- POST /auth/webauthn/register/options
+- POST /auth/webauthn/register/verify
+- POST /auth/webauthn/login/options
+- POST /auth/webauthn/login/verify
+- POST /auth/webauthn/step-up/options
+- POST /auth/webauthn/step-up/verify
+- GET  /auth/webauthn/credentials
+- DELETE /auth/webauthn/credentials/:id
+
+Auth:
+- Registration/login options may be unauthenticated depending on flow.
+- Credentials management requires a session.
+
+Responses:
+- Follows standard wrapper. Options endpoints return WebAuthn PublicKeyCredential options JSON for the browser WebAuthn API.
+
+### Weixin (WeChat) Login (WeixinLoginHandler)
+Paths:
+- GET /auth/weixin — Start Weixin login (redirect or QR)
+- GET /auth/weixin/callback — OAuth callback target
+
+Auth: Unauthenticated; establishes user session upon successful OAuth.
+
+### Refresh Token (RefreshTokenHandler)
+Path:
+- POST /auth/refresh — Issue new access token/cookie session
+
+See: ai_docs/REFRESH_TOKEN_SYSTEM.md
+
+### Device Flow (DeviceAuthHandler)
+Path:
+- POST /auth/device — Start/poll/verify device login sequence
+
+See: ai_docs/DEVICE_AUTH_TESTING.md
+
+## Health
+
+### Health Check (HealthHandler)
+Path:
+- GET /health — Liveness/readiness probe
+
+See: ai_docs/DOCKER_TEST_ENVIRONMENT.md for examples.
+
+## Devices (DevicesHandler)
+Base paths under user scope:
+- /apiv1/users/:user_id/devices
+- /apiv1/users/:user_id/devices/:device_id
+- /apiv1/users/:user_id/devices/:device_id/certificates
+- /apiv1/users/:user_id/devices/:device_id/certificates/:certificate_id
+- /apiv1/users/:user_id/devices/:device_id/cas
+- /apiv1/users/:user_id/devices/:device_id/cas/:ca_id
+- /apiv1/users/:user_id/devices/:device_id/install-config
+- /apiv1/users/:user_id/devices/:device_id/install-config/restore
+- /apiv1/users/:user_id/devices/:device_id/install-config-histories
+
+Auth:
+- Requires user session; server enforces that route :user_id matches session user.
+
+Typical methods and semantics:
+- GET /apiv1/users/:user_id/devices — List devices (owned by user)
+- POST /apiv1/users/:user_id/devices — Register device
+- GET /apiv1/users/:user_id/devices/:device_id — Device detail
+- DELETE /apiv1/users/:user_id/devices/:device_id — Remove device
+
+Certificates and CAs:
+- GET /.../devices/:device_id/certificates — List assigned certificates
+- POST /.../devices/:device_id/certificates — Assign/create certificate for device
+- GET /.../devices/:device_id/certificates/:certificate_id — Detail
+- DELETE /.../devices/:device_id/certificates/:certificate_id — Unassign/remove
+- GET /.../devices/:device_id/cas — List device CAs
+- POST /.../devices/:device_id/cas — Add CA
+- DELETE /.../devices/:device_id/cas/:ca_id — Remove CA
+
+Install configuration:
+- GET /.../devices/:device_id/install-config — Current install config DTO
+- PUT /.../devices/:device_id/install-config — Update/replace install config
+- GET /.../devices/:device_id/install-config-histories — List history versions
+- POST /.../devices/:device_id/install-config/restore — Restore from history
+  - Body: `{ "version": number, "change_note": string }`
+
+Install config DTO (server-minimal; client renders platform-specific scripts):
+```
+{
+  "device_id": 123,
+  "version": 3,
+  "installs": [
+    {
+      "resource": "cert/main",           // logical id
+      "kind": "copy",                    // or "exec"
+      "from": ["$store/cert.pem"],       // array form
+      "to":   ["/etc/ssl/certs/cert.pem"],
+      "verify": true
+    },
+    {
+      "resource": "key/main",
+      "kind": "copy",
+      "from": ["$store/key.pem"],
+      "to":   ["/etc/ssl/private/key.pem"],
+      "verify": true
+    },
+    {
+      "resource": "reload",
+      "kind": "exec",
+      "cmd": "systemctl reload nginx"
+    }
+  ],
+  "installs_json": "..."   // backward-compat echo of raw JSON if present
+}
+```
+Notes:
+- The copy item uses array `from`/`to`; one item per resource.
+- Restore returns the restored version in the response data.
+
+Related: ai_docs/DEVICE_CERTIFICATE_ASSIGNMENT.md
+
+## Device Updates (DeviceUpdatesHandler)
+Path:
+- GET /apiv1/devices/self/updates
+
+Auth:
+- Device-authenticated requests (see DEVICE_AUTH_TESTING.md). Supports long-poll with `wait` query and `If-None-Match` ETag.
+
+See: ai_docs/DEVICE_POLLING_UPDATES.md for complete protocol.
+
+## Device Self Certificates (DeviceSelfCertsHandler)
+Path:
+- GET /apiv1/devices/self/certificates/:certificate_id/bundle[?pack=download]
+
+Auth:
+- Device-authenticated via Bearer JWT (HS256). The token must represent the device (contains device_id claim) and belong to the owning user.
+
+Behavior (policy-aware):
+- HYBRID (default) or DEVICE_REQUIRED: returns AEAD-wrapped bundle when device wrapping is ready.
+- MASTER_ONLY with server_decrypt_export=true: server decrypts private key and returns plaintext to the device.
+- MASTER_ONLY with server_decrypt_export=false: 403 with CERTS::EXPORT_FORBIDDEN.
+- If device wrapping is pending (enc_data_key sentinel = 48 zero bytes): 409 with DEVICES::WRAP_PENDING.
+
+Query params:
+- pack=download — if provided, adds a Content-Disposition attachment header with a descriptive filename.
+
+Responses:
+- Success (AEAD), 200:
+  {
+    "data": {
+      "wrap_alg": "x25519-v1",
+      "enc_scheme": "aes256gcm",
+      "device_keyfp_b64": "...",
+      "enc_data_key_b64": "...",
+      "enc_privkey_b64": "...",
+      "privkey_nonce_b64": "...",
+      "privkey_tag_b64": "..."
+    }
+  }
+
+- Success (MASTER_ONLY plaintext), 200:
+  {
+    "data": {
+      "enc_scheme": "plaintext",
+      "private_key_der_b64": "...",
+      "certificate_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"  // present if stored
+    }
+  }
+
+- Error (pending wrap), 409:
+  { "error": { "code":  my_errors::DEVICES::WRAP_PENDING, "what": "Device wrap pending" } }
+
+- Error (export forbidden), 403:
+  { "error": { "code": my_errors::CERTS::EXPORT_FORBIDDEN, "what": "Server-decrypted export disabled by policy" } }
+
+- Error (no encrypted key available), 404:
+  { "error": { "code": my_errors::GENERAL::NOT_FOUND, "what": "Encrypted private key not available" } }
+
+Notes:
+- When pack=download is used, the response sets Content-Disposition to an attachment filename like:
+  - cert_<id>_bundle.json (AEAD)
+  - cert_<id>_plaintext.json (MASTER_ONLY plaintext)
+- The device must poll updates or retry if 409 WRAP_PENDING is returned; when the device-wrapped key is created, the 200 AEAD bundle becomes available.
+
+## API Keys (ApikeysHandler)
+Paths:
+- /apiv1/users/:user_id/apikeys
+- /apiv1/users/:user_id/apikeys/:apikey_id
+
+Methods:
+- GET /.../apikeys — List API keys
+- POST /.../apikeys — Create API key
+- DELETE /.../apikeys/:apikey_id — Revoke API key
+
+Auth: Requires user session; keys are scoped to the user.
+
+## Certificates (CertificatesHandler)
+Paths:
+- /apiv1/users/:user_id/certificates — List/create certificates
+- /apiv1/users/:user_id/acme-accounts/:acme_account_id/certificates — Manage by ACME account
+- /apiv1/users/:user_id/certificates/:certificate_id — Detail/delete/update
+- /apiv1/users/:user_id/certificates/:certificate_id/issues — List or create issuance attempts
+
+Auth: Requires user session.
+
+Notes:
+- “Issues” resource (plural) tracks issuance attempts and renewals. POST typically initiates an issuance/renewal for the certificate.
+
+### Examples
+
+- Create certificate record (ACME-backed or self-signed depending on account):
+  - POST /apiv1/users/1/certificates
+  - Body:
+    {
+      "domain_name": "example.com",
+      "sans": ["www.example.com", "api.example.com"],
+      "acct_id": 42,
+      "action": "create",
+      "organization": "Example Inc",
+      "organizational_unit": "IT",
+      "country": "US",
+      "state": "CA",
+      "locality": "San Jose"
+    }
+  - Response 200:
+    { "data": { "id": 1001, "domain_name": "example.com", "acct_id": 42, "self_signed": false, "verified": false, "sans": ["www.example.com","api.example.com"], "created_at": 1736900000 } }
+
+- List issuance histories for a certificate:
+  - GET /apiv1/users/1/certificates/1001/issues?limit=20&offset=0
+  - Response 200:
+    { "data": [ { "id": 501, "cert_record_id": 1001, "status": "SUCCESS", "started_at": 1736900123456, "completed_at": 1736900130000, "error_message": "" } ] }
+
+- Trigger issuance for an existing certificate (public CA or self CA based on account):
+  - POST /apiv1/users/1/certificates/1001/issues
+  - Body (optional): { "validity_seconds": 2592000 }
+  - Response (self CA path) 200:
+    { "data": { "id": 1001, "domain_name": "example.com", "serial_number": "04:A1:...", "verified": true } }
+  - Response (public ACME path) 204:
+    No Content; issuance is processed asynchronously (poll issues or certificate detail for status).
+
+- Verify domain setup via DNS CNAME (ACME only):
+  - PUT /apiv1/users/1/certificates/1001
+  - Body: { "action": "verify_domain" }
+  - Response 204 on success.
+
+## ACME Accounts (AcmeAccountsHandler)
+Paths:
+- /apiv1/users/:user_id/acme-accounts
+- /apiv1/users/:user_id/acme-accounts/:acme_account_id
+
+Methods:
+- GET /.../acme-accounts — List
+- POST /.../acme-accounts — Create (ZeroSSL/Let’s Encrypt)
+- GET /.../acme-accounts/:id — Detail
+- DELETE /.../acme-accounts/:id — Remove account
+
+### Examples
+
+- Create ACME account:
+  - POST /apiv1/users/1/acme-accounts
+  - Body:
+    {
+      "name": "letsencrypt-main",
+      "email": "admin@example.com",
+      "provider": "letsencrypt",      
+      "ca_id": 0                       
+    }
+  - Response 200:
+    { "data": { "id": 42, "user_id": 1, "name": "letsencrypt-main", "email": "admin@example.com", "provider": "letsencrypt", "kid": null, "ca_id": 0 } }
+
+- Update ACME account (name/email/provider):
+  - PUT /apiv1/users/1/acme-accounts/42
+  - Body:
+    { "name": "letsencrypt-primary", "email": "ops@example.com", "provider": "letsencrypt" }
+  - Response 200:
+    { "data": { "id": 42, "name": "letsencrypt-primary", "email": "ops@example.com", "provider": "letsencrypt" } }
+
+- List accounts:
+  - GET /apiv1/users/1/acme-accounts?limit=20&offset=0
+  - Response 200:
+    { "data": [ { "id": 42, "name": "letsencrypt-main", "email": "admin@example.com", "provider": "letsencrypt" } ] }
+
+## Certificate Authorities (CaHandler)
+Paths:
+- /apiv1/users/:user_id/cas — List/register user CAs
+- /apiv1/users/:user_id/cas/:ca_id/issue — Issue a certificate from user CA
+
+Auth: Requires user session.
+
+### Examples
+
+- Create self CA (user-owned CA authority):
+  - POST /apiv1/users/1/cas
+  - Body:
+    {
+      "name": "dev-root",
+      "common_name": "Example Dev Root CA",
+      "organization": "Example Inc",
+      "country": "US",
+      "state": "CA",
+      "locality": "San Jose",
+      "valid_days": 3650
+    }
+  - Response 200:
+    { "data": { "id": 7, "user_id": 1, "name": "dev-root", "common_name": "Example Dev Root CA" } }
+
+- Issue certificate from self CA:
+  - POST /apiv1/users/1/cas/7/issue
+  - Body:
+    {
+      "device_id": 123,
+      "domain_name": "dev.local",
+      "sans": ["*.dev.local"],
+      "validity_seconds": 7776000
+    }
+  - Response 200:
+    { "data": { "id": 1002, "domain_name": "dev.local", "self_signed": true, "verified": true, "serial_number": "3F:AA:..." } }
+
+## Git (GitreposHandler, GitRequestHandler)
+Paths:
+- /apiv1/users/:user_id/gitrepos — List/create Git repositories
+- /apiv1/users/:user_id/gitrepos/:repo_id/tags — Manage tags
+- /apiv1/users/:user_id/gitrepos/:repo_id/* — Proxy to repository content
+- /git/* — Generic Git request handler (internal/proxy)
+
+Auth: Requires user session for user-scoped repositories.
+
+## Wallets & Payments (WalletsHandler, PaymentQuotesHandler, PaymentsHandler)
+Paths:
+- /apiv1/users/:user_id/wallets
+- /apiv1/users/:user_id/wallets/:wallet_id
+- /apiv1/users/:user_id/payment-quotes
+- /apiv1/users/:user_id/payment-quotes/:payment_quote_id
+- /apiv1/users/:user_id/payments
+- /apiv1/users/:user_id/payments/:payment_id
+
+Status: Initial vertical slice in progress; path contracts are stable. See ai_docs/PAYMENT_WORKFLOW.md for domain flow.
+
+Typical methods:
+- GET /.../wallets — List wallets; GET /.../wallets/:id — Detail
+- POST /.../payment-quotes — Create a quote
+- GET /.../payment-quotes/:id — Quote detail/status
+- POST /.../payments — Create a payment from approved quote
+  - Headers: Idempotency-Key recommended
+- GET /.../payments/:id — Payment detail
+
+Auth: Requires user session.
+
+## Error Handling & Conventions
+- All errors use `{ "error": { "code": int, "what": string } }`.
+- Common codes are maintained in `error_codes.ini`; the server maps domain errors accordingly.
+- For unauthenticated requests to protected endpoints, server returns 401 with standard error payload.
+- For cross-user access, server returns 403 or domain-specific error codes.
+
+## Versioning & Stability
+- Handler paths in this document reflect the current stable surface. Any breaking changes will be reflected here with migration notes.
+- For long-poll endpoints, prefer timeouts ≤ 30s and retry with backoff.
+
+---
+Last updated: 2025-09-28

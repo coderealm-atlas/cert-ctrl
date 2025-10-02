@@ -1,3 +1,5 @@
+#pragma once
+
 #include <gtest/gtest.h>
 
 #include <boost/asio.hpp>
@@ -30,20 +32,18 @@
 #include "conf/certctrl_config.hpp"
 #include "handlers/login_handler.hpp"
 #include "http_client_config_provider.hpp"
-#include "http_client_manager.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
-#include "misc_util.hpp"
-#include "result_monad.hpp"
 
-namespace {
+namespace login_handler_test {
+
 namespace di = boost::di;
 namespace fs = std::filesystem;
 namespace asio = boost::asio;
 namespace http = boost::beast::http;
 namespace json = boost::json;
 
-std::string make_unique_dir_name() {
+inline std::string make_unique_dir_name() {
   auto now = std::chrono::steady_clock::now().time_since_epoch().count();
   std::random_device rd;
   std::mt19937_64 gen(rd());
@@ -67,7 +67,7 @@ struct TempDir {
   }
 };
 
-void write_json_file(const fs::path &file, const json::value &jv) {
+inline void write_json_file(const fs::path &file, const json::value &jv) {
   std::ofstream ofs(file);
   ofs << json::serialize(jv);
 }
@@ -80,7 +80,7 @@ public:
     std::string target;
   };
 
-  TestDeviceServer(cjj365::IIoContextManager &io_manager)
+  explicit TestDeviceServer(cjj365::IIoContextManager &io_manager)
       : acceptor_(io_manager.ioc()), access_token_("access-token-123"),
         refresh_token_(issue_refresh_token("12345")) {
     using tcp = asio::ip::tcp;
@@ -132,7 +132,8 @@ public:
     try {
       asio::io_context tmp_ioc;
       asio::ip::tcp::socket poke(tmp_ioc);
-      auto endpoint = asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port_);
+      auto endpoint =
+          asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port_);
       try {
         poke.connect(endpoint);
         poke.close();
@@ -163,7 +164,6 @@ private:
         continue;
       }
       if (stopped_.load()) {
-        boost::system::error_code ignore;
         try {
           socket.shutdown(asio::ip::tcp::socket::shutdown_both);
           socket.close();
@@ -278,34 +278,26 @@ private:
   std::string refresh_token_;
 };
 
-// Regex to validate device_public_id format 8-4-4-4-12 hex digits.
-bool is_valid_device_id(std::string_view value) {
+inline bool is_valid_device_id(std::string_view value) {
   static const std::regex pattern(
       R"(^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)",
       std::regex::icase);
   return std::regex_match(value.begin(), value.end(), pattern);
 }
 
-} // namespace
-
-class LoginHandlerWorkflowTest : public ::testing::Test {
+class LoginHandlerFixture : public ::testing::Test {
 protected:
   std::shared_ptr<void> injector_holder_;
   std::shared_ptr<certctrl::LoginHandler> handler_;
-  TestDeviceServer *server_;
-  TempDir temp_dir;
-  certctrl::ICertctrlConfigProvider *config_provider_;
-  cjj365::IIoContextManager *io_context_manager_{nullptr};
-  client_async::HttpClientManager *http_client_manager_{nullptr};
-  std::unique_ptr<cjj365::ConfigSources> config_sources_ptr_;
-  std::unique_ptr<customio::ConsoleOutputWithColor> output_ptr_;
-  std::unique_ptr<certctrl::CliCtx> cli_ctx_ptr_;
-  void SetUp() override {
+  TestDeviceServer *server_{};
+  TempDir temp_dir_;
+  certctrl::ICertctrlConfigProvider *config_provider_{};
 
+  void SetUp() override {
     json::object app_json{{"auto_fetch_config", false},
                           {"verbose", "info"},
                           {"url_base", "to_set"}};
-    write_json_file(temp_dir.path / "application.json", app_json);
+    write_json_file(temp_dir_.path / "application.json", app_json);
 
     json::object httpclient_json{{"threads_num", 1},
                                  {"ssl_method", "tlsv12_client"},
@@ -314,37 +306,37 @@ protected:
                                  {"certificates", json::array{}},
                                  {"certificate_files", json::array{}},
                                  {"proxy_pool", json::array{}}};
-    write_json_file(temp_dir.path / "httpclient_config.json", httpclient_json);
+    write_json_file(temp_dir_.path / "httpclient_config.json",
+                    httpclient_json);
 
     json::object ioc_json{{"threads_num", 1}, {"name", "test-ioc"}};
-    write_json_file(temp_dir.path / "ioc_config.json", ioc_json);
+    write_json_file(temp_dir_.path / "ioc_config.json", ioc_json);
 
-  certctrl::CliParams params;
-  params.subcmd = "login";
-  params.config_dirs = {temp_dir.path};
+    certctrl::CliParams params;
+    params.subcmd = "login";
+    params.config_dirs = {temp_dir_.path};
 
-  auto vm = boost::program_options::variables_map{};
-  auto positionals = std::vector<std::string>{"login"};
-  auto unrecognized = std::vector<std::string>{};
-  cli_ctx_ptr_ = std::make_unique<certctrl::CliCtx>(
-    std::move(vm), std::move(positionals), std::move(unrecognized),
-    std::move(params));
+    boost::program_options::variables_map vm;
+    std::vector<std::string> positionals{"login"};
+    std::vector<std::string> unrecognized;
+    static certctrl::CliCtx cli_ctx(std::move(vm), std::move(positionals),
+                                    std::move(unrecognized),
+                                    std::move(params));
 
-  std::vector<fs::path> config_paths{temp_dir.path};
-  std::vector<std::string> profiles;
+    std::vector<fs::path> config_paths{temp_dir_.path};
+    std::vector<std::string> profiles;
 
-  config_sources_ptr_ =
-    std::make_unique<cjj365::ConfigSources>(config_paths, profiles);
-  output_ptr_ = std::make_unique<customio::ConsoleOutputWithColor>(5);
+    static cjj365::ConfigSources config_sources(config_paths, profiles);
+    static customio::ConsoleOutputWithColor output(5);
 
     auto injector = di::make_injector(
-    di::bind<cjj365::ConfigSources>().to(*config_sources_ptr_),
+        di::bind<cjj365::ConfigSources>().to(config_sources),
         di::bind<cjj365::IHttpclientConfigProvider>()
             .to<cjj365::HttpclientConfigProviderFile>(),
         di::bind<cjj365::IIocConfigProvider>()
             .to<cjj365::IocConfigProviderFile>(),
-    di::bind<customio::IOutput>().to(*output_ptr_),
-    di::bind<certctrl::CliCtx>().to(*cli_ctx_ptr_),
+        di::bind<customio::IOutput>().to(output),
+        di::bind<certctrl::CliCtx>().to(cli_ctx),
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>()
             .in(di::singleton),
@@ -358,105 +350,13 @@ protected:
     config_provider_ = &inj.create<certctrl::ICertctrlConfigProvider &>();
     config_provider_->get().base_url = server_->base_url();
     handler_ = inj.create<std::shared_ptr<certctrl::LoginHandler>>();
-    io_context_manager_ = &inj.create<cjj365::IIoContextManager &>();
-    http_client_manager_ = &inj.create<client_async::HttpClientManager &>();
   }
-  void TearDown() override {
-    handler_.reset();
 
-    if (server_ != nullptr) {
-      server_->stop();
-      server_ = nullptr;
-    }
+  void TearDown() override {}
 
-    if (http_client_manager_ != nullptr) {
-      http_client_manager_->stop();
-      http_client_manager_ = nullptr;
-    }
-
-    if (io_context_manager_ != nullptr) {
-      io_context_manager_->stop();
-      io_context_manager_ = nullptr;
-    }
-
-    injector_holder_.reset();
-    config_provider_ = nullptr;
-    config_sources_ptr_.reset();
-    cli_ctx_ptr_.reset();
-    output_ptr_.reset();
-  }
+  const fs::path &config_dir() const { return temp_dir_.path; }
+  certctrl::LoginHandler &handler() { return *handler_; }
+  TestDeviceServer &server() { return *server_; }
 };
 
-TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
-  misc::ThreadNotifier notifier(5000);
-
-  std::optional<monad::MyVoidResult> start_result;
-  handler_->start().run([&](auto r) {
-    start_result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-  ASSERT_TRUE(start_result.has_value());
-  ASSERT_FALSE(start_result->is_err()) << start_result->error();
-
-  EXPECT_GE(server_->poll_calls(), 1);
-  EXPECT_EQ(server_->registration_calls(), 0);
-
-  std::optional<monad::MyVoidResult> reg_result;
-  handler_->register_device().run([&](auto r) {
-    reg_result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-  ASSERT_TRUE(reg_result.has_value());
-  ASSERT_FALSE(reg_result->is_err()) << reg_result->error();
-
-  auto record = server_->wait_for_registration(std::chrono::seconds(2));
-  ASSERT_TRUE(record.has_value()) << "registration payload missing";
-  EXPECT_EQ(server_->registration_calls(), 1);
-  EXPECT_EQ(server_->start_calls(), 1);
-  EXPECT_EQ(record->authorization,
-            std::string("Bearer ") + server_->access_token());
-
-  EXPECT_EQ(record->target,
-            "/apiv1/users/" + server_->expected_user_id() + "/devices");
-  ASSERT_TRUE(record->payload.if_contains("device_public_id"));
-  auto device_id = record->payload.at("device_public_id").as_string();
-  EXPECT_TRUE(is_valid_device_id(device_id)) << device_id;
-
-  ASSERT_TRUE(record->payload.if_contains("dev_pk"));
-  auto dev_pk_b64 = record->payload.at("dev_pk").as_string();
-  EXPECT_FALSE(dev_pk_b64.empty());
-
-  EXPECT_FALSE(record->payload.if_contains("access_token"));
-  EXPECT_FALSE(record->payload.if_contains("refresh_token"));
-
-  auto pk_path = temp_dir.path / "dev_pk.bin";
-  auto sk_path = temp_dir.path / "dev_sk.bin";
-  EXPECT_TRUE(fs::exists(pk_path));
-  EXPECT_TRUE(fs::exists(sk_path));
-
-  auto access_path = temp_dir.path / "access_token.txt";
-  auto refresh_path = temp_dir.path / "refresh_token.txt";
-  EXPECT_TRUE(fs::exists(access_path));
-  EXPECT_TRUE(fs::exists(refresh_path));
-
-  //   auto &http_manager = injector.create<client_async::HttpClientManager
-  //   &>(); auto &io_manager = injector.create<cjj365::IoContextManager &>();
-  //   http_manager.stop();
-  //   io_manager.stop();
-  //   server.stop();
-  //   cjj365::ConfigSources::instance_count.store(0);
-}
-
-// int main(int argc, char **argv) {
-//   ::testing::InitGoogleTest(&argc, argv);
-//   int code = RUN_ALL_TESTS();
-//   io_context_manager->stop();
-//   http_client_manager->stop();
-//   // ✅ Global teardown: runs exactly once after all tests
-//   // e.g., close logs, stop servers, free singletons, etc.
-//   // my_global_cleanup();
-
-//   return code;
-// }
+} // namespace login_handler_test

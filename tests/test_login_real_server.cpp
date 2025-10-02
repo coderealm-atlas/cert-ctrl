@@ -10,6 +10,7 @@
 #include "client_ssl_ctx.hpp"
 #include "http_client_config_provider.hpp"
 #include "http_client_manager.hpp"
+#include "include/login_helper.hpp"
 #include "login_helper.hpp"
 #include "misc_util.hpp"
 #include "test_injector.hpp"
@@ -25,7 +26,8 @@ protected:
   std::unique_ptr<cjj365::ClientSSLContext> client_ssl_ctx_;
   std::string base_url_;
   std::shared_ptr<void> injector_holder_;
-  misc::ThreadNotifier notifier{5000};
+  misc::ThreadNotifier notifier_{180000};
+  std::string session_cookie_;
 
   void SetUp() override {
     // Minimal inline config provider using a temp directory config file pattern
@@ -60,6 +62,17 @@ protected:
     auto &inj = *real_inj;
 
     http_client_mgr_ = &inj.create<client_async::HttpClientManager &>();
+    std::optional<monad::Result<data::LoginSuccess, monad::Error>> login_r;
+    testutil::login_io(*http_client_mgr_, base_url_, testutil::login_email(),
+                       testutil::login_password())
+        .run([&](auto r) {
+          login_r = std::move(r);
+          notifier_.notify();
+        });
+    notifier_.waitForNotification();
+    ASSERT_FALSE(login_r->is_err()) << "login failed: " << login_r->error();
+    session_cookie_ = login_r->value().session_cookie;
+    ASSERT_FALSE(session_cookie_.empty()) << "missing session cookie";
   }
   void TearDown() override {}
 };
@@ -67,13 +80,13 @@ protected:
 TEST_F(RealServerLoginFixture, LoginAndStatus) {
   std::string base = testutil::url_base();
   std::optional<testutil::loginSuccessResult> r;
-  auto io = testutil::login_io(*http_client_mgr_, base, testutil::LOGIN_EMAIL,
-                               testutil::LOGIN_PASSWORD);
+  auto io = testutil::login_io(*http_client_mgr_, base, testutil::login_email(),
+                               testutil::login_password());
   io.run([&](auto rr) {
     r = std::move(rr);
-    notifier.notify();
+    notifier_.notify();
   });
-  notifier.waitForNotification();
+  notifier_.waitForNotification();
   ASSERT_FALSE(r->is_err()) << "Login failed: " << r->error();
   ASSERT_FALSE(r->value().user.email.empty());
   ASSERT_FALSE(r->value().session_cookie.empty());

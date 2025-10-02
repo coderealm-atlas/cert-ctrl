@@ -113,18 +113,21 @@ target_link_libraries(test_login_real_server PRIVATE
 gtest_discover_tests(test_login_real_server DISCOVERY_TIMEOUT 60)
 
 # Monadic device registration/login integration test using HttpClientManager + IO monad
-add_executable(test_device_registration_monadic
-  test_device_registration_monadic.cpp
+add_executable(test_device_registration
+  test_device_registration.cpp
+  ${CMAKE_SOURCE_DIR}/src/login_handler.cpp
+  ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
+  ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${HTTP_CLIENT_SRCS}
 )
-target_compile_features(test_device_registration_monadic PRIVATE cxx_std_20)
-target_include_directories(test_device_registration_monadic PRIVATE
+target_compile_features(test_device_registration PRIVATE cxx_std_20)
+target_include_directories(test_device_registration PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/external/http_client/include
   ${CMAKE_SOURCE_DIR}/external/http_client
   ${CMAKE_SOURCE_DIR}/tests/include
 )
-target_link_libraries(test_device_registration_monadic PRIVATE
+target_link_libraries(test_device_registration PRIVATE
   GTest::gtest_main
   Boost::program_options
   Boost::json
@@ -142,7 +145,7 @@ target_link_libraries(test_device_registration_monadic PRIVATE
   unofficial-sodium::sodium
 )
 
-gtest_discover_tests(test_device_registration_monadic DISCOVERY_TIMEOUT 60)
+gtest_discover_tests(test_device_registration DISCOVERY_TIMEOUT 60)
 
 # Updates polling handler test
 add_executable(test_updates_polling_handler
