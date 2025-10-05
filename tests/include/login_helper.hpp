@@ -76,22 +76,22 @@ inline std::string url_base() {
   return std::string("https://test-api.cjj365.cc"); // 8080 default
 }
 
-inline std::string first_cookie_pair(
-    const monad::HttpExchangePtr<http::request<http::string_body>,
-                                 http::response<http::string_body>> &ex) {
-  if (!ex->response)
-    return {};
-  for (auto it = ex->response->find(http::field::set_cookie);
-       it != ex->response->end(); ++it) {
-    std::string raw = std::string(it->value());
-    auto pos = raw.find(';');
-    if (pos != std::string::npos)
-      raw = raw.substr(0, pos);
-    if (!raw.empty())
-      return raw;
-  }
-  return {};
-}
+// inline std::string first_cookie_pair(
+//     const monad::HttpExchangePtr<http::request<http::string_body>,
+//                                  http::response<http::string_body>> &ex) {
+//   if (!ex->response)
+//     return {};
+//   for (auto it = ex->response->find(http::field::set_cookie);
+//        it != ex->response->end(); ++it) {
+//     std::string raw = std::string(it->value());
+//     auto pos = raw.find(';');
+//     if (pos != std::string::npos)
+//       raw = raw.substr(0, pos);
+//     if (!raw.empty())
+//       return raw;
+//   }
+//   return {};
+// }
 
 inline LoginSuccessIO login_io(client_async::HttpClientManager &mgr,
                                const std::string &base_url,
@@ -110,7 +110,10 @@ inline LoginSuccessIO login_io(client_async::HttpClientManager &mgr,
       })
       .then(http_request_io<PostJsonTag>(mgr))
       .then([&](auto ex) {
-        auto auth_cookie = ex->getResponseCookie().value_or("");
+        // Get the cookie value and construct the full cookie string
+        auto cookie_value = ex->getResponseCookie().value_or("");
+        auto auth_cookie = cookie_value.empty() ? std::string{} 
+                                                : "cjj365=" + cookie_value;
         auto r =
             ex->template parseJsonResponseResult<LoginResponseResult>().map(
                 [auth_cookie](auto api_resp) {
@@ -142,27 +145,108 @@ device_start_io(client_async::HttpClientManager &mgr,
       .then(http_request_io<PostJsonTag>(mgr))
       .then([](auto ex) {
         return StartRespIO::from_result(
-            ex->template parseJsonResponse<data::deviceauth::StartResp>());
+    ex->template parseJsonDataResponse<data::deviceauth::StartResp>());
       });
 }
 
 inline monad::IO<data::deviceauth::PollResp>
 device_poll_io(client_async::HttpClientManager &mgr,
-               const std::string &base_url, const std::string &device_code) {
+               const std::string &base_url, const std::string &device_code,
+               std::optional<int64_t> device_id = std::nullopt) {
   using PollRespResult = monad::MyResult<data::deviceauth::PollResp>;
   using PollRespIO = monad::IO<data::deviceauth::PollResp>;
 
   std::string url = base_url + "/auth/device";
   return http_io<PostJsonTag>(url)
       .map([&](auto ex) {
-        ex->setRequestJsonBody(json::object{{"action", "device_poll"},
-                                            {"device_code", device_code}});
+        json::object body{{"action", "device_poll"},
+                          {"device_code", device_code}};
+        if (device_id.has_value()) {
+          body.emplace("device_id", *device_id);
+        }
+        ex->setRequestJsonBody(std::move(body));
         return ex;
       })
       .then(http_request_io<PostJsonTag>(mgr))
       .then([](auto ex) {
         return PollRespIO::from_result(
-            ex->template parseJsonResponse<data::deviceauth::PollResp>()
+            ex->template parseJsonDataResponse<data::deviceauth::PollResp>()
+        );
+      });
+}
+
+inline monad::IO<data::deviceauth::VerifyResp>
+device_verify_io(client_async::HttpClientManager &mgr,
+                 const std::string &base_url, const std::string &cookie,
+                 const std::string &user_code, bool approve = true) {
+  using VerifyRespIO = monad::IO<data::deviceauth::VerifyResp>;
+
+  std::string url = base_url + "/auth/device";
+  return http_io<PostJsonTag>(url)
+      .map([&, user_code, approve](auto ex) {
+        json::object body{{"action", "device_verify"},
+                          {"user_code", user_code},
+                          {"approve", approve}};
+        ex->setRequestJsonBody(std::move(body));
+        ex->request.set(http::field::cookie, cookie);
+        return ex;
+      })
+      .then(http_request_io<PostJsonTag>(mgr))
+      .then([](auto ex) {
+        return VerifyRespIO::from_result(
+            ex->template parseJsonDataResponse<data::deviceauth::VerifyResp>()
+        );
+      });
+}
+
+// Register device with fingerprint
+inline monad::IO<json::object> device_register_io(
+    client_async::HttpClientManager &mgr,
+    const std::string &base_url,
+    const std::string &access_token,
+    int64_t timestamp) {
+  using RegisterIO = monad::IO<json::object>;
+
+  std::string url = base_url + "/auth/device";
+  return http_io<PostJsonTag>(url)
+      .map([access_token, timestamp](auto ex) {
+        ex->setRequestJsonBody(json::object{
+            {"action", "device_register"},
+            {"platform", "linux"},
+            {"model", "test_x86_64"},
+            {"app_version", "1.0.0-test"},
+            {"device_name", "Test Device " + std::to_string(timestamp)},
+            {"fp_version", 1}
+        });
+        ex->request.set(http::field::authorization, "Bearer " + access_token);
+        return ex;
+      })
+      .then(http_request_io<PostJsonTag>(mgr))
+      .then([](auto ex) {
+        return RegisterIO::from_result(
+            ex->template parseJsonDataResponse<json::object>()
+        );
+      });
+}
+
+// Query user devices to verify registration
+inline monad::IO<json::array> list_user_devices_io(
+    client_async::HttpClientManager &mgr,
+    const std::string &base_url,
+    const std::string &cookie,
+    int64_t user_id) {
+  using DeviceListIO = monad::IO<json::array>;
+
+  std::string url = base_url + "/apiv1/users/" + std::to_string(user_id) + "/devices";
+  return http_io<monad::GetStringTag>(url)
+      .map([cookie](auto ex) {
+        ex->request.set(http::field::cookie, cookie);
+        return ex;
+      })
+      .then(http_request_io<monad::GetStringTag>(mgr))
+      .then([](auto ex) {
+        return DeviceListIO::from_result(
+            ex->template parseJsonDataResponse<json::array>()
         );
       });
 }

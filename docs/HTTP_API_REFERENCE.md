@@ -102,21 +102,152 @@ Typical methods and semantics:
 - GET /apiv1/users/:user_id/devices/:device_id — Device detail
 - DELETE /apiv1/users/:user_id/devices/:device_id — Remove device
 
-Certificates and CAs:
+Certificates:
 - GET /.../devices/:device_id/certificates — List assigned certificates
 - POST /.../devices/:device_id/certificates — Assign/create certificate for device
 - GET /.../devices/:device_id/certificates/:certificate_id — Detail
 - DELETE /.../devices/:device_id/certificates/:certificate_id — Unassign/remove
-- GET /.../devices/:device_id/cas — List device CAs
-- POST /.../devices/:device_id/cas — Add CA
-- DELETE /.../devices/:device_id/cas/:ca_id — Remove CA
 
-Install configuration:
+CAs (Certificate Authorities):
+- GET /.../devices/:device_id/cas — List CAs associated with device
+- POST /.../devices/:device_id/cas — Associate CA with device
+- DELETE /.../devices/:device_id/cas/:ca_id — Disassociate CA from device
+
+Install Configuration:
 - GET /.../devices/:device_id/install-config — Current install config DTO
 - PUT /.../devices/:device_id/install-config — Update/replace install config
 - GET /.../devices/:device_id/install-config-histories — List history versions
 - POST /.../devices/:device_id/install-config/restore — Restore from history
   - Body: `{ "version": number, "change_note": string }`
+
+### Examples
+
+#### Device Management
+
+- List user's devices:
+  - GET /apiv1/users/1/devices?limit=20&offset=0
+  - Response 200:
+    ```json
+    {
+      "data": [
+        {
+          "id": 123,
+          "user_id": 1,
+          "device_public_id": "dev_abc123xyz",
+          "status": "ACTIVE",
+          "created_at": 1736900000000
+        }
+      ]
+    }
+    ```
+
+- Register new device:
+  - POST /apiv1/users/1/devices
+  - Body:
+    ```json
+    {
+      "device_public_id": "dev_new456",
+      "device_secret_hash": "...",
+      "fp_hash": "...",
+      "fp_version": "1.0"
+    }
+    ```
+  - Response 200:
+    ```json
+    {
+      "data": {
+        "id": 124,
+        "user_id": 1,
+        "device_public_id": "dev_new456",
+        "status": "ACTIVE",
+        "created_at": 1736900100000
+      }
+    }
+    ```
+
+#### Certificate Assignment
+
+- List certificates assigned to device:
+  - GET /apiv1/users/1/devices/123/certificates
+  - Response 200:
+    ```json
+    {
+      "data": [
+        {
+          "id": 1001,
+          "domain_name": "app.example.com",
+          "sans": ["app.example.com", "*.app.example.com"],
+          "self_signed": false,
+          "verified": true,
+          "serial_number": "04:A1:B2:C3:...",
+          "created_at": 1736900000000
+        }
+      ]
+    }
+    ```
+
+- Assign certificate to device:
+  - POST /apiv1/users/1/devices/123/certificates
+  - Body:
+    ```json
+    {
+      "cert_id": 2
+    }
+    ```
+  - Response 204: No Content (success)
+
+- Unassign certificate from device:
+  - DELETE /apiv1/users/1/devices/123/certificates/2
+  - Response 204: No Content (success)
+
+Notes:
+- Certificate assignment deploys the certificate to the device for use
+- Devices receive encrypted private keys via the device self certificates endpoint
+- Multiple devices can be assigned the same certificate (load balancer scenario)
+
+#### CA Association
+
+- List CAs associated with device:
+  - GET /apiv1/users/1/devices/123/cas
+  - Response 200:
+    ```json
+    {
+      "data": [
+        {
+          "id": 7,
+          "user_id": 1,
+          "name": "Development CA",
+          "algorithm": "ECDSA",
+          "key_size": 256,
+          "country": "CN",
+          "organization": "MyOrg",
+          "common_name": "Dev Root CA",
+          "status": "ACTIVE",
+          "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+          "created_at": 1736800000000
+        }
+      ]
+    }
+    ```
+
+- Associate CA with device:
+  - POST /apiv1/users/1/devices/123/cas
+  - Body:
+    ```json
+    {
+      "ca_id": 7
+    }
+    ```
+  - Response 204: No Content (success)
+
+- Disassociate CA from device:
+  - DELETE /apiv1/users/1/devices/123/cas/7
+  - Response 204: No Content (success)
+
+Notes:
+- CA association allows devices to trust certificates issued by that CA
+- The CA certificate PEM is included in list responses for client trust store installation
+- Devices can have multiple CAs associated (useful for CA rotation)
 
 Install config DTO (server-minimal; client renders platform-specific scripts):
 ```
@@ -326,17 +457,51 @@ Auth: Requires user session.
 - Create self CA (user-owned CA authority):
   - POST /apiv1/users/1/cas
   - Body:
-    {
-      "name": "dev-root",
-      "common_name": "Example Dev Root CA",
-      "organization": "Example Inc",
-      "country": "US",
-      "state": "CA",
-      "locality": "San Jose",
-      "valid_days": 3650
-    }
+  {
+  	"name": "first ca",
+  	"algorithm": "ECDSA",
+  	"key_size": 256,
+  	"curve_name": "prime256v1",
+  	"country": "CN",
+  	"organization": "org",
+  	"organizational_unit": "",
+  	"common_name": "common name",
+  	"state": "",
+  	"locality": "",
+  	"valid_days": 3650,
+  	"max_path_length": 0,
+  	"key_usage": "keyCertSign,cRLSign"
+  }
   - Response 200:
-    { "data": { "id": 7, "user_id": 1, "name": "dev-root", "common_name": "Example Dev Root CA" } }
+    {
+    	"data": {
+    		"id": 1,
+    		"user_id": 1,
+    		"name": "first ca",
+    		"algorithm": "ECDSA",
+    		"key_size": 256,
+    		"curve_name": null,
+    		"country": "CN",
+    		"organization": "org",
+    		"organizational_unit": null,
+    		"common_name": "common name",
+    		"state": null,
+    		"locality": null,
+    		"valid_days": 3650,
+    		"not_before": 0,
+    		"not_after": 0,
+    		"serial_number": "0199a9cfdf723003",
+    		"enc_scheme": 1,
+    		"ca_certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBvjhjDJ/\n-----END CERTIFICATE-----\n",
+    		"status": "ACTIVE",
+    		"created_at": 1759490596000,
+    		"updated_at": 1759490596000,
+    		"issued_cert_count": 0,
+    		"last_used_at": null,
+    		"max_path_length": 0,
+    		"key_usage": "keyCertSign,cRLSign"
+    	}
+    }
 
 - Issue certificate from self CA:
   - POST /apiv1/users/1/cas/7/issue

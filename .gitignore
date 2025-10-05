@@ -32,3 +32,4 @@ Thumbs.db
 Testing/
 t.json
 .vscode/settings.json
+db/

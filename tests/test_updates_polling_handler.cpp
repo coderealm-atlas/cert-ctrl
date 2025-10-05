@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "include/login_helper.hpp"
+#include "include/api_test_helper.hpp"
 #include "login_helper.hpp"
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
@@ -243,123 +244,354 @@ protected:
 
 TEST_F(UpdatesRealServerFixture, DeviceRegisterThenPollUpdates) {
   using namespace std::chrono_literals;
-  // Login
-  misc::ThreadNotifier login_notifier(10000);
-  // std::optional<monad::Result<data::LoginSuccess, monad::Error>> login_r;
-  // testutil::login_io(*http_mgr_, base_url_, testutil::login_email(),
-  //                    testutil::login_password())
-  //     .run([&](auto r) {
-  //       login_r = std::move(r);
-  //       login_notifier.notify();
-  //     });
-  // login_notifier.waitForNotification();
-  // if (!login_r || login_r->is_err()) {
-  //   GTEST_SKIP() << "login failed: "
-  //                << (!login_r ? "no result" : login_r->error().what);
-  // }
-  // auto session_cookie = login_r->value().session_cookie;
-  // if (session_cookie.empty())
-  //   GTEST_SKIP() << "missing session cookie";
-  // device_start
+  
+  // Get user_id from login
+  int64_t user_id = 0;
+  {
+    misc::ThreadNotifier login_notifier(5000);
+    std::optional<monad::Result<data::LoginSuccess, monad::Error>> login_r;
+    testutil::login_io(*http_mgr_, base_url_, testutil::login_email(),
+                       testutil::login_password())
+        .run([&](auto r) {
+          login_r = std::move(r);
+          login_notifier.notify();
+        });
+    login_notifier.waitForNotification();
+    if (!login_r || login_r->is_err()) {
+      GTEST_SKIP() << "login failed: "
+                   << (!login_r ? "no result" : login_r->error().what);
+    }
+    user_id = login_r->value().user.id;
+    std::cout << "Logged in as user_id=" << user_id << std::endl;
+  }
+  
+  // Fetch existing device list to get device_id for polling/assignment
+  int64_t device_id = 0;
+  {
+    misc::ThreadNotifier devices_notifier(5000);
+    std::optional<monad::Result<boost::json::array, monad::Error>> devices_r;
+    testutil::list_devices_io(*http_mgr_, base_url_, session_cookie_, user_id)
+        .run([&](auto r) {
+          devices_r = std::move(r);
+          devices_notifier.notify();
+        });
+    devices_notifier.waitForNotification();
+    if (!devices_r || devices_r->is_err() || devices_r->value().empty()) {
+      GTEST_SKIP() << "no devices found for user";
+    }
+    const auto &devices = devices_r->value();
+    device_id = devices.at(0).as_object().at("id").as_int64();
+    std::cout << "Using device_id=" << device_id << " for polling" << std::endl;
+  }
+
+  // Start device authorization flow
   misc::ThreadNotifier start_notifier(5000);
-  // std::optional<monad::Result<testutil::DeviceStartData, monad::Error>> start_r;
-  // testutil::device_start_io(*http_mgr_, base_url_, session_cookie_)
-  //     .run([&](auto r) {
-  //       start_r = std::move(r);
-  //       start_notifier.notify();
-  //     });
-  // start_notifier.waitForNotification();
-  // if (!start_r || start_r->is_err()) {
-  //   GTEST_SKIP() << "device_start failed: "
-  //                << (!start_r ? "no result" : start_r->error().what);
-  // }
-  // auto device_code = start_r->value().device_code;
-  // if (device_code.empty())
-  //   GTEST_SKIP() << "missing device_code";
-  // std::string access_token;
-  // std::string refresh_token;
-  // std::string last_status;
-  // for (int attempt = 0; attempt < 5; ++attempt) {
-  //   misc::ThreadNotifier poll_notifier(5000);
-  //   std::optional<monad::Result<testutil::DevicePollData, monad::Error>> poll_r;
-  //   testutil::device_poll_io(*http_mgr_, base_url_, device_code)
-  //       .run([&](auto r) {
-  //         poll_r = std::move(r);
-  //         poll_notifier.notify();
-  //       });
-  //   poll_notifier.waitForNotification();
-  //   if (!poll_r || poll_r->is_err()) {
-  //     last_status = poll_r && poll_r->is_err() ? poll_r->error().what : "error";
-  //     break;
-  //   }
-  //   last_status = poll_r->value().status;
-  //   if (!poll_r->value().access_token.empty()) {
-  //     access_token = poll_r->value().access_token;
-  //     refresh_token = poll_r->value().refresh_token;
-  //     break;
-  //   }
-  //   std::this_thread::sleep_for(1500ms);
-  // }
-  // if (access_token.empty()) {
-  //   GTEST_SKIP() << "device_poll did not yield access token; last status="
-  //                << last_status;
-  // }
-  // auto write_text = [](const std::filesystem::path &p, const std::string &s) {
-  //   std::ofstream ofs(p, std::ios::trunc);
-  //   ofs << s;
-  // };
-  // write_text(tmp_root_ / "access_token.txt", access_token);
-  // if (!refresh_token.empty())
-  //   write_text(tmp_root_ / "refresh_token.txt", refresh_token);
-  // ::setenv("DEVICE_ACCESS_TOKEN", access_token.c_str(), 1);
-  // // Poll updates
-  // misc::ThreadNotifier updates_notifier(5000);
-  // std::optional<monad::MyVoidResult> updates_r;
-  // handler_->start().run([&](auto r) {
-  //   updates_r = std::move(r);
-  //   updates_notifier.notify();
-  // });
-  // updates_notifier.waitForNotification();
-  // if (!updates_r) {
-  //   GTEST_SKIP() << "no result from updates handler";
-  // }
-  // if (updates_r->is_err()) {
-  //   if (updates_r->error().code == 401 || updates_r->error().code == 403) {
-  //     FAIL() << "updates polling auth failure: " << updates_r->error().what;
-  //   } else {
-  //     GTEST_SKIP() << "updates handler error: code=" << updates_r->error().code
-  //                  << " msg=" << updates_r->error().what;
-  //   }
-  // }
-  // // Validate handler state for a successful single poll
-  // int status = handler_->last_http_status();
-  // EXPECT_TRUE(status == 200 || status == 204) << "unexpected status=" << status;
-  // if (status == 200) {
-  //   ASSERT_TRUE(handler_->last_updates().has_value());
-  //   const auto &resp = handler_->last_updates().value();
-  //   // Cursor should not be empty once we parsed a body with signals/cursor
-  //   EXPECT_FALSE(handler_->last_cursor().empty());
-  //   // Basic structural sanity
-  //   EXPECT_GE(resp.data.cursor.size(), 0u);
-  //   // Counters should be consistent with the number of signals of each type
-  //   size_t counted_install = 0, counted_renewed = 0, counted_revoked = 0;
-  //   for (auto &sig : resp.data.signals) {
-  //     if (data::is_install_updated(sig))
-  //       ++counted_install;
-  //     else if (data::is_cert_renewed(sig))
-  //       ++counted_renewed;
-  //     else if (data::is_cert_revoked(sig))
-  //       ++counted_revoked;
-  //   }
-  //   EXPECT_EQ(handler_->install_updated_count(), counted_install);
-  //   EXPECT_EQ(handler_->cert_renewed_count(), counted_renewed);
-  //   EXPECT_EQ(handler_->cert_revoked_count(), counted_revoked);
-  // } else if (status == 204) {
-  //   EXPECT_FALSE(handler_->last_updates().has_value());
-  // }
-  // EXPECT_TRUE(handler_->parse_error().empty())
-  //     << "parse error: " << handler_->parse_error();
-  // SUCCEED();
+  std::optional<monad::Result<data::deviceauth::StartResp, monad::Error>> start_r;
+  testutil::device_start_io(*http_mgr_, base_url_, session_cookie_)
+      .run([&](auto r) {
+        start_r = std::move(r);
+        start_notifier.notify();
+      });
+  start_notifier.waitForNotification();
+  if (!start_r || start_r->is_err()) {
+    GTEST_SKIP() << "device_start failed: "
+                 << (!start_r ? "no result" : start_r->error().what);
+  }
+  auto device_code = start_r->value().device_code;
+  auto user_code = start_r->value().user_code;
+  if (device_code.empty())
+    GTEST_SKIP() << "missing device_code";
+  
+  std::cout << "Device authorization started, user_code=" << user_code << std::endl;
+  
+  // Verify device authorization (simulates user approval)
+  misc::ThreadNotifier verify_notifier(5000);
+  std::optional<monad::Result<data::deviceauth::VerifyResp, monad::Error>> verify_r;
+  testutil::device_verify_io(*http_mgr_, base_url_, session_cookie_, user_code, true)
+      .run([&](auto r) {
+        verify_r = std::move(r);
+        verify_notifier.notify();
+      });
+  verify_notifier.waitForNotification();
+  if (!verify_r || verify_r->is_err()) {
+    GTEST_SKIP() << "device_verify failed: "
+                 << (!verify_r ? "no result" : verify_r->error().what);
+  }
+  
+  std::cout << "Device verified, status=" << verify_r->value().status << std::endl;
+  
+  // Poll for tokens
+  std::string access_token;
+  std::string refresh_token;
+  std::string registration_code;
+  std::string last_status;
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    misc::ThreadNotifier poll_notifier(5000);
+    std::optional<monad::Result<data::deviceauth::PollResp, monad::Error>> poll_r;
+    testutil::device_poll_io(*http_mgr_, base_url_, device_code, device_id)
+        .run([&](auto r) {
+          poll_r = std::move(r);
+          poll_notifier.notify();
+        });
+    poll_notifier.waitForNotification();
+    if (!poll_r || poll_r->is_err()) {
+      last_status = poll_r && poll_r->is_err() ? poll_r->error().what : "error";
+      break;
+    }
+    const auto &poll_resp = poll_r->value();
+    last_status = poll_resp.status;
+    if (poll_resp.access_token && !poll_resp.access_token->empty()) {
+      access_token = *poll_resp.access_token;
+      if (poll_resp.refresh_token && !poll_resp.refresh_token->empty()) {
+        refresh_token = *poll_resp.refresh_token;
+      }
+      break;
+    }
+    if (poll_resp.registration_code && !poll_resp.registration_code->empty()) {
+      registration_code = *poll_resp.registration_code;
+      break;
+    }
+    std::this_thread::sleep_for(1500ms);
+  }
+  if (access_token.empty()) {
+    if (!registration_code.empty()) {
+      GTEST_SKIP() << "device_poll returned registration_code; updates test "
+                      "needs registration flow";
+    }
+    GTEST_SKIP() << "device_poll did not yield access token; last status="
+                 << last_status;
+  }
+  
+  std::cout << "Device access token obtained" << std::endl;
+  
+  // Generate unique timestamp for naming
+  auto timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+  
+  // NOTE: The device is already registered during the OAuth device authorization flow.
+  // The access_token should contain the device_id claim. We'll use this token
+  // directly for the updates polling endpoint.
+  
+  std::cout << "Found device_id=" << device_id << std::endl;
+  
+  // Step 1: Create self-CA (needed for immediate cert issuance without event producer)
+  std::string ca_name = "test-ca-" + std::to_string(timestamp);
+  std::cout << "Creating self-CA..." << std::endl;
+  testutil::SelfCAInfo ca_info;
+  {
+    misc::ThreadNotifier ca_notifier(10000);
+    std::optional<monad::Result<testutil::SelfCAInfo, monad::Error>> ca_r;
+    testutil::create_self_ca_io(*http_mgr_, base_url_, session_cookie_, user_id,
+                                ca_name, "Test CA")
+        .run([&](auto r) {
+          ca_r = std::move(r);
+          ca_notifier.notify();
+        });
+    ca_notifier.waitForNotification();
+    if (!ca_r || ca_r->is_err()) {
+      GTEST_SKIP() << "create_self_ca failed: "
+                   << (!ca_r ? "no result" : ca_r->error().what);
+    }
+    ca_info = ca_r->value();
+    std::cout << "Created self-CA id=" << ca_info.id << " name=" << ca_info.name << std::endl;
+  }
+  
+  // Step 2: Create ACME account with ca_id (for self-signed certificates)
+  std::cout << "Creating ACME account with ca_id=" << ca_info.id << "..." << std::endl;
+  std::string acct_name = "test-updates-" + std::to_string(timestamp);
+  testutil::AcmeAccountInfo acme_info;
+  {
+    misc::ThreadNotifier acme_notifier(10000);
+    std::optional<monad::Result<testutil::AcmeAccountInfo, monad::Error>> acme_r;
+    testutil::create_acme_account_io(*http_mgr_, base_url_, session_cookie_, user_id,
+                                    acct_name, "test@example.com", "letsencrypt", ca_info.id)
+        .run([&](auto r) {
+          acme_r = std::move(r);
+          acme_notifier.notify();
+        });
+    acme_notifier.waitForNotification();
+    if (!acme_r || acme_r->is_err()) {
+      GTEST_SKIP() << "create_acme_account failed: "
+                   << (!acme_r ? "no result" : acme_r->error().what);
+    }
+    acme_info = acme_r->value();
+    std::cout << "Created ACME account id=" << acme_info.id << " name=" << acme_info.name 
+              << " with ca_id=" << ca_info.id << std::endl;
+  }
+  
+  // Step 3: Create certificate record
+  std::cout << "Creating certificate record..." << std::endl;
+  testutil::CertInfo cert_info;
+  {
+    misc::ThreadNotifier cert_notifier(10000);
+    std::optional<monad::Result<testutil::CertInfo, monad::Error>> cert_r;
+    std::vector<std::string> sans{"*.test-updates.local"};
+    testutil::create_cert_record_io(*http_mgr_, base_url_, session_cookie_,
+                                    user_id, acme_info.id, "test-updates.local", sans)
+        .run([&](auto r) {
+          cert_r = std::move(r);
+          cert_notifier.notify();
+        });
+    cert_notifier.waitForNotification();
+    if (!cert_r || cert_r->is_err()) {
+      GTEST_SKIP() << "create_cert_record failed: "
+                   << (!cert_r ? "no result" : cert_r->error().what);
+    }
+    cert_info = cert_r->value();
+    std::cout << "Created certificate record id=" << cert_info.id 
+              << " domain=" << cert_info.domain_name << std::endl;
+  }
+  
+  // Step 4: Issue the certificate (for self-CA this is immediate, for public it's async)
+  std::cout << "Issuing certificate..." << std::endl;
+  {
+    misc::ThreadNotifier issue_notifier(10000);
+    std::optional<monad::Result<testutil::CertInfo, monad::Error>> issue_r;
+    testutil::issue_cert_io(*http_mgr_, base_url_, session_cookie_,
+                           user_id, cert_info.id, 7776000)
+        .run([&](auto r) {
+          issue_r = std::move(r);
+          issue_notifier.notify();
+        });
+    issue_notifier.waitForNotification();
+    if (!issue_r || issue_r->is_err()) {
+      GTEST_SKIP() << "issue_cert failed: "
+                   << (!issue_r ? "no result" : issue_r->error().what);
+    }
+    auto issued_cert = issue_r->value();
+    if (issued_cert.id > 0) {
+      cert_info = issued_cert;  // Update with issued cert info
+      std::cout << "Certificate issued id=" << cert_info.id 
+                << " serial=" << cert_info.serial_number << std::endl;
+    } else {
+      std::cout << "Certificate issuance started (async)" << std::endl;
+    }
+  }
+  
+  // Assign certificate to device
+  std::cout << "Assigning certificate to device..." << std::endl;
+  {
+    misc::ThreadNotifier assign_notifier(10000);
+    std::optional<monad::Result<void, monad::Error>> assign_r;
+    testutil::assign_cert_to_device_io(*http_mgr_, base_url_, session_cookie_,
+                                       user_id, device_id, cert_info.id)
+        .run([&](auto r) {
+          assign_r = std::move(r);
+          assign_notifier.notify();
+        });
+    assign_notifier.waitForNotification();
+    ASSERT_TRUE(assign_r.has_value()) << "no result from assign_cert";
+    ASSERT_FALSE(assign_r->is_err()) << "assign_cert failed: " << assign_r->error();
+    std::cout << "Certificate assigned to device successfully" << std::endl;
+  }
+  
+  // Wait for server to generate update signals (max 2 seconds according to API docs)
+  std::cout << "Waiting 2.5 seconds for server to generate update signals..." << std::endl;
+  std::this_thread::sleep_for(2500ms);
+  
+  // Set device token for handler
+  ::setenv("DEVICE_ACCESS_TOKEN", access_token.c_str(), 1);
+  
+  // Poll for updates - should get signals about certificate assignment
+  std::cout << "Polling for updates..." << std::endl;
+  misc::ThreadNotifier updates_notifier(10000);
+  std::optional<monad::MyVoidResult> updates_r;
+  handler_->start().run([&](auto r) {
+    updates_r = std::move(r);
+    updates_notifier.notify();
+  });
+  updates_notifier.waitForNotification();
+  
+  ASSERT_TRUE(updates_r.has_value()) << "no result from updates handler";
+  
+  if (updates_r->is_err()) {
+    // Auth failures should not occur with properly registered device token
+    if (updates_r->error().code == 401 || updates_r->error().code == 403) {
+      FAIL() << "updates polling auth failure: " << updates_r->error().what;
+    }
+    // Other errors are acceptable (e.g., network issues, server issues)
+    GTEST_SKIP() << "updates handler error: code=" << updates_r->error().code
+                 << " msg=" << updates_r->error().what;
+  }
+  
+  // Validate handler state for a successful single poll
+  int status = handler_->last_http_status();
+  std::cout << "Updates polling returned status=" << status << std::endl;
+  EXPECT_TRUE(status == 200 || status == 204) << "unexpected status=" << status;
+  
+  if (status == 200) {
+    // Got signals
+    ASSERT_TRUE(handler_->last_updates().has_value());
+    const auto &resp = handler_->last_updates().value();
+    
+    // Cursor should be set (non-empty)
+    EXPECT_FALSE(handler_->last_cursor().empty())
+        << "cursor should be set after 200 response";
+    EXPECT_FALSE(resp.data.cursor.empty())
+        << "response cursor should not be empty";
+    
+    std::cout << "Cursor: " << resp.data.cursor << std::endl;
+    
+    // Counters should match signal types
+    size_t counted_install = 0, counted_renewed = 0, counted_revoked = 0;
+    for (auto &sig : resp.data.signals) {
+      if (data::is_install_updated(sig))
+        ++counted_install;
+      else if (data::is_cert_renewed(sig))
+        ++counted_renewed;
+      else if (data::is_cert_revoked(sig))
+        ++counted_revoked;
+    }
+    EXPECT_EQ(handler_->install_updated_count(), counted_install)
+        << "install.updated count mismatch";
+    EXPECT_EQ(handler_->cert_renewed_count(), counted_renewed)
+        << "cert.renewed count mismatch";
+    EXPECT_EQ(handler_->cert_revoked_count(), counted_revoked)
+        << "cert.revoked count mismatch";
+    
+    // Log signals for visibility
+    std::cout << "Received " << resp.data.signals.size() << " signals:\n";
+    for (auto &sig : resp.data.signals) {
+      std::cout << "  - type=" << sig.type 
+                << " ts_ms=" << sig.ts_ms 
+                << " ref=" << boost::json::serialize(sig.ref) << "\n";
+    }
+    
+    // We should have at least one install.updated signal from cert assignment
+    EXPECT_GT(counted_install, 0) 
+        << "Expected at least one install.updated signal after cert assignment";
+  } else if (status == 204) {
+    // No updates available - this might happen if signals haven't propagated yet
+    EXPECT_FALSE(handler_->last_updates().has_value())
+        << "should not have updates data on 204";
+    std::cout << "No updates (204), cursor=" << handler_->last_cursor() << std::endl;
+    std::cout << "Note: Signals may not have propagated yet" << std::endl;
+  }
+  
+  EXPECT_TRUE(handler_->parse_error().empty())
+      << "parse error: " << handler_->parse_error();
+  
+  // Cleanup: delete certificate, ACME account, and self-CA
+  std::cout << "Cleaning up test resources..." << std::endl;
+  {
+    misc::ThreadNotifier del_cert_notifier(5000);
+    testutil::delete_cert_io(*http_mgr_, base_url_, session_cookie_, user_id, cert_info.id)
+        .run([&](auto) { del_cert_notifier.notify(); });
+    del_cert_notifier.waitForNotification();
+    
+    misc::ThreadNotifier del_acme_notifier(5000);
+    testutil::delete_acme_account_io(*http_mgr_, base_url_, session_cookie_, user_id, acme_info.id)
+        .run([&](auto) { del_acme_notifier.notify(); });
+    del_acme_notifier.waitForNotification();
+    
+    misc::ThreadNotifier del_ca_notifier(5000);
+    testutil::delete_self_ca_io(*http_mgr_, base_url_, session_cookie_, user_id, ca_info.id)
+        .run([&](auto) { del_ca_notifier.notify(); });
+    del_ca_notifier.waitForNotification();
+    
+    std::cout << "Cleanup completed (cert, ACME account, CA)" << std::endl;
+  }
+  
+  SUCCEED();
 }
 
 } // namespace
