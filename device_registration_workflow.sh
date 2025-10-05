@@ -9,18 +9,26 @@
 # 2. Device authorization start (get device code)
 # 3. Device verification (user approves)
 # 4. Device polling (get access token)
-# 5. Device registration (register device with user)
+# 5. Device registration (register device with user, capture device_id)
 # 6. Device management (list, view registered devices)
+# 7. Error scenario checks (negative coverage)
+# 8. Device updates poll (/apiv1/devices/self/updates)
 
 set -e  # Exit on any error
 
 # Configuration
-SERVER_HOST="${SERVER_HOST:-localhost}"
-SERVER_PORT="${SERVER_PORT:-8081}"
-BASE_URL="http://${SERVER_HOST}:${SERVER_PORT}"
+SERVER_SCHEME="${SERVER_SCHEME:-https}"
+SERVER_HOST="${SERVER_HOST:-test-api.cjj365.cc}"
+SERVER_PORT="${SERVER_PORT:-}"
+if [[ -n "$SERVER_PORT" ]]; then
+    BASE_URL="${SERVER_SCHEME}://${SERVER_HOST}:${SERVER_PORT}"
+else
+    BASE_URL="${SERVER_SCHEME}://${SERVER_HOST}"
+fi
 DEVICE_AUTH_ENDPOINT="${BASE_URL}/auth/device"
 LOGIN_ENDPOINT="${BASE_URL}/auth/general"
 DEVICES_ENDPOINT_TEMPLATE="${BASE_URL}/apiv1/users/{user_id}/devices"
+DEVICE_UPDATES_ENDPOINT="${BASE_URL}/apiv1/devices/self/updates"
 
 # Colors for output
 RED='\033[0;31m'
@@ -96,6 +104,15 @@ ACCESS_TOKEN=""
 REFRESH_TOKEN=""
 USER_ID=""
 DEVICE_PUBLIC_ID=""
+REGISTERED_DEVICE_ID=""
+LAST_ACCESS_TOKEN=""
+LAST_REFRESH_TOKEN=""
+DEVICE_PLATFORM=""
+DEVICE_MODEL=""
+DEVICE_APP_VERSION=""
+DEVICE_NAME=""
+DEVICE_IP=""
+DEVICE_USER_AGENT=""
 
 # Function to make requests with proper authentication
 make_request() {
@@ -106,6 +123,13 @@ make_request() {
     
     local headers=()
     headers+=("-H" "Content-Type: application/json")
+
+    print_info "HTTP ${method} ${url}" >&2
+    if [[ -n "$data" ]]; then
+        print_debug "Request Body: $data" >&2
+    else
+        print_debug "Request Body: (empty)" >&2
+    fi
     
     case "$auth_type" in
         "session")
@@ -123,14 +147,38 @@ make_request() {
             ;;
     esac
     
+    local response=""
     if [[ "$method" == "GET" ]]; then
-        curl -s "${headers[@]}" "$url"
+        response=$(curl -s "${headers[@]}" "$url")
     elif [[ "$method" == "POST" ]]; then
-        curl -s -X POST "${headers[@]}" -d "$data" "$url"
+        response=$(curl -s -X POST "${headers[@]}" -d "$data" "$url")
     elif [[ "$method" == "PUT" ]]; then
-        curl -s -X PUT "${headers[@]}" -d "$data" "$url"
+        response=$(curl -s -X PUT "${headers[@]}" -d "$data" "$url")
     elif [[ "$method" == "DELETE" ]]; then
-        curl -s -X DELETE "${headers[@]}" "$url"
+        response=$(curl -s -X DELETE "${headers[@]}" "$url")
+    fi
+
+    if [[ -n "$response" ]]; then
+        print_debug "Response Body: $response" >&2
+    else
+        print_debug "Response Body: (empty)" >&2
+    fi
+
+    echo "$response"
+}
+
+preview_token() {
+    local token="$1"
+    local length=${2:-16}
+    if [[ -z "$token" ]]; then
+        echo "(empty)"
+        return 0
+    fi
+    local sanitized=${token//[$'\n\r\t']/}
+    if (( ${#sanitized} <= length )); then
+        echo "$sanitized"
+    else
+        echo "${sanitized:0:length}..."
     fi
 }
 
@@ -245,12 +293,74 @@ EOF
     print_success "Device metadata saved to: $metadata_file"
 }
 
+decode_jwt_payload() {
+    local token="$1"
+    if [[ -z "$token" ]]; then
+        return 1
+    fi
+
+    local payload=$(printf "%s" "$token" | cut -d'.' -f2)
+    if [[ -z "$payload" ]]; then
+        return 1
+    fi
+
+    payload=$(printf "%s" "$payload" | tr '_-' '/+')
+    local mod=$(( ${#payload} % 4 ))
+    if [[ $mod -ne 0 ]]; then
+        payload+=$(printf '=%.0s' $(seq 1 $((4 - mod))))
+    fi
+
+    local decoded
+    if ! decoded=$(printf "%s" "$payload" | base64 --decode 2>/dev/null); then
+        return 1
+    fi
+
+    printf "%s" "$decoded"
+    return 0
+}
+
+confirm_access_token_device_id() {
+    if [[ -z "$ACCESS_TOKEN" ]]; then
+        print_warning "Access token not available; skipping device_id claim verification" >&2
+        return 1
+    fi
+
+    if [[ -z "$REGISTERED_DEVICE_ID" ]]; then
+        print_warning "Registered device ID unavailable; cannot validate token claim" >&2
+        return 1
+    fi
+
+    local payload_json
+    if ! payload_json=$(decode_jwt_payload "$ACCESS_TOKEN"); then
+        print_error "Failed to decode access token payload" >&2
+        return 1
+    fi
+
+    print_debug "Access token payload JSON: $payload_json" >&2
+
+    local token_device_id
+    token_device_id=$(echo "$payload_json" | jq -r '.device_id // empty' 2>/dev/null)
+
+    if [[ -z "$token_device_id" ]]; then
+        print_error "Access token payload missing device_id claim" >&2
+        return 1
+    fi
+
+    if [[ "$token_device_id" == "$REGISTERED_DEVICE_ID" ]]; then
+        print_success "Access token contains matching device_id claim: $token_device_id" >&2
+        return 0
+    fi
+
+    print_error "Access token device_id ($token_device_id) does not match registered device ($REGISTERED_DEVICE_ID)" >&2
+    return 1
+}
+
 # Step 1: User Login
 user_login() {
     print_step "Step 1: User Login"
     
-    local email="${TEST_EMAIL:-jianglibo@hotmail.com}"
-    local password="${TEST_PASSWORD:-12345678}"
+    local email="${CERT_CTRL_TEST_EMAIL:-${TEST_EMAIL:-jianglibo@hotmail.com}}"
+    local password="${CERT_CTRL_TEST_PASSWORD:-${TEST_PASSWORD:-StrongPass1!}}"
     
     print_info "Attempting login with email: $email"
     
@@ -259,6 +369,9 @@ user_login() {
         "email": "'$email'",
         "password": "'$password'"
     }'
+
+    print_info "HTTP POST ${LOGIN_ENDPOINT}" >&2
+    print_debug "Request Body: $login_body" >&2
     
     # Create temporary file for response headers
     local headers_file=$(mktemp)
@@ -268,6 +381,8 @@ user_login() {
         -D "$headers_file" \
         -d "$login_body" \
         "$LOGIN_ENDPOINT")
+
+    print_debug "Response Body: $response" >&2
     
     print_debug "Login Response:"
     echo "$response" | jq . 2>/dev/null || echo "$response"
@@ -370,7 +485,7 @@ device_verify() {
 
 # Step 4: Device Polling (Get Access Token)
 device_poll() {
-    print_step "Step 4: Device Polling for Access Token"
+    print_step "Step 4: Device Polling for Registration Code"
     
     if [[ -z "$DEVICE_CODE" ]]; then
         print_error "No device code available for polling"
@@ -425,14 +540,17 @@ device_poll() {
                 return 1
                 ;;
             "ready")
-                print_success "Authorization complete! Tokens received:"
-                ACCESS_TOKEN=$(echo "$response" | jq -r '.data.access_token // .access_token // empty')
-                REFRESH_TOKEN=$(echo "$response" | jq -r '.data.refresh_token // .refresh_token // empty')
-                local expires_in=$(echo "$response" | jq -r '.data.expires_in // .expires_in // empty')
-                
-                print_info "Access Token: ${ACCESS_TOKEN:0:50}..."
-                print_info "Refresh Token: ${REFRESH_TOKEN:0:50}..."
-                print_info "Expires In: ${expires_in}s"
+                print_success "Authorization complete! Registration code issued:"
+                REGISTRATION_CODE=$(echo "$response" | jq -r '.data.registration_code // .registration_code // empty')
+                REGISTRATION_CODE_TTL=$(echo "$response" | jq -r '.data.registration_code_ttl // .registration_code_ttl // empty')
+                if [[ -z "$REGISTRATION_CODE" ]]; then
+                    print_error "Poll response missing registration_code"
+                    return 1
+                fi
+                print_info "Registration Code: $REGISTRATION_CODE"
+                if [[ -n "$REGISTRATION_CODE_TTL" && "$REGISTRATION_CODE_TTL" != "null" ]]; then
+                    print_info "Registration Code TTL: ${REGISTRATION_CODE_TTL}s"
+                fi
                 return 0
                 ;;
             *)
@@ -458,6 +576,10 @@ device_register() {
         print_error "Session cookie or user ID not available for device registration"
         return 1
     fi
+    if [[ -z "$REGISTRATION_CODE" ]]; then
+        print_error "No registration code available; run device_poll first"
+        return 1
+    fi
     
     # Generate device fingerprint components
     generate_device_fingerprint
@@ -472,34 +594,34 @@ device_register() {
     save_device_secret_key
     
     # Simulate device information
-    local platform=$(uname -s | tr '[:upper:]' '[:lower:]')
-    local model=$(uname -m)
-    local app_version="1.0.0"
-    local device_name="Test Device $(date +%s)"
-    local ip_address=$(curl -s https://api.ipify.org 2>/dev/null || echo "127.0.0.1")
-    local user_agent="DeviceRegistrationScript/1.0"
-    
+    DEVICE_PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
+    DEVICE_MODEL=$(uname -m)
+    DEVICE_APP_VERSION="1.0.0"
+    DEVICE_NAME="Test Device $(date +%s)"
+    DEVICE_IP=$(curl -s https://api.ipify.org 2>/dev/null || echo "127.0.0.1")
+    DEVICE_USER_AGENT="DeviceRegistrationScript/1.0"
+
     print_info "Device Information:"
     print_info "  Public ID: $DEVICE_PUBLIC_ID"
-    print_info "  Platform: $platform"
-    print_info "  Model: $model"
-    print_info "  App Version: $app_version"
-    print_info "  Name: $device_name"
-    print_info "  IP: $ip_address"
+    print_info "  Platform: $DEVICE_PLATFORM"
+    print_info "  Model: $DEVICE_MODEL"
+    print_info "  App Version: $DEVICE_APP_VERSION"
+    print_info "  Name: $DEVICE_NAME"
+    print_info "  IP: $DEVICE_IP"
     print_info "  X25519 Public Key: ${X25519_PUBLIC_KEY:0:32}..."
     
     # Create device registration payload with X25519 public key and refresh token
     local register_body=$(cat <<EOF
 {
     "device_public_id": "$DEVICE_PUBLIC_ID",
-    "platform": "$platform",
-    "model": "$model",
-    "app_version": "$app_version",
-    "name": "$device_name",
-    "ip": "$ip_address",
-    "user_agent": "$user_agent",
+    "platform": "$DEVICE_PLATFORM",
+    "model": "$DEVICE_MODEL",
+    "app_version": "$DEVICE_APP_VERSION",
+    "name": "$DEVICE_NAME",
+    "ip": "$DEVICE_IP",
+    "user_agent": "$DEVICE_USER_AGENT",
     "dev_pk": "$X25519_PUBLIC_KEY",
-    "refresh_token": "$REFRESH_TOKEN"
+    "registration_code": "$REGISTRATION_CODE"
 }
 EOF
 )
@@ -513,10 +635,36 @@ EOF
     echo "$response" | jq . 2>/dev/null || echo "$response"
     
     # Check if registration was successful
-    local device_id=$(echo "$response" | jq -r '.data.id // .id // empty' 2>/dev/null)
+    local device_id=$(echo "$response" | jq -r '.data.device.id // .device.id // empty' 2>/dev/null)
     if [[ -n "$device_id" ]]; then
         print_success "Device registered successfully"
         print_info "Device ID: $device_id"
+        REGISTERED_DEVICE_ID="$device_id"
+        ACCESS_TOKEN=$(echo "$response" | jq -r '.data.session.access_token // .session.access_token // empty')
+        REFRESH_TOKEN=$(echo "$response" | jq -r '.data.session.refresh_token // .session.refresh_token // empty')
+        local session_token_type=$(echo "$response" | jq -r '.data.session.token_type // .session.token_type // empty')
+        local session_expires_in=$(echo "$response" | jq -r '.data.session.expires_in // .session.expires_in // empty')
+        if [[ -n "$session_token_type" ]]; then
+            print_info "Token Type: $session_token_type"
+        fi
+        if [[ -n "$session_expires_in" ]]; then
+            print_info "Access token TTL: ${session_expires_in}s"
+        fi
+        if [[ -n "$ACCESS_TOKEN" ]]; then
+            print_substep "Validating access token device_id claim"
+            if ! confirm_access_token_device_id; then
+                print_error "Access token verification against registered device failed"
+                return 1
+            fi
+        fi
+        LAST_ACCESS_TOKEN="$ACCESS_TOKEN"
+        LAST_REFRESH_TOKEN="$REFRESH_TOKEN"
+        if [[ -n "$LAST_REFRESH_TOKEN" ]]; then
+            print_info "Refresh token issued: $(preview_token "$LAST_REFRESH_TOKEN" 24)"
+        fi
+        if ! device_register_retry; then
+            print_warning "Idempotent registration retry failed; inspect logs for details"
+        fi
         return 0
     else
         print_warning "Device registration may not be implemented yet"
@@ -525,82 +673,98 @@ EOF
     fi
 }
 
-# Step 6: Client Polling
-client_poll() {
-    print_step "Step 6: Client Polling"
-    
-    if [[ -z "$ACCESS_TOKEN" ]]; then
-        print_error "Access token not available for client polling"
+device_register_retry() {
+    print_substep "Re-registering device to demonstrate idempotent session rotation"
+
+    if [[ -z "$REGISTERED_DEVICE_ID" ]]; then
+        print_warning "Device was not registered; skipping retry"
         return 1
     fi
-    
-    print_info "Testing client polling endpoint with access token"
-    
-    # Prepare polling request payload
-    local poll_payload=$(cat <<EOF
+    local previous_refresh="$LAST_REFRESH_TOKEN"
+    local previous_access="$LAST_ACCESS_TOKEN"
+
+    if [[ -z "$previous_refresh" ]]; then
+        print_warning "No refresh token from initial registration; skipping retry"
+        return 1
+    fi
+
+    local retry_body=$(cat <<EOF
 {
-    "device_info": {
-        "platform": "$DEVICE_PLATFORM",
-        "model": "$DEVICE_MODEL",
-        "app_version": "$DEVICE_APP_VERSION"
-    },
-    "last_poll_time": $(date +%s)
+    "device_public_id": "$DEVICE_PUBLIC_ID",
+    "platform": "$DEVICE_PLATFORM",
+    "model": "$DEVICE_MODEL",
+    "app_version": "$DEVICE_APP_VERSION",
+    "name": "$DEVICE_NAME",
+    "ip": "$DEVICE_IP",
+    "user_agent": "$DEVICE_USER_AGENT",
+    "dev_pk": "$X25519_PUBLIC_KEY",
+    "refresh_token": "$previous_refresh"
 }
 EOF
 )
-    
-    local poll_endpoint="$SERVER_BASE/apiv1/client/poll"
-    print_info "Request: POST $poll_endpoint"
-    
-    # Make 3 polling attempts
-    for attempt in {1..3}; do
-        print_info "--- Client poll attempt $attempt/3 ---"
-        
-        local response=$(make_request "POST" "$poll_endpoint" "$poll_payload" "bearer")
-        
-        print_debug "Poll Response:"
-        echo "$response" | jq . 2>/dev/null || echo "$response"
-        
-        # Check if polling was successful
-        local success=$(echo "$response" | jq -r '.success // false' 2>/dev/null)
-        if [[ "$success" == "true" ]]; then
-            print_success "Client polling successful"
-            
-            # Extract useful information from response
-            local server_time=$(echo "$response" | jq -r '.data.server_time // ""' 2>/dev/null)
-            local next_interval=$(echo "$response" | jq -r '.data.next_poll_interval // ""' 2>/dev/null)
-            local message=$(echo "$response" | jq -r '.data.message // ""' 2>/dev/null)
-            
-            if [[ -n "$server_time" ]]; then
-                print_info "Server Time: $server_time"
-            fi
-            if [[ -n "$next_interval" ]]; then
-                print_info "Next Poll Interval: ${next_interval}s"
-            fi
-            if [[ -n "$message" ]]; then
-                print_info "Server Message: $message"
-            fi
-            
-            return 0
-        else
-            local error_code=$(echo "$response" | jq -r '.error.code // ""' 2>/dev/null)
-            local error_message=$(echo "$response" | jq -r '.error.message // ""' 2>/dev/null)
-            print_warning "Poll attempt $attempt failed - Code: $error_code, Message: $error_message"
+
+    local devices_endpoint="${DEVICES_ENDPOINT_TEMPLATE/\{user_id\}/$USER_ID}"
+    print_info "Request (retry): POST $devices_endpoint"
+
+    local response=$(make_request "POST" "$devices_endpoint" "$retry_body" "session")
+
+    print_debug "Idempotent Registration Response:"
+    echo "$response" | jq . 2>/dev/null || echo "$response"
+
+    local device_id=$(echo "$response" | jq -r '.data.device.id // .device.id // empty' 2>/dev/null)
+    if [[ -z "$device_id" ]]; then
+        print_warning "Retry response missing device payload"
+        return 1
+    fi
+    print_info "Existing device ID confirmed: $device_id"
+
+    local new_refresh=$(echo "$response" | jq -r '.data.session.refresh_token // .session.refresh_token // empty')
+    local new_access=$(echo "$response" | jq -r '.data.session.access_token // .session.access_token // empty')
+    local token_type=$(echo "$response" | jq -r '.data.session.token_type // .session.token_type // empty')
+    local expires_in=$(echo "$response" | jq -r '.data.session.expires_in // .session.expires_in // empty')
+
+    if [[ -z "$new_refresh" ]]; then
+        print_warning "Retry response missing refresh token"
+        return 1
+    fi
+
+    print_info "Previous refresh token: $(preview_token "$previous_refresh" 24)"
+    print_info "New refresh token: $(preview_token "$new_refresh" 24)"
+
+    if [[ "$new_refresh" == "$previous_refresh" ]]; then
+        print_warning "Refresh token was not rotated on retry"
+    else
+        print_success "Refresh token rotated on idempotent retry"
+    fi
+
+    if [[ -n "$previous_access" ]]; then
+        print_info "Previous access token: $(preview_token "$previous_access" 24)"
+    fi
+
+    if [[ -n "$new_access" ]]; then
+        print_info "New access token: $(preview_token "$new_access" 24)"
+        ACCESS_TOKEN="$new_access"
+        if ! confirm_access_token_device_id; then
+            print_warning "New access token failed device_id verification"
         fi
-        
-        # Wait before next attempt (except for last attempt)
-        if [[ $attempt -lt 3 ]]; then
-            sleep 2
-        fi
-    done
-    
-    print_warning "Client polling failed after 3 attempts"
-    return 1
+        LAST_ACCESS_TOKEN="$new_access"
+    fi
+
+    if [[ -n "$token_type" ]]; then
+        print_info "Token Type (retry): $token_type"
+    fi
+    if [[ -n "$expires_in" ]]; then
+        print_info "Access token TTL (retry): ${expires_in}s"
+    fi
+
+    REFRESH_TOKEN="$new_refresh"
+    LAST_REFRESH_TOKEN="$new_refresh"
+    return 0
 }
 
-# Step 7: List Registered Devices
+# Step 6: List Registered Devices
 list_devices() {
-    print_step "Step 7: List Registered Devices"
+    print_step "Step 6: List Registered Devices"
     
     if [[ -z "$SESSION_COOKIE" || -z "$USER_ID" ]]; then
         print_error "Session cookie or user ID not available for listing devices"
@@ -627,9 +791,29 @@ list_devices() {
     fi
 }
 
+device_updates_poll() {
+    print_step "Step 8: Device Updates Poll"
+
+    if [[ -z "$ACCESS_TOKEN" ]]; then
+        print_error "Access token not available for updates poll"
+        return 1
+    fi
+
+    local response=$(make_request "GET" "$DEVICE_UPDATES_ENDPOINT" "" "bearer")
+
+    if [[ -n "$response" ]]; then
+        print_debug "Device Updates Response:"
+        echo "$response" | jq . 2>/dev/null || echo "$response"
+    else
+        print_info "Updates endpoint returned no body (likely 204 No Content)"
+    fi
+
+    return 0
+}
+
 # Test error scenarios
 test_error_scenarios() {
-    print_step "Step 8: Error Scenario Testing"
+    print_step "Step 7: Error Scenario Testing"
     
     print_substep "Testing invalid device auth action"
     local invalid_action_body='{"action": "invalid_action"}'
@@ -709,14 +893,7 @@ main() {
     fi
     echo ""
     
-    # Step 6: Client Polling
-    if ! client_poll; then
-        print_warning "Client polling step had issues (may not be implemented)"
-        step_failed=1
-    fi
-    echo ""
-    
-    # Step 7: List Devices
+    # Step 6: List Devices
     if ! list_devices; then
         print_warning "Device listing step had issues (may not be implemented)"
         step_failed=1
@@ -725,6 +902,13 @@ main() {
     
     # Step 7: Error Testing
     test_error_scenarios
+    echo ""
+
+    # Step 8: Device Updates Poll
+    if ! device_updates_poll; then
+        print_warning "Device updates poll encountered an issue"
+        step_failed=1
+    fi
     echo ""
     
     if [[ $step_failed -eq 0 ]]; then
@@ -744,10 +928,13 @@ main() {
     fi
     if [[ $step_failed -eq 0 ]]; then
         echo "✓ Device registered and listed successfully"
-        echo "✓ Client polling demonstrated successfully"
     else
         echo "⚠ Device registration/listing may need implementation"
-        echo "⚠ Client polling may need implementation"
+    fi
+    if [[ $step_failed -eq 0 ]]; then
+        echo "✓ Device updates endpoint polled"
+    else
+        echo "⚠ Device updates poll had issues"
     fi
 }
 
@@ -760,16 +947,19 @@ usage() {
     echo "2. Device authorization start (OAuth 2.0 device flow)"
     echo "3. Device verification (user approval)"
     echo "4. Device polling (obtain access token)"
-    echo "5. Device registration (register device with user account)"
-    echo "6. Client polling (demonstrate ongoing client-server communication)"
-    echo "7. Device management (list registered devices)"
-    echo "8. Error testing (test various error scenarios)"
+    echo "5. Device registration (register device with user account, validate device_id claim)"
+    echo "6. Device management (list registered devices)"
+    echo "7. Error testing (test various error scenarios)"
+    echo "8. Device updates poll (/apiv1/devices/self/updates)"
     echo ""
     echo "Environment Variables:"
-    echo "  SERVER_HOST     Server hostname (default: localhost)"
-    echo "  SERVER_PORT     Server port (default: 8081)"
-    echo "  TEST_EMAIL      Email for login (default: jianglibo@hotmail.com)"
-    echo "  TEST_PASSWORD   Password for login (default: 12345678)"
+    echo "  SERVER_SCHEME   Protocol for requests (default: https)"
+    echo "  SERVER_HOST     Server hostname (default: test-api.cjj365.cc)"
+    echo "  SERVER_PORT     Server port (default: empty; uses scheme default)"
+    echo "  CERT_CTRL_TEST_EMAIL    Preferred login email override"
+    echo "  CERT_CTRL_TEST_PASSWORD Preferred login password override"
+    echo "  TEST_EMAIL      Legacy login email override (fallback if CERT_CTRL_* unset)"
+    echo "  TEST_PASSWORD   Legacy login password override"
     echo ""
     echo "Examples:"
     echo "  $0                                    # Use defaults"

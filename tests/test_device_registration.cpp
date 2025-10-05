@@ -1,10 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <boost/di.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
-#include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <random>
@@ -68,6 +69,7 @@ protected:
   client_async::HttpClientManager *http_client_manager_{};
   std::string base_url_;
   std::string session_cookie_;
+  int64_t user_id_{};
 
   void SetUp() override {
     base_url_ = testutil::url_base();
@@ -84,8 +86,7 @@ protected:
                                  {"certificates", json::array{}},
                                  {"certificate_files", json::array{}},
                                  {"proxy_pool", json::array{}}};
-    write_json_file(temp_dir_.path / "httpclient_config.json",
-                    httpclient_json);
+    write_json_file(temp_dir_.path / "httpclient_config.json", httpclient_json);
 
     json::object ioc_json{{"threads_num", 1}, {"name", "real-handler-ioc"}};
     write_json_file(temp_dir_.path / "ioc_config.json", ioc_json);
@@ -98,8 +99,7 @@ protected:
     std::vector<std::string> positionals{"login"};
     std::vector<std::string> unrecognized;
     static certctrl::CliCtx cli_ctx(std::move(vm), std::move(positionals),
-                                    std::move(unrecognized),
-                                    std::move(params));
+                                    std::move(unrecognized), std::move(params));
 
     std::vector<fs::path> config_paths{temp_dir_.path};
     std::vector<std::string> profiles;
@@ -111,7 +111,8 @@ protected:
         di::bind<cjj365::ConfigSources>().to(config_sources),
         di::bind<cjj365::IHttpclientConfigProvider>()
             .to<cjj365::HttpclientConfigProviderFile>(),
-        di::bind<cjj365::IIocConfigProvider>().to<cjj365::IocConfigProviderFile>(),
+        di::bind<cjj365::IIocConfigProvider>()
+            .to<cjj365::IocConfigProviderFile>(),
         di::bind<customio::IOutput>().to(output),
         di::bind<certctrl::CliCtx>().to(cli_ctx),
         di::bind<certctrl::ICertctrlConfigProvider>()
@@ -140,12 +141,25 @@ protected:
           login_notifier.notify();
         });
     login_notifier.waitForNotification();
-    ASSERT_TRUE(login_result.has_value())
-        << "login_io produced no result";
+    ASSERT_TRUE(login_result.has_value()) << "login_io produced no result";
     ASSERT_FALSE(login_result->is_err())
         << "login failed: " << login_result->error().what;
     session_cookie_ = login_result->value().session_cookie;
+    user_id_ = login_result->value().user.id;
     ASSERT_FALSE(session_cookie_.empty()) << "login returned empty cookie";
+    ASSERT_GT(user_id_, 0) << "login returned invalid user_id";
+
+#ifdef _WIN32
+  _putenv_s("CERT_CTRL_SESSION_COOKIE", session_cookie_.c_str());
+  _putenv_s("CERT_CTRL_USER_ID", std::to_string(user_id_).c_str());
+  _putenv_s("DEVICE_ACCESS_TOKEN", "");
+  _putenv_s("DEVICE_REFRESH_TOKEN", "");
+#else
+  ::setenv("CERT_CTRL_SESSION_COOKIE", session_cookie_.c_str(), 1);
+  ::setenv("CERT_CTRL_USER_ID", std::to_string(user_id_).c_str(), 1);
+  ::unsetenv("DEVICE_ACCESS_TOKEN");
+  ::unsetenv("DEVICE_REFRESH_TOKEN");
+#endif
   }
 
   void TearDown() override {}
@@ -178,11 +192,41 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
   ASSERT_GT(start_resp.interval, 0);
   ASSERT_GT(start_resp.expires_in, 0);
 
-  const auto poll_sleep = std::chrono::seconds(
-      std::clamp(start_resp.interval, 1, 10));
-  const int max_attempts = std::clamp(start_resp.expires_in / start_resp.interval,
-                                      1, 12);
+  // Log the session cookie for debugging
+  std::cerr << "Session cookie: " << session_cookie_ << std::endl;
+  std::cerr << "User code: " << start_resp.user_code << std::endl;
+  std::cerr << "Verification URI: " << start_resp.verification_uri << std::endl;
 
+  misc::ThreadNotifier verify_notifier(60000);
+  std::optional<monad::MyResult<data::deviceauth::VerifyResp>> verify_result;
+  testutil::device_verify_io(*http_client_manager_, base_url_, session_cookie_,
+               start_resp.user_code)
+    .run([&](auto r) {
+    verify_result = std::move(r);
+    verify_notifier.notify();
+    });
+  verify_notifier.waitForNotification();
+
+  ASSERT_TRUE(verify_result.has_value())
+    << "device_verify produced no result";
+  if (verify_result->is_err()) {
+    std::cerr << "Verify error code: " << verify_result->error().code << std::endl;
+    std::cerr << "Verify error what: " << verify_result->error().what << std::endl;
+    std::cerr << "Verify error response_status: " << verify_result->error().response_status << std::endl;
+    if (verify_result->error().params.contains("response_body_preview")) {
+      std::cerr << "Response body preview: " 
+                << verify_result->error().params.at("response_body_preview") << std::endl;
+    }
+  }
+  ASSERT_FALSE(verify_result->is_err())
+    << "device_verify failed: " << verify_result->error().what;
+  EXPECT_EQ(verify_result->value().status, "approved");
+
+  const auto poll_sleep =
+      std::chrono::seconds(std::clamp(start_resp.interval, 1, 10));
+  const int max_attempts =
+      std::clamp(start_resp.expires_in / start_resp.interval, 1, 12);
+  std::cerr << "max_attemps: " << max_attempts << std::endl;
   std::optional<data::deviceauth::PollResp> successful_poll;
   std::string last_status;
 
@@ -206,16 +250,20 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
     last_status = poll_resp.status;
 
     if (last_status == "approved" || last_status == "ready") {
-      ASSERT_FALSE(poll_resp.access_token.empty())
-          << "approved status missing access_token";
-      ASSERT_FALSE(poll_resp.refresh_token.empty())
-          << "approved status missing refresh_token";
-      successful_poll = poll_resp;
-      break;
+      if (poll_resp.registration_code &&
+          !poll_resp.registration_code->empty()) {
+        successful_poll = poll_resp;
+        break;
+      }
+      if (poll_resp.access_token && !poll_resp.access_token->empty()) {
+        successful_poll = poll_resp;
+        break;
+      }
+      FAIL() << "ready status missing registration_code or access_token";
     }
 
     if (last_status == "authorization_pending" ||
-        last_status == "slow_down") {
+        last_status == "slow_down" || last_status == "pending") {
       std::this_thread::sleep_for(poll_sleep);
       continue;
     }
@@ -225,6 +273,12 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
 
   ASSERT_TRUE(successful_poll.has_value())
       << "device authorization did not complete; last status=" << last_status;
+  EXPECT_TRUE(successful_poll->registration_code.has_value())
+      << "ready poll response missing registration_code";
+  if (successful_poll->registration_code.has_value()) {
+    EXPECT_FALSE(successful_poll->registration_code->empty())
+        << "registration_code should not be empty";
+  }
 
   misc::ThreadNotifier register_notifier(60000);
   std::optional<monad::MyVoidResult> register_result;
@@ -238,4 +292,34 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
       << "register_device produced no result";
   ASSERT_FALSE(register_result->is_err())
       << "device_register failed: " << register_result->error().what;
+
+  // Verify the device was registered by querying the user's devices
+  std::cerr << "Verifying device registration by querying devices list..." << std::endl;
+  misc::ThreadNotifier devices_notifier(60000);
+  std::optional<monad::MyResult<json::array>> devices_result;
+  testutil::list_user_devices_io(*http_client_manager_, base_url_, session_cookie_, user_id_)
+      .run([&](auto r) {
+        devices_result = std::move(r);
+        devices_notifier.notify();
+      });
+  devices_notifier.waitForNotification();
+
+  ASSERT_TRUE(devices_result.has_value())
+      << "list_user_devices produced no result";
+  ASSERT_FALSE(devices_result->is_err())
+      << "list_user_devices failed: " << devices_result->error().what;
+
+  const auto& devices = devices_result->value();
+  std::cerr << "Found " << devices.size() << " device(s) for user " << user_id_ << std::endl;
+  
+  // Print device details for debugging
+  for (const auto& device : devices) {
+    std::cerr << "Device: " << json::serialize(device) << std::endl;
+  }
+
+  // Verify we have at least one device (the one we just registered)
+  ASSERT_GT(devices.size(), 0)
+      << "Expected at least one registered device, but found none";
+
+  std::cerr << "Device registration verified successfully!" << std::endl;
 }

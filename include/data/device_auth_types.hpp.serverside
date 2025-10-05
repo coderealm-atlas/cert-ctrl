@@ -5,13 +5,12 @@
 #include <cctype>
 #include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
 
-namespace data {
+namespace httphandler {
 
 namespace json = boost::json;
 
@@ -25,82 +24,81 @@ struct DeviceAuthRequestBody {
   std::optional<std::string> device_code;
   std::optional<std::string> user_code;
   std::optional<bool> approve;
+  std::optional<int64_t> device_id;
 
-  friend DeviceAuthRequestBody
-  tag_invoke(const json::value_to_tag<DeviceAuthRequestBody> &,
-             const json::value &jv) {
+  friend DeviceAuthRequestBody tag_invoke(
+      const json::value_to_tag<DeviceAuthRequestBody>&, const json::value& jv) {
     DeviceAuthRequestBody body;
-    if (auto *jo_p = jv.if_object()) {
-      if (auto *p = jo_p->if_contains("action"); p && p->is_string()) {
+    if (auto* jo_p = jv.if_object()) {
+      if (auto* p = jo_p->if_contains("action"); p && p->is_string()) {
         body.action = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("email"); p && p->is_string()) {
+      if (auto* p = jo_p->if_contains("email"); p && p->is_string()) {
         body.email = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("password"); p && p->is_string()) {
+      if (auto* p = jo_p->if_contains("password"); p && p->is_string()) {
         body.password = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("scopes"); p && p->is_array()) {
+      if (auto* p = jo_p->if_contains("scopes"); p && p->is_array()) {
         body.scopes = json::value_to<std::vector<std::string>>(*p);
       }
-      if (auto *p = jo_p->if_contains("interval"); p && p->is_number()) {
+      if (auto* p = jo_p->if_contains("interval"); p && p->is_number()) {
         body.interval = json::value_to<int64_t>(*p);
       }
-      if (auto *p = jo_p->if_contains("expires_in"); p && p->is_number()) {
+      if (auto* p = jo_p->if_contains("expires_in"); p && p->is_number()) {
         body.expires_in = json::value_to<int64_t>(*p);
       }
-      if (auto *p = jo_p->if_contains("device_code"); p && p->is_string()) {
+      if (auto* p = jo_p->if_contains("device_code"); p && p->is_string()) {
         body.device_code = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("user_code"); p && p->is_string()) {
+      if (auto* p = jo_p->if_contains("user_code"); p && p->is_string()) {
         body.user_code = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("approve"); p && p->is_bool()) {
+      if (auto* p = jo_p->if_contains("approve"); p && p->is_bool()) {
         body.approve = json::value_to<bool>(*p);
+      }
+      if (auto* p = jo_p->if_contains("device_id")) {
+        if (p->is_number()) {
+          body.device_id = json::value_to<int64_t>(*p);
+        } else if (p->is_string()) {
+          try {
+            body.device_id = std::stoll(std::string(p->as_string()));
+          } catch (...) {
+          }
+        }
       }
     }
     return body;
   }
-  friend void tag_invoke(const json::value_from_tag &, json::value &jv,
-                         const DeviceAuthRequestBody &b) {
+  friend void tag_invoke(const json::value_from_tag&, json::value& jv,
+                         const DeviceAuthRequestBody& b) {
     json::object o;
-    if (b.email)
-      o["email"] = *b.email;
-    if (b.password)
-      o["password"] = *b.password;
-    if (b.action)
-      o["action"] = *b.action;
+    if (b.email) o["email"] = *b.email;
+    if (b.password) o["password"] = *b.password;
+    if (b.action) o["action"] = *b.action;
     if (b.scopes) {
       json::array arr;
       arr.reserve(b.scopes->size());
-      for (const auto &s : *b.scopes)
-        arr.emplace_back(s);
+      for (const auto& s : *b.scopes) arr.emplace_back(s);
       o["scopes"] = std::move(arr);
     }
-    if (b.interval)
-      o["interval"] = *b.interval;
-    if (b.expires_in)
-      o["expires_in"] = *b.expires_in;
-    if (b.device_code)
-      o["device_code"] = *b.device_code;
-    if (b.user_code)
-      o["user_code"] = *b.user_code;
-    if (b.approve)
-      o["approve"] = *b.approve;
+    if (b.interval) o["interval"] = *b.interval;
+    if (b.expires_in) o["expires_in"] = *b.expires_in;
+    if (b.device_code) o["device_code"] = *b.device_code;
+    if (b.user_code) o["user_code"] = *b.user_code;
+    if (b.approve) o["approve"] = *b.approve;
+    if (b.device_id) o["device_id"] = *b.device_id;
     jv = std::move(o);
   }
 
   monad::MyResult<void> validate() const {
-    auto is_valid_user_code = [](const std::string &s) -> bool {
-      if (s.size() != 9)
-        return false;
+    auto is_valid_user_code = [](const std::string& s) -> bool {
+      if (s.size() != 9) return false;
       for (size_t i = 0; i < s.size(); ++i) {
         if (i == 4) {
-          if (s[i] != '-')
-            return false;
+          if (s[i] != '-') return false;
         } else {
-          if (!std::isalnum(static_cast<unsigned char>(s[i])))
-            return false;
+          if (!std::isalnum(static_cast<unsigned char>(s[i]))) return false;
           char up =
               static_cast<char>(std::toupper(static_cast<unsigned char>(s[i])));
           if (!(up >= 'A' && up <= 'Z') && !(up >= '0' && up <= '9'))
@@ -116,7 +114,7 @@ struct DeviceAuthRequestBody {
           monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
                        .what = "action is required"});
     }
-    const std::string &a = *action;
+    const std::string& a = *action;
     if (a == "device_start") {
       if (interval && *interval < 1) {
         return monad::MyResult<void>::Err(
@@ -127,13 +125,13 @@ struct DeviceAuthRequestBody {
         return monad::MyResult<void>::Err(
             monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
                          .what = "expires_in must be between 30 and 3600"});
-        if (scopes) {
-          for (const auto &s : *scopes) {
-            if (s.empty()) {
-              return monad::MyResult<void>::Err(
-                  monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                               .what = "scope entries must be non-empty"});
-            }
+      }
+      if (scopes) {
+        for (const auto& s : *scopes) {
+          if (s.empty()) {
+            return monad::MyResult<void>::Err(
+                monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
+                             .what = "scope entries must be non-empty"});
           }
         }
       }
@@ -154,22 +152,17 @@ struct DeviceAuthRequestBody {
             monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
                          .what = "device_code required for device_poll"});
       }
+      if (device_id && *device_id <= 0) {
+        return monad::MyResult<void>::Err(
+            monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
+                         .what = "device_id must be positive when provided"});
+      }
     } else {
       return monad::MyResult<void>::Err(
           monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
                        .what = "unknown action"});
     }
     return monad::MyResult<void>::Ok();
-  }
-
-  // Move-friendly helper for chaining: parse<T>().and_then(T::validated)
-  static monad::MyResult<DeviceAuthRequestBody>
-  validated(DeviceAuthRequestBody &&x) {
-    auto r = x.validate();
-    if (r.is_err()) {
-      return monad::MyResult<DeviceAuthRequestBody>::Err(r.error());
-    }
-    return monad::MyResult<DeviceAuthRequestBody>::Ok(std::move(x));
   }
 };
 
@@ -182,9 +175,9 @@ struct StartResp {
   int interval{5};
   int expires_in{900};
 
-  friend void tag_invoke(const boost::json::value_from_tag &,
-                         boost::json::value &jv,
-                         const deviceauth::StartResp &r) {
+  friend void tag_invoke(const boost::json::value_from_tag&,
+                         boost::json::value& jv,
+                         const deviceauth::StartResp& r) {
     jv = boost::json::object{
         {"device_code", r.device_code},
         {"user_code", r.user_code},
@@ -193,23 +186,20 @@ struct StartResp {
         {"interval", r.interval},
         {"expires_in", r.expires_in}};
   }
-  monad::MyResult<void> validate() const {
+  monad::MyResult<void> validate() {
     if (device_code.empty() || user_code.empty()) {
       return monad::MyResult<void>::Err(
           monad::Error{.code = my_errors::GENERAL::UNEXPECTED_RESULT,
                        .what = "device auth start failed."});
     }
     // user_code format and URIs sanity
-    auto is_valid_user_code = [](const std::string &s) -> bool {
-      if (s.size() != 9)
-        return false;
+    auto is_valid_user_code = [](const std::string& s) -> bool {
+      if (s.size() != 9) return false;
       for (size_t i = 0; i < s.size(); ++i) {
         if (i == 4) {
-          if (s[i] != '-')
-            return false;
+          if (s[i] != '-') return false;
         } else {
-          if (!std::isalnum(static_cast<unsigned char>(s[i])))
-            return false;
+          if (!std::isalnum(static_cast<unsigned char>(s[i]))) return false;
           char up =
               static_cast<char>(std::toupper(static_cast<unsigned char>(s[i])));
           if (!(up >= 'A' && up <= 'Z') && !(up >= '0' && up <= '9'))
@@ -236,37 +226,28 @@ struct StartResp {
     return monad::MyResult<void>::Ok();
   }
 
-  // Move-friendly helper for chaining: parse<T>().and_then(T::validated)
-  static monad::MyResult<StartResp> validated(StartResp &&x) {
-    auto r = x.validate();
-    if (r.is_err()) {
-      return monad::MyResult<StartResp>::Err(r.error());
-    }
-    return monad::MyResult<StartResp>::Ok(std::move(x));
-  }
-
-  friend StartResp tag_invoke(const boost::json::value_to_tag<StartResp> &,
-                              const boost::json::value &jv) {
+  friend StartResp tag_invoke(const boost::json::value_to_tag<StartResp>&,
+                              const boost::json::value& jv) {
     StartResp startResp;
-    if (auto *jo_p = jv.if_object()) {
-      if (auto *p = jo_p->if_contains("device_code"); p && p->is_string()) {
+    if (auto* jo_p = jv.if_object()) {
+      if (auto* p = jo_p->if_contains("device_code"); p && p->is_string()) {
         startResp.device_code = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("user_code"); p && p->is_string()) {
+      if (auto* p = jo_p->if_contains("user_code"); p && p->is_string()) {
         startResp.user_code = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("verification_uri");
+      if (auto* p = jo_p->if_contains("verification_uri");
           p && p->is_string()) {
         startResp.verification_uri = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("verification_uri_complete");
+      if (auto* p = jo_p->if_contains("verification_uri_complete");
           p && p->is_string()) {
         startResp.verification_uri_complete = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("interval"); p && p->is_number()) {
+      if (auto* p = jo_p->if_contains("interval"); p && p->is_number()) {
         startResp.interval = json::value_to<int>(*p);
       }
-      if (auto *p = jo_p->if_contains("expires_in"); p && p->is_number()) {
+      if (auto* p = jo_p->if_contains("expires_in"); p && p->is_number()) {
         startResp.expires_in = json::value_to<int>(*p);
       }
     }
@@ -275,123 +256,71 @@ struct StartResp {
 };
 struct PollResp {
   std::string status;
-  std::optional<std::string> access_token;
-  std::optional<std::string> refresh_token;
-  std::optional<int> expires_in;
-  std::optional<std::string> registration_code;
-  std::optional<int> registration_code_ttl;
-
-  friend void tag_invoke(boost::json::value_from_tag, boost::json::value &jv,
-                         const deviceauth::PollResp &r) {
-    boost::json::object obj{{"status", r.status}};
-    if (r.access_token && !r.access_token->empty()) {
-      obj["access_token"] = *r.access_token;
-    }
-    if (r.refresh_token && !r.refresh_token->empty()) {
-      obj["refresh_token"] = *r.refresh_token;
-    }
-    if (r.expires_in) {
-      obj["expires_in"] = *r.expires_in;
-    }
-    if (r.registration_code && !r.registration_code->empty()) {
-      obj["registration_code"] = *r.registration_code;
-    }
-    if (r.registration_code_ttl) {
-      obj["registration_code_ttl"] = *r.registration_code_ttl;
-    }
-    jv = std::move(obj);
+  std::string access_token;
+  std::string refresh_token;
+  int expires_in{0};
+  friend void tag_invoke(boost::json::value_from_tag, boost::json::value& jv,
+                         const deviceauth::PollResp& r) {
+    jv = boost::json::object{{"status", r.status},
+                             {"access_token", r.access_token},
+                             {"refresh_token", r.refresh_token},
+                             {"expires_in", r.expires_in}};
   }
-
-  friend PollResp tag_invoke(const boost::json::value_to_tag<PollResp> &,
-                             const boost::json::value &jv) {
+  friend PollResp tag_invoke(const boost::json::value_to_tag<PollResp>&,
+                             const boost::json::value& jv) {
     PollResp r;
-    if (auto *jo_p = jv.if_object()) {
-      if (auto *p = jo_p->if_contains("status"); p && p->is_string()) {
+    if (auto* jo_p = jv.if_object()) {
+      if (auto* p = jo_p->if_contains("status"); p && p->is_string()) {
         r.status = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("access_token"); p && p->is_string()) {
+      if (auto* p = jo_p->if_contains("access_token"); p && p->is_string()) {
         r.access_token = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("refresh_token");
-          p && p->is_string()) {
+      if (auto* p = jo_p->if_contains("refresh_token"); p && p->is_string()) {
         r.refresh_token = json::value_to<std::string>(*p);
       }
-      if (auto *p = jo_p->if_contains("expires_in"); p && p->is_number()) {
+      if (auto* p = jo_p->if_contains("expires_in"); p && p->is_number()) {
         r.expires_in = json::value_to<int>(*p);
-      }
-      if (auto *p = jo_p->if_contains("registration_code");
-          p && p->is_string()) {
-        r.registration_code = json::value_to<std::string>(*p);
-      }
-      if (auto *p = jo_p->if_contains("registration_code_ttl");
-          p && p->is_number()) {
-        r.registration_code_ttl = json::value_to<int>(*p);
       }
     }
     return r;
   }
-
   monad::MyResult<void> validate() const {
     if (status.empty()) {
       return monad::MyResult<void>::Err(
           monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
                        .what = "status is required"});
     }
-    auto is_allowed_status = [](const std::string &s) {
-      return s == "pending" || s == "authorization_pending" ||
-             s == "slow_down" || s == "denied" || s == "access_denied" ||
-             s == "expired" || s == "ready" || s == "approved";
+    auto is_allowed_status = [](const std::string& s) {
+      return s == "pending" || s == "slow_down" || s == "denied" ||
+             s == "expired" || s == "ready";
     };
     if (!is_allowed_status(status)) {
       return monad::MyResult<void>::Err(
           monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
                        .what = "invalid status for PollResp"});
     }
-
-    auto has_tokens = access_token && !access_token->empty();
-    if (status == "ready" || status == "approved") {
-      if (registration_code && registration_code->empty()) {
+    if (status == "ready") {
+      if (access_token.empty() || refresh_token.empty() || expires_in <= 0) {
         return monad::MyResult<void>::Err(monad::Error{
             .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-            .what = "registration_code must not be empty"});
-      }
-      if (has_tokens) {
-        if (!refresh_token || refresh_token->empty() || !expires_in ||
-            *expires_in <= 0) {
-          return monad::MyResult<void>::Err(monad::Error{
-              .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-              .what = "token response missing refresh_token or expires_in"});
-        }
-      }
-      if (!has_tokens && !registration_code) {
-        return monad::MyResult<void>::Err(monad::Error{
-            .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-            .what = "ready response requires tokens or registration_code"});
+            .what = "ready requires tokens and positive expires_in"});
       }
     }
     return monad::MyResult<void>::Ok();
   }
-
-  // Move-friendly helper for chaining: parse<T>().and_then(T::validated)
-  static monad::MyResult<PollResp> validated(PollResp &&x) {
-    auto r = x.validate();
-    if (r.is_err()) {
-      return monad::MyResult<PollResp>::Err(r.error());
-    }
-    return monad::MyResult<PollResp>::Ok(std::move(x));
-  }
 };
 struct VerifyResp {
   std::string status;
-  friend void tag_invoke(boost::json::value_from_tag, boost::json::value &jv,
-                         const deviceauth::VerifyResp &r) {
+  friend void tag_invoke(boost::json::value_from_tag, boost::json::value& jv,
+                         const deviceauth::VerifyResp& r) {
     jv = boost::json::object{{"status", r.status}};
   }
-  friend VerifyResp tag_invoke(const boost::json::value_to_tag<VerifyResp> &,
-                               const boost::json::value &jv) {
+  friend VerifyResp tag_invoke(const boost::json::value_to_tag<VerifyResp>&,
+                               const boost::json::value& jv) {
     VerifyResp r;
-    if (auto *jo_p = jv.if_object()) {
-      if (auto *p = jo_p->if_contains("status"); p && p->is_string()) {
+    if (auto* jo_p = jv.if_object()) {
+      if (auto* p = jo_p->if_contains("status"); p && p->is_string()) {
         r.status = json::value_to<std::string>(*p);
       }
     }
@@ -410,16 +339,7 @@ struct VerifyResp {
     }
     return monad::MyResult<void>::Ok();
   }
-
-  // Move-friendly helper for chaining: parse<T>().and_then(T::validated)
-  static monad::MyResult<VerifyResp> validated(VerifyResp &&x) {
-    auto r = x.validate();
-    if (r.is_err()) {
-      return monad::MyResult<VerifyResp>::Err(r.error());
-    }
-    return monad::MyResult<VerifyResp>::Ok(std::move(x));
-  }
 };
-} // namespace deviceauth
+}  // namespace deviceauth
 
-} // namespace data
+}  // namespace httphandler
