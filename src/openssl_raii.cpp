@@ -131,9 +131,7 @@ std::string generate_csr(const cryptutil::EVP_PKEY_ptr& pkey,  //
   } else {
     // der_buf now contains the DER-encoded CSR, and der_len is its length.
     // Use der_buf as needed and free it after use
-    std::string_view der_view{reinterpret_cast<const char*>(der_buf),
-                              static_cast<size_t>(der_len)};
-    std::string der_b64 = base64_encode(der_view, true);
+    std::string der_b64 = base64_encode(der_buf, static_cast<size_t>(der_len), true);
     size_t pos = der_b64.find_last_not_of('.');
     if (pos != std::string::npos) {
       der_b64.erase(pos + 1);
@@ -1423,9 +1421,7 @@ std::string get_public_key_thumbprint(const cryptutil::EVP_PKEY_ptr& pkey) {
   unsigned char hash[SHA256_DIGEST_LENGTH];
   SHA256(buffer.data(), buffer.size(), hash);
 
-  std::string_view hash_view{reinterpret_cast<const char*>(hash),
-                             SHA256_DIGEST_LENGTH};
-  std::string hash_b64 = base64_encode(hash_view, true);
+  std::string hash_b64 = base64_encode(hash, SHA256_DIGEST_LENGTH, true);
   size_t pos = hash_b64.find_last_not_of('.');
   if (pos != std::string::npos) {
     hash_b64.erase(pos + 1);

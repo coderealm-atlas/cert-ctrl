@@ -10,6 +10,12 @@
 #include <string>
 #include <thread>
 
+// Windows compatibility for environment variables
+#ifdef _WIN32
+#define setenv(name, value, overwrite) _putenv_s(name, value)
+#define unsetenv(name) _putenv_s(name, "")
+#endif
+
 #include "include/login_helper.hpp"
 #include "include/api_test_helper.hpp"
 #include "login_helper.hpp"

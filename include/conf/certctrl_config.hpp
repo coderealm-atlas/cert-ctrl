@@ -14,111 +14,139 @@
 #include "result_monad.hpp"
 #include "simple_data.hpp"
 
-namespace certctrl {
+namespace certctrl
+{
 
-class ConfigFromOs; // forward declaration
+  class ConfigFromOs; // forward declaration
 
-inline const std::string an_empty_str = "";
+  inline const std::string an_empty_str = "";
 
-struct CertctrlConfig {
-  bool auto_fetch_config{false};
-  std::string verbose{};
-  std::string base_url{"https://api.cjj365.cc"};
-  
+  struct CertctrlConfig
+  {
+    bool auto_fetch_config{false};
+    std::string verbose{};
+    std::string base_url{"https://api.cjj365.cc"};
 
-  friend CertctrlConfig tag_invoke(const json::value_to_tag<CertctrlConfig> &,
-                                   const json::value &jv) {
-    try {
-      if (auto *jo_p = jv.if_object()) {
-        CertctrlConfig cc{};
-        cc.auto_fetch_config = jv.at("auto_fetch_config").as_bool();
-        cc.verbose = jv.at("verbose").as_string().c_str();
-        cc.base_url = jv.at("url_base").as_string().c_str();
-        return cc;
-      } else {
-        throw std::runtime_error("CertctrlConfig is not an object");
+    friend CertctrlConfig tag_invoke(const json::value_to_tag<CertctrlConfig> &,
+                                     const json::value &jv)
+    {
+      try
+      {
+        if (auto *jo_p = jv.if_object())
+        {
+          CertctrlConfig cc{};
+          if (auto *p = jo_p->if_contains("auto_fetch_config"))
+            cc.auto_fetch_config = p->as_bool();
+          else
+            std::cerr << "auto_fetch_config not found, using default false" << std::endl;
+          if (auto *p = jo_p->if_contains("verbose"))
+            cc.verbose = p->as_string().c_str();
+          else
+            std::cerr << "verbose not found, using default empty string" << std::endl;
+          if (auto *p = jo_p->if_contains("url_base"))
+            cc.base_url = p->as_string().c_str();
+          else
+            std::cerr << "url_base not found, using default https://api.cjj365.cc" << std::endl;
+          return cc;
+        }
+        else
+        {
+          throw std::runtime_error("CertctrlConfig is not an object");
+        }
       }
-
-    } catch (...) {
-      throw std::runtime_error("error in parsing CertctrlConfig");
+      catch (...)
+      {
+        throw std::runtime_error("error in parsing CertctrlConfig");
+      }
     }
-  }
-};
+  };
 
-class ICertctrlConfigProvider {
-public:
-  virtual ~ICertctrlConfigProvider() = default;
+  class ICertctrlConfigProvider
+  {
+  public:
+    virtual ~ICertctrlConfigProvider() = default;
 
-  virtual const CertctrlConfig &get() const = 0;
-  virtual CertctrlConfig &get() = 0;
+    virtual const CertctrlConfig &get() const = 0;
+    virtual CertctrlConfig &get() = 0;
 
-  virtual monad::MyVoidResult save(const json::object &content) = 0;
-};
+    virtual monad::MyVoidResult save(const json::object &content) = 0;
+  };
 
-class CertctrlConfigProviderFile : public ICertctrlConfigProvider {
-private:
-  CertctrlConfig config_;
-  customio::IOutput &output_;
-  cjj365::ConfigSources &config_sources_;
+  class CertctrlConfigProviderFile : public ICertctrlConfigProvider
+  {
+  private:
+    CertctrlConfig config_;
+    customio::IOutput &output_;
+    cjj365::ConfigSources &config_sources_;
 
-public:
-  CertctrlConfigProviderFile(cjj365::AppProperties &app_properties,
-                             cjj365::ConfigSources &config_sources,
-                             customio::IOutput &output)
-      : output_(output), config_sources_(config_sources) {
-    if (!config_sources.application_json) {
-      output_.error() << "Failed to load App config." << std::endl;
-      throw std::runtime_error("Failed to load App config.");
+  public:
+    CertctrlConfigProviderFile(cjj365::AppProperties &app_properties,
+                               cjj365::ConfigSources &config_sources,
+                               customio::IOutput &output)
+        : output_(output), config_sources_(config_sources)
+    {
+      if (!config_sources.application_json)
+      {
+        output_.error() << "Failed to load App config." << std::endl;
+        throw std::runtime_error("Failed to load App config.");
+      }
+      json::value jv = config_sources.application_json.value();
+      // substitue_envs requires both CLI map and properties map. For this provider
+      // we currently do not have a dedicated CLI substitution map, so pass an empty one.
+      static const std::map<std::string, std::string> empty_cli_map{};
+      jsonutil::substitue_envs(jv, empty_cli_map, app_properties.properties);
+      config_ = json::value_to<CertctrlConfig>(std::move(jv));
     }
-  json::value jv = config_sources.application_json.value();
-  // substitue_envs requires both CLI map and properties map. For this provider
-  // we currently do not have a dedicated CLI substitution map, so pass an empty one.
-  static const std::map<std::string, std::string> empty_cli_map{};
-  jsonutil::substitue_envs(jv, empty_cli_map, app_properties.properties);
-    config_ = json::value_to<CertctrlConfig>(std::move(jv));
-  }
 
-  const CertctrlConfig &get() const override { return config_; }
-  CertctrlConfig &get() override { return config_; }
+    const CertctrlConfig &get() const override { return config_; }
+    CertctrlConfig &get() override { return config_; }
 
-  monad::MyVoidResult save(const json::object &content) override {
-    auto f = config_sources_.paths_.back() / "application.override.json";
-    json::value jv;
-    if (fs::exists(f)) {
-      std::ifstream ifs(f);
-      if (!ifs) {
+    monad::MyVoidResult save(const json::object &content) override
+    {
+      auto f = config_sources_.paths_.back() / "application.override.json";
+      json::value jv;
+      if (fs::exists(f))
+      {
+        std::ifstream ifs(f);
+        if (!ifs)
+        {
+          return monad::MyVoidResult::Err(
+              {.code = my_errors::GENERAL::FILE_READ_WRITE,
+               .what = "Unable to open configuration file: " + f.string()});
+        }
+        std::string existing_content((std::istreambuf_iterator<char>(ifs)),
+                                     std::istreambuf_iterator<char>());
+        ifs.close();
+        jv = json::parse(existing_content);
+        if (!jv.is_object())
+        {
+          return monad::MyVoidResult::Err(
+              {.code = my_errors::GENERAL::INVALID_ARGUMENT,
+               .what = "Configuration file is not a JSON object: " + f.string()});
+        }
+        json::object &jo = jv.as_object();
+        for (const auto &[key, value] : content)
+        {
+          jo[key] = value;
+        }
+      }
+      else
+      {
+        jv = content;
+      }
+      std::ofstream ofs(f);
+      if (!ofs)
+      {
         return monad::MyVoidResult::Err(
             {.code = my_errors::GENERAL::FILE_READ_WRITE,
-             .what = "Unable to open configuration file: " + f.string()});
+             .what =
+                 "Unable to open configuration file for writing: " + f.string()});
       }
-      std::string existing_content((std::istreambuf_iterator<char>(ifs)),
-                                   std::istreambuf_iterator<char>());
-      ifs.close();
-      jv = json::parse(existing_content);
-      if (!jv.is_object()) {
-        return monad::MyVoidResult::Err(
-            {.code = my_errors::GENERAL::INVALID_ARGUMENT,
-             .what = "Configuration file is not a JSON object: " + f.string()});
-      }
-      json::object &jo = jv.as_object();
-      for (const auto &[key, value] : content) {
-        jo[key] = value;
-      }
-    } else {
-      jv = content;
+      ofs << content;
+      ofs.close();
+      return monad::MyVoidResult::Ok();
     }
-    std::ofstream ofs(f);
-    if (!ofs) {
-      return monad::MyVoidResult::Err(
-          {.code = my_errors::GENERAL::FILE_READ_WRITE,
-           .what =
-               "Unable to open configuration file for writing: " + f.string()});
-    }
-    ofs << content;
-    ofs.close();
-    return monad::MyVoidResult::Ok();
-  }
-};
+  };
 } // namespace certctrl
 
 //   /**

@@ -594,7 +594,8 @@ inline std::pair<uint64_t, std::string> parse_apikey(std::string_view apikey) {
   try {
     std::string decoded;  // Store decoded string
     if (apikey.find("Basic ") == 0) {
-      decoded = base64_decode(apikey.substr(6));  // Ensure decoded is valid
+      std::string apikey_str(apikey.substr(6));
+      decoded = base64_decode(apikey_str);  // Ensure decoded is valid
       apikey = decoded;  // Now apikey points to a valid owned string
     } else if (apikey.find("Bearer ") == 0) {
       apikey = apikey.substr(7);

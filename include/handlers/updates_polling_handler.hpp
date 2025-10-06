@@ -5,6 +5,7 @@
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <format>
 #include <optional>
@@ -39,7 +40,7 @@ namespace certctrl {
 
 struct UpdatesPollingHandlerOptions {
   int wait_seconds{0};
-  int limit{20};
+  std::size_t limit{20};
   bool long_poll{false};
 };
 
@@ -92,9 +93,11 @@ public:
                                    certctrl_config_provider_.get().base_url)) {
     exec_ = boost::asio::make_strand(ioc_);
     po::options_description create_opts("Updates Polling Options");
-    create_opts.add_options()("wait", po::value<int>()->default_value(0),
-                              "long poll wait seconds (0-30)")(
-        "limit", po::value<int>()->default_value(20), "max signals (1-100)")(
+  create_opts.add_options()("wait", po::value<int>()->default_value(0),
+                "long poll wait seconds (0-30)")(
+    "limit",
+    po::value<std::size_t>()->default_value(static_cast<std::size_t>(20)),
+    "max signals (1-100)")(
         "interval", po::value<int>()->default_value(1000),
         "interval ms between polls when not long-polling");
     opt_desc_.add(create_opts);
@@ -110,7 +113,7 @@ public:
         options_.long_poll = true;
     }
     if (cli_ctx_.vm.count("limit")) {
-      options_.limit = cli_ctx_.vm["limit"].as<int>();
+      options_.limit = cli_ctx_.vm["limit"].as<std::size_t>();
     }
     if (cli_ctx_.vm.count("interval")) {
       interval_ms_ = cli_ctx_.vm["interval"].as<int>();

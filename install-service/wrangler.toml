@@ -1,0 +1,71 @@
+name = "cert-ctrl-install-service"
+main = "src/index.js"
+compatibility_date = "2024-10-05"
+compatibility_flags = ["nodejs_compat"]
+
+# Custom domain configuration
+[triggers]
+routes = [ "install.cjj365.cc/*" ]
+
+# Environment variables
+[env.production.vars]
+GITHUB_REPO_OWNER = "coderealm-atlas"
+GITHUB_REPO_NAME = "cert-ctrl"
+ANALYTICS_ENABLED = true
+RATE_LIMIT_ENABLED = true
+CURRENT_HOST = "install.cjj365.cc"
+
+[env.staging.vars]
+GITHUB_REPO_OWNER = "coderealm-atlas"
+GITHUB_REPO_NAME = "cert-ctrl"
+ANALYTICS_ENABLED = false
+RATE_LIMIT_ENABLED = false
+CURRENT_HOST = "install-staging.cjj365.cc"
+
+# KV Namespaces for caching and analytics
+[[kv_namespaces]]
+binding = "RELEASE_CACHE"
+id = "your-release-cache-namespace-id"
+preview_id = "your-preview-release-cache-namespace-id"
+
+[[kv_namespaces]]
+binding = "ANALYTICS"
+id = "your-analytics-namespace-id"
+preview_id = "your-preview-analytics-namespace-id"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "your-config-namespace-id"
+preview_id = "your-preview-config-namespace-id"
+
+# D1 Database for advanced analytics (optional)
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "cert-ctrl-analytics"
+# database_id = "your-database-id"
+
+# Custom domains
+# Note: These sections are now replaced by the [triggers] configuration above
+# [env.production]
+# routes = [
+#   { pattern = "install.cjj365.cc/*", custom_domain = true }
+# ]
+
+# [env.staging]  
+# routes = [
+#   { pattern = "install-staging.cjj365.cc/*", custom_domain = true }
+# ]
+
+# Rate limiting
+[[env.production.durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+# Build configuration
+[build]
+command = "npm run build"
+watch_dir = "src"
+
+# Cron triggers for cache warming and cleanup
+[[triggers]]
+crons = ["0 */6 * * *"]  # Every 6 hours
