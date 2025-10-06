@@ -50,6 +50,7 @@ Additional integration workflows are described in the docs under `Testing/` and 
 - Device registration flow: `docs/USER_DEVICE_REGISTRATION_WORKFLOW.md`
 - Device login: `docs/LOGIN_WORKFLOW.md`
 - Polling for update signals: `docs/DEVICE_POLLING_UPDATES.md`
+- Config directory layering & overrides: `docs/CONFIG_DIR_PROVISIONING.md`
 - Docker-based test environment: `docs/DOCKER_TEST_ENVIRONMENT.md`
 - Release background & checklist: `RELEASE.md`, `docs/RELEASE_WORKFLOW.md`
 
@@ -105,6 +106,32 @@ Additional integration workflows are described in the docs under `Testing/` and 
   ```bash
   export CERT_CTRL_TEST_EMAIL="demo-user@example.com"
   export CERT_CTRL_TEST_PASSWORD="6SJYP9Bd6DKnLsj9rJfUnCuKQsnxGWGb"
+  ```
+
+## Restful API instead of agents
+The backend control plane exposes a RESTful API that can be used to manage devices and certificates directly. This approach may be preferable in environments where installing and running an agent is not feasible. Refer to the API documentation for details on available endpoints and usage patterns.
+
+  Obtain an API token by logging in with your user credentials. Use this token to authenticate subsequent API requests.
+
+  ```bash
+  curl -X POST https://test-api.cjj365.cc/apiv1/iroiro \
+  -H "Content-Type: application/json" \
+  -d '{
+        "action": "create_test_apikey",
+        "email": "${CERT_CTRL_TEST_EMAIL}",
+        "password": "${CERT_CTRL_TEST_PASSWORD}",
+        "apikey": {
+          "name": "dev-tooling-key",
+          "expires_in_seconds": 3600,
+          "permissions": [
+            {
+              "obtype": "certificates",
+              "obid": "1",
+              "actions": ["*"]
+            }
+          ]
+        }
+      }'
   ```
 
 ## Releasing

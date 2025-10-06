@@ -81,7 +81,8 @@ public:
   };
 
   explicit TestDeviceServer(cjj365::IIoContextManager &io_manager)
-      : acceptor_(io_manager.ioc()), access_token_("access-token-123"),
+      : acceptor_(io_manager.ioc()),
+        access_token_(issue_access_token("12345", device_code_)),
         refresh_token_(issue_refresh_token("12345")) {
     using tcp = asio::ip::tcp;
     tcp::endpoint ep(asio::ip::make_address("127.0.0.1"), 0);
@@ -147,6 +148,15 @@ public:
   }
 
 private:
+  static std::string issue_access_token(const std::string &sub,
+                                        const std::string &device_id) {
+    return jwt::create()
+        .set_type("JWT")
+        .set_payload_claim("sub", jwt::claim(sub))
+        .set_payload_claim("device_id", jwt::claim(device_id))
+        .sign(jwt::algorithm::hs256{"secret"});
+  }
+
   static std::string issue_refresh_token(const std::string &sub) {
     return jwt::create()
         .set_type("JWT")
@@ -217,14 +227,14 @@ private:
                          base_url() + "/device?user_code=ABCD-EFGH"},
                         {"interval", 5},
                         {"expires_in", 600}};
-      res.body() = json::serialize(body);
+      res.body() = json::serialize(json::object{{"data", body}});
     } else if (action == "device_poll") {
       ++poll_calls_;
       json::object body{{"status", "approved"},
                         {"access_token", access_token_},
                         {"refresh_token", refresh_token_},
                         {"expires_in", 600}};
-      res.body() = json::serialize(body);
+      res.body() = json::serialize(json::object{{"data", body}});
     } else {
       res.result(http::status::bad_request);
       res.body() = json::serialize(json::object{{"error", "unsupported"}});
@@ -256,7 +266,8 @@ private:
     }
     cv_.notify_all();
 
-    res.body() = json::serialize(json::object{{"status", "ok"}});
+    res.body() = json::serialize(
+        json::object{{"data", json::object{{"status", "ok"}}}});
     res.prepare_payload();
   }
 
@@ -294,7 +305,7 @@ protected:
   certctrl::ICertctrlConfigProvider *config_provider_{};
 
   void SetUp() override {
-    json::object app_json{{"auto_fetch_config", false},
+  json::object app_json{{"auto_apply_config", false},
                           {"verbose", "info"},
                           {"url_base", "to_set"}};
     write_json_file(temp_dir_.path / "application.json", app_json);

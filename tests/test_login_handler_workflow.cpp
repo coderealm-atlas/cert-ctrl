@@ -81,7 +81,8 @@ public:
   };
 
   TestDeviceServer(cjj365::IIoContextManager &io_manager)
-      : acceptor_(io_manager.ioc()), access_token_("access-token-123"),
+      : acceptor_(io_manager.ioc()),
+        access_token_(issue_access_token("12345", device_code_)),
         refresh_token_(issue_refresh_token("12345")) {
     using tcp = asio::ip::tcp;
     tcp::endpoint ep(asio::ip::make_address("127.0.0.1"), 0);
@@ -146,6 +147,15 @@ public:
   }
 
 private:
+  static std::string issue_access_token(const std::string &sub,
+                                        const std::string &device_id) {
+    return jwt::create()
+        .set_type("JWT")
+        .set_payload_claim("sub", jwt::claim(sub))
+        .set_payload_claim("device_id", jwt::claim(device_id))
+        .sign(jwt::algorithm::hs256{"secret"});
+  }
+
   static std::string issue_refresh_token(const std::string &sub) {
     return jwt::create()
         .set_type("JWT")
@@ -217,14 +227,14 @@ private:
                          base_url() + "/device?user_code=ABCD-EFGH"},
                         {"interval", 5},
                         {"expires_in", 600}};
-      res.body() = json::serialize(body);
+      res.body() = json::serialize(json::object{{"data", body}});
     } else if (action == "device_poll") {
       ++poll_calls_;
       json::object body{{"status", "approved"},
                         {"access_token", access_token_},
                         {"refresh_token", refresh_token_},
                         {"expires_in", 600}};
-      res.body() = json::serialize(body);
+      res.body() = json::serialize(json::object{{"data", body}});
     } else {
       res.result(http::status::bad_request);
       res.body() = json::serialize(json::object{{"error", "unsupported"}});
@@ -256,8 +266,9 @@ private:
     }
     cv_.notify_all();
 
-    res.body() = json::serialize(json::object{{"status", "ok"}});
-    res.prepare_payload();
+  res.body() = json::serialize(
+    json::object{{"data", json::object{{"status", "ok"}}}});
+  res.prepare_payload();
   }
 
   asio::ip::tcp::acceptor acceptor_;
@@ -302,7 +313,7 @@ protected:
   std::unique_ptr<certctrl::CliCtx> cli_ctx_ptr_;
   void SetUp() override {
 
-    json::object app_json{{"auto_fetch_config", false},
+  json::object app_json{{"auto_apply_config", false},
                           {"verbose", "info"},
                           {"url_base", "to_set"}};
     write_json_file(temp_dir.path / "application.json", app_json);
@@ -400,7 +411,12 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   ASSERT_FALSE(start_result->is_err()) << start_result->error();
 
   EXPECT_GE(server_->poll_calls(), 1);
-  EXPECT_EQ(server_->registration_calls(), 0);
+  auto record = server_->wait_for_registration(std::chrono::seconds(2));
+  ASSERT_TRUE(record.has_value()) << "registration payload missing";
+  EXPECT_EQ(server_->registration_calls(), 1);
+  EXPECT_EQ(server_->start_calls(), 1);
+  EXPECT_EQ(record->authorization,
+            std::string("Bearer ") + server_->access_token());
 
   std::optional<monad::MyVoidResult> reg_result;
   handler_->register_device().run([&](auto r) {
@@ -410,13 +426,7 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   notifier.waitForNotification();
   ASSERT_TRUE(reg_result.has_value());
   ASSERT_FALSE(reg_result->is_err()) << reg_result->error();
-
-  auto record = server_->wait_for_registration(std::chrono::seconds(2));
-  ASSERT_TRUE(record.has_value()) << "registration payload missing";
   EXPECT_EQ(server_->registration_calls(), 1);
-  EXPECT_EQ(server_->start_calls(), 1);
-  EXPECT_EQ(record->authorization,
-            std::string("Bearer ") + server_->access_token());
 
   EXPECT_EQ(record->target,
             "/apiv1/users/" + server_->expected_user_id() + "/devices");
@@ -429,15 +439,18 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   EXPECT_FALSE(dev_pk_b64.empty());
 
   EXPECT_FALSE(record->payload.if_contains("access_token"));
-  EXPECT_FALSE(record->payload.if_contains("refresh_token"));
+  ASSERT_TRUE(record->payload.if_contains("refresh_token"));
+  EXPECT_EQ(record->payload.at("refresh_token").as_string(),
+            server_->refresh_token());
 
   auto pk_path = temp_dir.path / "dev_pk.bin";
   auto sk_path = temp_dir.path / "dev_sk.bin";
   EXPECT_TRUE(fs::exists(pk_path));
   EXPECT_TRUE(fs::exists(sk_path));
 
-  auto access_path = temp_dir.path / "access_token.txt";
-  auto refresh_path = temp_dir.path / "refresh_token.txt";
+  auto state_dir = temp_dir.path / "state";
+  auto access_path = state_dir / "access_token.txt";
+  auto refresh_path = state_dir / "refresh_token.txt";
   EXPECT_TRUE(fs::exists(access_path));
   EXPECT_TRUE(fs::exists(refresh_path));
 

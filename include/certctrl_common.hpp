@@ -40,6 +40,7 @@ std::ostream &operator<<(std::ostream &os, const std::vector<T> &vec) {
 struct CliParams {
   std::vector<fs::path> config_dirs;
   std::vector<std::string> profiles;
+  fs::path runtime_dir;
   std::string subcmd;
   bool keep_running = false;
   std::string verbose; // vvvv
@@ -118,7 +119,7 @@ struct CliCtx {
       }
       set_pos++;
     }
-    // cmd conf set auto_fetch_config true
+  // cmd conf set auto_apply_config true
     if (set_pos + 2 >= positionals.size()) {
       return monad::MyResult<std::pair<std::string, std::string>>::Err(
           {.code = my_errors::GENERAL::SHOW_OPT_DESC,
@@ -136,7 +137,7 @@ struct CliCtx {
       }
       get_pos++;
     }
-    // cmd conf get auto_fetch_config
+  // cmd conf get auto_apply_config
     if (get_pos + 1 >= positionals.size()) {
       return monad::MyResult<std::string>::Err(
           {.code = my_errors::GENERAL::SHOW_OPT_DESC,

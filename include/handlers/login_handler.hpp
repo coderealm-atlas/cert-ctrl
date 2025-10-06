@@ -46,6 +46,7 @@ class LoginHandler : public certctrl::IHandler,
   std::string device_auth_url_;
   std::optional<data::deviceauth::StartResp> start_resp_;
   std::optional<data::deviceauth::PollResp> poll_resp_;
+  bool registration_completed_{false};
   boost::asio::any_io_executor exec_;
 
 public:

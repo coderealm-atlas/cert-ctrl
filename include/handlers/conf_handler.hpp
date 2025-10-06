@@ -64,7 +64,9 @@ public:
 
   std::string print_opt_desc() const {
     std::ostringstream oss;
-    oss << opt_desc_;
+    oss << "Usage: \ncert-ctrl conf get <key>\ncert-ctrl conf set <key> "
+           "<value>\n"
+        << std::endl;
     return oss.str();
   }
 

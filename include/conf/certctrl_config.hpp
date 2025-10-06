@@ -13,9 +13,12 @@
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
 #include "simple_data.hpp"
+#include <filesystem>
+#include <iostream>
 
 namespace certctrl
 {
+  namespace fs = std::filesystem;
 
   class ConfigFromOs; // forward declaration
 
@@ -23,9 +26,10 @@ namespace certctrl
 
   struct CertctrlConfig
   {
-    bool auto_fetch_config{false};
+    bool auto_apply_config{false};
     std::string verbose{};
     std::string base_url{"https://api.cjj365.cc"};
+    fs::path runtime_dir{};
 
     friend CertctrlConfig tag_invoke(const json::value_to_tag<CertctrlConfig> &,
                                      const json::value &jv)
@@ -35,10 +39,15 @@ namespace certctrl
         if (auto *jo_p = jv.if_object())
         {
           CertctrlConfig cc{};
-          if (auto *p = jo_p->if_contains("auto_fetch_config"))
-            cc.auto_fetch_config = p->as_bool();
+          if (auto *p = jo_p->if_contains("auto_apply_config"))
+          {
+            cc.auto_apply_config = p->as_bool();
+          }
           else
-            std::cerr << "auto_fetch_config not found, using default false" << std::endl;
+          {
+            std::cerr << "Configuration key 'auto_apply_config' not found; defaulting to false"
+                      << std::endl;
+          }
           if (auto *p = jo_p->if_contains("verbose"))
             cc.verbose = p->as_string().c_str();
           else
@@ -47,6 +56,10 @@ namespace certctrl
             cc.base_url = p->as_string().c_str();
           else
             std::cerr << "url_base not found, using default https://api.cjj365.cc" << std::endl;
+          if (auto *p = jo_p->if_contains("runtime_dir"))
+            cc.runtime_dir = fs::path(p->as_string().c_str());
+          else
+            std::cerr << "runtime_dir not found, using default empty path" << std::endl;
           return cc;
         }
         else

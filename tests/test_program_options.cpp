@@ -95,10 +95,17 @@ TEST(CliCtxTest, MissingSetValueProducesError) {
 }
 
 TEST(CliCtxTest, GetSubcommandValue) {
-  auto ctx = make_ctx({"prog", "conf", "get", "auto_fetch_config"});
+  auto ctx = make_ctx({"prog", "conf", "get", "auto_apply_config"});
   auto k = ctx.get_get_k();
   ASSERT_TRUE(k.is_ok());
-  EXPECT_EQ(k.value(), std::string("auto_fetch_config"));
+  EXPECT_EQ(k.value(), std::string("auto_apply_config"));
+}
+
+TEST(CliCtxTest, MissingGetValueProducesError) {
+  auto ctx = make_ctx({"prog", "conf", "get"});
+  auto k = ctx.get_get_k();
+  ASSERT_TRUE(k.is_err());
+  EXPECT_EQ(k.error().code, my_errors::GENERAL::SHOW_OPT_DESC);
 }
 
 TEST(CliCtxTest, GetUnrecognizedHelper) {

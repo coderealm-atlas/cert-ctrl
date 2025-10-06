@@ -1,12 +1,163 @@
-#include <boost/json/value.hpp>
+#include <boost/json.hpp>
 
 #include "cert_ctrl_entry.hpp"
 #include "certctrl_common.hpp"
 #include "util/my_logging.hpp"
 #include <boost/program_options.hpp>
 #include "version.h"
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <algorithm>
+#include <optional>
 
 namespace po = boost::program_options;
+
+namespace {
+
+namespace js = boost::json;
+
+struct DefaultPaths {
+  fs::path config_dir;
+  fs::path runtime_dir;
+};
+
+fs::path get_env_path(const char *name) {
+  if (const char *value = std::getenv(name); value && *value) {
+    return fs::path(value);
+  }
+  return {};
+}
+
+DefaultPaths resolve_default_paths() {
+#ifdef _WIN32
+  fs::path program_data = get_env_path("PROGRAMDATA");
+  if (program_data.empty()) {
+    program_data = fs::path("C:/ProgramData");
+  }
+  auto base = program_data / "certctrl";
+  return {base / "config", base / "runtime"};
+#elif defined(__APPLE__)
+  fs::path base("/Library/Application Support/certctrl");
+  return {base / "config", base / "runtime"};
+#else
+  return {fs::path("/etc/certctrl"), fs::path("/var/lib/certctrl")};
+#endif
+}
+
+void ensure_directory_exists(const fs::path &dir) {
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  if (ec && !fs::exists(dir)) {
+    throw std::runtime_error(
+        std::string("Failed to create directory '") + dir.string() +
+        "': " + ec.message());
+  }
+}
+
+void write_json_if_missing(const fs::path &file_path,
+                           const js::value &content) {
+  if (fs::exists(file_path)) {
+    return;
+  }
+  ensure_directory_exists(file_path.parent_path());
+  std::ofstream ofs(file_path);
+  if (!ofs) {
+    throw std::runtime_error("Unable to write default config file: " +
+                             file_path.string());
+  }
+  ofs << js::serialize(content) << std::endl;
+}
+
+bool bootstrap_default_config_dir(const fs::path &config_dir,
+                                  const fs::path &runtime_dir) {
+  std::error_code ec;
+  fs::create_directories(config_dir, ec);
+  if (ec && !fs::exists(config_dir)) {
+    std::cerr << "Warning: unable to create default config directory '"
+              << config_dir << "': " << ec.message() << std::endl;
+    return false;
+  }
+
+  try {
+  js::object application{{"auto_apply_config", false},
+                           {"verbose", "info"},
+                           {"url_base", "https://api.cjj365.cc"},
+                           {"runtime_dir", runtime_dir.string()}};
+    write_json_if_missing(config_dir / "application.json", application);
+
+    js::object httpclient{{"threads_num", 2},
+                          {"ssl_method", "tlsv12_client"},
+                          {"insecure_skip_verify", false},
+                          {"verify_paths", js::array{}},
+                          {"certificates", js::array{}},
+                          {"certificate_files", js::array{}},
+                          {"proxy_pool", js::array{}}};
+    write_json_if_missing(config_dir / "httpclient_config.json", httpclient);
+
+    js::object ioc{{"threads_num", 1}, {"name", "certctrl-ioc"}};
+    write_json_if_missing(config_dir / "ioc_config.json", ioc);
+
+    js::object log{{"level", "info"},
+                   {"log_dir", (runtime_dir / "logs").string()},
+                   {"log_file", "certctrl.log"},
+                   {"rotation_size", 10 * 1024 * 1024}};
+    write_json_if_missing(config_dir / "log_config.json", log);
+  } catch (const std::exception &ex) {
+    std::cerr << "Warning: failed to write default configuration files: "
+              << ex.what() << std::endl;
+    return false;
+  }
+
+  return true;
+}
+
+std::optional<fs::path>
+find_runtime_dir_override(const std::vector<fs::path> &config_dirs,
+                          const std::vector<std::string> &profiles) {
+  std::optional<fs::path> runtime_dir;
+  auto apply_file = [&](const fs::path &file) {
+    if (!fs::exists(file)) {
+      return;
+    }
+    std::ifstream ifs(file);
+    if (!ifs) {
+      return;
+    }
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+  boost::system::error_code ec;
+  auto value = js::parse(content, ec);
+    if (ec || !value.is_object()) {
+      return;
+    }
+    if (auto *rd = value.as_object().if_contains("runtime_dir")) {
+      if (rd->is_string()) {
+        runtime_dir = fs::path(std::string(rd->as_string()));
+      }
+    }
+  };
+
+  for (const auto &dir : config_dirs) {
+    apply_file(dir / "application.json");
+    for (const auto &profile : profiles) {
+      apply_file(dir / ("application." + profile + ".json"));
+    }
+    apply_file(dir / "application.override.json");
+  }
+  return runtime_dir;
+}
+
+void add_unique_path(std::vector<fs::path> &paths, const fs::path &candidate) {
+  if (candidate.empty()) {
+    return;
+  }
+  if (std::find(paths.begin(), paths.end(), candidate) == paths.end()) {
+    paths.push_back(candidate);
+  }
+}
+
+} // namespace
 
 int main(int argc, char *argv[]) {
   try {
@@ -102,6 +253,46 @@ int main(int argc, char *argv[]) {
       showUsage();
       return EXIT_SUCCESS;
     }
+
+    const DefaultPaths defaults = resolve_default_paths();
+    const bool default_config_available =
+        bootstrap_default_config_dir(defaults.config_dir, defaults.runtime_dir);
+
+    std::vector<fs::path> ordered_config_dirs;
+    if (default_config_available && fs::exists(defaults.config_dir)) {
+      add_unique_path(ordered_config_dirs, defaults.config_dir);
+    }
+
+    for (const auto &dir : cli_params.config_dirs) {
+      add_unique_path(ordered_config_dirs, dir);
+    }
+
+    if (ordered_config_dirs.empty()) {
+      std::cerr << "No configuration directories found. Provide --config-dirs"
+                << " or ensure the default directory '" << defaults.config_dir
+                << "' is accessible." << std::endl;
+      return EXIT_FAILURE;
+    }
+
+    auto runtime_override =
+        find_runtime_dir_override(ordered_config_dirs, cli_params.profiles);
+    fs::path resolved_runtime_dir =
+        runtime_override.value_or(defaults.runtime_dir);
+
+    try {
+      ensure_directory_exists(resolved_runtime_dir);
+      ensure_directory_exists(resolved_runtime_dir / "logs");
+    } catch (const std::exception &ex) {
+      std::cerr << "Failed to prepare runtime directory '"
+                << resolved_runtime_dir << "': " << ex.what()
+                << std::endl;
+      return EXIT_FAILURE;
+    }
+
+    add_unique_path(ordered_config_dirs, resolved_runtime_dir);
+    cli_params.config_dirs = ordered_config_dirs;
+    cli_params.runtime_dir = resolved_runtime_dir;
+
     static cjj365::ConfigSources config_sources(cli_params.config_dirs,
                                                 cli_params.profiles);
     {
