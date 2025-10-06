@@ -8,6 +8,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# CRITICAL: Must set runtime library BEFORE project() to apply to vcpkg packages
+if(MSVC)
+    # Use static runtime for standalone executable (matches x64-windows triplet)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 project(bbserver LANGUAGES CXX)
 
 # Interface target to unify Boost.DI constructor parameter limit across all targets
@@ -40,12 +46,34 @@ endif()
 set(BUILD_SHARED_LIBS OFF)  # Only build static libraries
 
 if(MSVC)
-    # Use dynamic runtime libraries
-    # set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD")
-    # set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MDd")
-    # Uncomment the following lines to use static runtime libraries instead
-    # set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
-    # set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
+    # Windows-specific definitions for better compatibility
+    add_compile_definitions(
+        WIN32_LEAN_AND_MEAN    # Exclude rarely-used stuff from Windows headers
+        NOMINMAX               # Prevent Windows.h from defining min/max macros
+        _CRT_SECURE_NO_WARNINGS # Disable MSVC security warnings for standard functions
+        _WIN32_WINNT=0x0602     # Align Windows API target with Boost binaries
+        WINVER=0x0602           # Keep WINVER in sync with _WIN32_WINNT
+        BOOST_USE_WINAPI_VERSION=0x0602
+    )
+    
+    # CRITICAL: Set this BEFORE vcpkg toolchain loads packages
+    # Use static runtime libraries for standalone executable (MUST match vcpkg triplet)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    
+    # Also set the old-style flags for compatibility
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /MT")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /MTd")
+    
+    # Enable multi-processor compilation for faster builds
+    add_compile_options(/MP)
+    
+    # Add /bigobj flag for files with large object sections (many templates)
+    add_compile_options(/bigobj)
+    
+    # Link Windows sockets library for networking
+    link_libraries(ws2_32)
 endif()
 
 include(cmake/CPM.cmake)
@@ -167,8 +195,11 @@ else()
         set(CMAKE_C_FLAGS_RELEASE "-O3 -flto=thin -DNDEBUG")
         set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-fuse-ld=lld")
     elseif(MSVC)
-        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /DNDEBUG")
-        set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2 /DNDEBUG")
+        # Enhanced MSVC optimization flags
+        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Ob2 /DNDEBUG")
+        set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2 /Ob2 /DNDEBUG")
+        # Enable function-level linking for better optimization
+        set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /OPT:REF /OPT:ICF")
     endif()
 endif()
 

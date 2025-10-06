@@ -41,7 +41,7 @@ else()
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(test_program_options)
+gtest_discover_tests(test_program_options DISCOVERY_TIMEOUT 30)
 
 add_executable(test_login_handler_workflow
   test_login_handler_workflow.cpp

@@ -231,7 +231,7 @@ void unzip_to_folder(const fs::path& zip_file_path,
   // --- Open OS file stream ---
   os_stream = mz_stream_os_create();
   if (!os_stream) throw std::runtime_error("Failed to create OS stream.");
-  int res = mz_stream_os_open(os_stream, zip_file_path.string().c_str(),
+  int res = mz_stream_os_open(os_stream, zip_file_path.generic_string().c_str(),
                               MZ_OPEN_MODE_READ);
   if (res != MZ_OK)
     throw std::runtime_error("Failed to open file for reading: " +
@@ -310,7 +310,7 @@ void zip_a_folder_old(const fs::path& folder_path,
 
   stream = mz_stream_os_create();
   buf_stream = mz_stream_buffered_create();
-  mz_stream_buffered_open(buf_stream, zip_file_path.c_str(),
+  mz_stream_buffered_open(buf_stream, zip_file_path.generic_string().c_str(),
                           MZ_OPEN_MODE_WRITE);
 
   zip_handle = mz_zip_create();

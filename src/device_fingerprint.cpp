@@ -4,7 +4,12 @@
 #include <sstream>
 #include <vector>
 #include <cstring>
+#ifdef _WIN32
+#include <winsock2.h>
+#pragma comment(lib, "ws2_32.lib")
+#else
 #include <unistd.h>
+#endif
 
 #include "openssl/openssl_raii.hpp"  // for sha256_hex
 
