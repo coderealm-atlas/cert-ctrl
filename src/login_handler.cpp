@@ -145,6 +145,12 @@ VoidPureIO LoginHandler::register_device() {
          .what = "Device authorization state unavailable"});
   }
 
+  if (registration_completed_) {
+    output_hub_.printer().yellow()
+        << "Device already registered; skipping." << std::endl;
+    return IO<void>::pure();
+  }
+
   const std::string status = poll_resp_->status;
   if (status != "ready" && status != "approved") {
     output_hub_.printer().yellow()
@@ -522,24 +528,26 @@ VoidPureIO LoginHandler::register_device() {
         }
 
         if (!out_dir.empty()) {
+          const auto state_dir = out_dir / "state";
           if (!effective_access.empty()) {
             if (auto err =
-                    write_text_0600(out_dir / "access_token.txt",
+                    write_text_0600(state_dir / "access_token.txt",
                                     effective_access)) {
               output_hub_.logger().warning() << *err << std::endl;
             }
           }
           if (!effective_refresh.empty()) {
             if (auto err =
-                    write_text_0600(out_dir / "refresh_token.txt",
+                    write_text_0600(state_dir / "refresh_token.txt",
                                     effective_refresh)) {
               output_hub_.logger().warning() << *err << std::endl;
             }
           }
         }
 
-        output_hub_.printer().green()
-            << "Device registered successfully" << std::endl;
+    registration_completed_ = true;
+    output_hub_.printer().green()
+      << "Device registered successfully" << std::endl;
         if (device_id_str && !device_id_str->empty()) {
           output_hub_.printer().green()
               << "Assigned device ID: " << *device_id_str << std::endl;

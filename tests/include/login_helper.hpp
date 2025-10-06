@@ -134,7 +134,7 @@ device_start_io(client_async::HttpClientManager &mgr,
 
   std::string url = base_url + "/auth/device";
   return http_io<PostJsonTag>(url)
-      .map([&](auto ex) {
+      .map([cookie](auto ex) {
         ex->setRequestJsonBody(
             json::object{{"action", "device_start"},
                          {"scopes", json::array{json::value("openid"),
@@ -158,7 +158,7 @@ device_poll_io(client_async::HttpClientManager &mgr,
 
   std::string url = base_url + "/auth/device";
   return http_io<PostJsonTag>(url)
-      .map([&](auto ex) {
+      .map([device_code, device_id](auto ex) {
         json::object body{{"action", "device_poll"},
                           {"device_code", device_code}};
         if (device_id.has_value()) {
@@ -183,7 +183,7 @@ device_verify_io(client_async::HttpClientManager &mgr,
 
   std::string url = base_url + "/auth/device";
   return http_io<PostJsonTag>(url)
-      .map([&, user_code, approve](auto ex) {
+      .map([cookie, user_code, approve](auto ex) {
         json::object body{{"action", "device_verify"},
                           {"user_code", user_code},
                           {"approve", approve}};

@@ -33,6 +33,7 @@ protected:
     // Minimal inline config provider using a temp directory config file pattern
     // similar to existing tests We'll create a temporary directory with
     // httpclient_config.json if needed.
+    base_url_ = testutil::url_base();
     static fs::path tmp_root =
         fs::temp_directory_path() / "certctrl-integration";
     fs::create_directories(tmp_root);
@@ -63,7 +64,7 @@ protected:
 
     http_client_mgr_ = &inj.create<client_async::HttpClientManager &>();
     std::optional<monad::Result<data::LoginSuccess, monad::Error>> login_r;
-    testutil::login_io(*http_client_mgr_, base_url_, testutil::login_email(),
+  testutil::login_io(*http_client_mgr_, base_url_, testutil::login_email(),
                        testutil::login_password())
         .run([&](auto r) {
           login_r = std::move(r);

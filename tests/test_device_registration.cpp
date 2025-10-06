@@ -74,7 +74,7 @@ protected:
   void SetUp() override {
     base_url_ = testutil::url_base();
 
-    json::object app_json{{"auto_fetch_config", false},
+  json::object app_json{{"auto_apply_config", false},
                           {"verbose", "info"},
                           {"url_base", base_url_}};
     write_json_file(temp_dir_.path / "application.json", app_json);
