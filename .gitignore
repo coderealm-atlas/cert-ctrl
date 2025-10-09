@@ -33,3 +33,7 @@ Testing/
 t.json
 .vscode/settings.json
 db/
+install_debug_*/
+bundle_debug_*
+bundle_captures/
+node_modules/

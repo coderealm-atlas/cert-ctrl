@@ -8,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include "base64.h"
 
@@ -60,6 +61,7 @@ bool decrypt_hybrid_gcm_sealed(const unsigned char* pk, const unsigned char* sk,
                                const std::string& ciphertext,
                                const std::string& nonce,
                                const std::string& enc_key,
-                               std::string& message_plain);
+                            std::string& message_plain,
+                            std::string_view aad = {});
 }  // namespace cryptutil
 }  // namespace cjj365

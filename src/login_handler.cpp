@@ -7,6 +7,7 @@
 #include "util/user_key_crypto.hpp"
 #include <boost/log/trivial.hpp>
 #include <chrono>
+#include <algorithm>
 #include <cstdlib>
 #include <format>
 #include <filesystem>
@@ -37,11 +38,11 @@ VoidPureIO LoginHandler::start() {
   });
 }
 
-monad::IO<data::deviceauth::StartResp>
+monad::IO<::data::deviceauth::StartResp>
 LoginHandler::start_device_authorization() {
   using namespace monad;
-  using data::deviceauth::StartResp;
-  auto self = shared_from_this();
+  using ::data::deviceauth::StartResp;
+  auto self = this->shared_from_this();
   return http_io<PostJsonTag>(device_auth_url_)
       .map([](auto ex) {
         json::value body{{"action", "device_start"},
@@ -62,9 +63,9 @@ LoginHandler::start_device_authorization() {
       });
 }
 
-monad::IO<data::deviceauth::PollResp> LoginHandler::poll_device_once() {
+monad::IO<::data::deviceauth::PollResp> LoginHandler::poll_device_once() {
   using namespace monad;
-  using data::deviceauth::PollResp;
+  using ::data::deviceauth::PollResp;
 
   if (!start_resp_) {
     return monad::IO<PollResp>::fail(
@@ -92,15 +93,18 @@ monad::IO<data::deviceauth::PollResp> LoginHandler::poll_device_once() {
 
 VoidPureIO LoginHandler::poll() {
   using namespace monad;
-  using data::deviceauth::PollResp;
+  using ::data::deviceauth::PollResp;
 
   if (!start_resp_) {
     return IO<void>::fail({.code = my_errors::GENERAL::INVALID_ARGUMENT,
                            .what = "Device authorization has not been started"});
   }
 
-  const int max_retries = start_resp_->expires_in / start_resp_->interval;
-  const auto interval = std::chrono::seconds(start_resp_->interval);
+  const int interval_seconds = std::max(1, start_resp_->interval);
+  const auto interval = std::chrono::seconds(interval_seconds);
+  const int base_attempts =
+      start_resp_->expires_in > 0 ? start_resp_->expires_in / interval_seconds : 0;
+  const int max_retries = std::max(2, base_attempts + 1);
 
   auto spinner = std::make_shared<customio::Spinner>(
       this->exec_, output_hub_.printer().stream(), std::string{"Polling... "},
@@ -108,7 +112,16 @@ VoidPureIO LoginHandler::poll() {
       /*enabled=*/true);
   spinner->start();
 
-  auto poll_once = [this]() { return this->poll_device_once(); };
+  auto attempt_counter = std::make_shared<int>(0);
+  auto poll_once = [this, attempt_counter]() {
+    return this->poll_device_once().map([this, attempt_counter](auto resp) {
+      ++(*attempt_counter);
+      output_hub_.logger().trace()
+          << "Device authorization poll attempt " << *attempt_counter
+          << " status=" << resp.status << std::endl;
+      return resp;
+    });
+  };
 
   return poll_once()
       .poll_if(max_retries, interval, this->exec_,
@@ -298,9 +311,11 @@ VoidPureIO LoginHandler::register_device() {
   cjj365::cryptutil::BoxKeyPair box_kp{};
   bool generated_new_keys = false;
   std::filesystem::path pk_path, sk_path;
+  std::filesystem::path key_dir;
   if (!out_dir.empty()) {
-    pk_path = out_dir / "dev_pk.bin";
-    sk_path = out_dir / "dev_sk.bin";
+    key_dir = out_dir / "keys";
+    pk_path = key_dir / "dev_pk.bin";
+    sk_path = key_dir / "dev_sk.bin";
     std::error_code ec;
     bool have_pk =
         std::filesystem::exists(pk_path, ec) &&

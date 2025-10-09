@@ -245,3 +245,14 @@ get_cert_revoked(const DeviceUpdateSignal &s) {
 }
 
 } // namespace data
+
+// Provide aliases inside certctrl::data so both namespaces can reference
+// update-signal types without qualification mismatches in tooling.
+namespace certctrl::data {
+using ::data::CertRenewedRef;
+using ::data::CertRevokedRef;
+using ::data::DeviceUpdateSignal;
+using ::data::DeviceUpdatesData;
+using ::data::DeviceUpdatesResponse;
+using ::data::InstallUpdatedRef;
+} // namespace certctrl::data

@@ -10,6 +10,7 @@
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
+#include "handlers/agent_update_checker.hpp"
 #include "handlers/conf_handler.hpp"
 #include "handlers/handler_dispatcher.hpp"
 #include "handlers/i_handler.hpp"
@@ -20,6 +21,7 @@
 #include "ioc_manager_config_provider.hpp"
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
+#include "version.h"
 
 namespace di = boost::di;
 namespace certctrl {
@@ -95,22 +97,61 @@ public:
     output_hub_ = &injector.template create<customio::ConsoleOutput &>();
     auto self = this->shared_from_this();
 
+    // output the sources
+    output_hub_->logger().info() << "Config source directories:" << std::endl;
+    for (const auto &source : config_sources_.paths_) {
+      output_hub_->logger().info() << " - " << source << std::endl;
+    }
+
     // Use dispatcher injected with all handlers (as
     // vector<unique_ptr<IHandler>>)
     auto &dispatcher =
         injector.template create<certctrl::HandlerDispatcher &>();
 
-    if (dispatcher.dispatch_run(cli_ctx_.params.subcmd, [self](auto r) {
+    bool dispatched = dispatcher.dispatch_run(
+        cli_ctx_.params.subcmd, [self](auto r) {
           if (r.is_err()) {
             self->print_error(r.error());
           } else {
             self->info("Handler completed successfully.");
           }
           return self->blocker_.stop();
-        })) {
-      // Dispatched
-    } else {
-      if (cli_ctx_.params.keep_running) {
+        });
+
+    if (!dispatched) {
+      if (cli_ctx_.params.subcmd.empty()) {
+        output_hub_->logger().info()
+            << "No subcommand provided; running default update workflow." << std::endl;
+
+        auto update_checker =
+            injector.template create<std::shared_ptr<certctrl::AgentUpdateChecker>>();
+        auto updates_handler =
+            injector.template create<std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+
+        auto workflow = update_checker->run_once(MYAPP_VERSION)
+                             .catch_then([self, update_checker](monad::Error err) {
+                               self->output_hub_->logger().warning()
+                                   << "Agent update check failed: " << err.what
+                                   << std::endl;
+                               return monad::IO<void>::pure();
+                             })
+                             .then([updates_handler]() {
+                               return updates_handler->start();
+                             });
+
+        workflow.run([self, update_checker, updates_handler](auto r) {
+          if (r.is_err()) {
+            self->print_error(r.error());
+          } else {
+            if (self->cli_ctx_.params.keep_running) {
+              self->info("Default updates polling loop active.");
+            } else {
+              self->info("Default update workflow completed.");
+            }
+          }
+          return self->blocker_.stop();
+        });
+      } else if (cli_ctx_.params.keep_running) {
         output_hub_->logger().info()
             << "Running in keep running mode." << std::endl;
       } else {

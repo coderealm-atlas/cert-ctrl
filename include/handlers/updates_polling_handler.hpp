@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <algorithm>
 #include <format>
 #include <optional>
 #include <string>
@@ -22,6 +23,7 @@
 #include "handlers/signal_handlers/install_updated_handler.hpp"
 #include "handlers/signal_handlers/cert_renewed_handler.hpp"
 #include "handlers/signal_handlers/cert_revoked_handler.hpp"
+#include "handlers/install_config_manager.hpp"
 #include "http_client_manager.hpp"
 #include "http_client_monad.hpp"
 #include "io_context_manager.hpp"
@@ -60,10 +62,11 @@ class UpdatesPollingHandler
   std::string endpoint_base_; // /apiv1/devices/self/updates
   std::string cursor_;
   int last_http_status_{0};
-  std::optional<data::DeviceUpdatesResponse> last_updates_;
+  std::optional<::data::DeviceUpdatesResponse> last_updates_;
   std::string parse_error_;
+  std::string last_request_url_;
   // loop controls
-  int interval_ms_{1000}; // delay between polls when not long-polling
+  int interval_ms_{5000}; // delay between polls when not long-polling (default 5s)
   // removed max_loops_ – service runs continuously while keep_running
   // signal counters (cumulative this run)
   size_t install_updated_count_{0};
@@ -71,12 +74,8 @@ class UpdatesPollingHandler
   size_t cert_revoked_count_{0};
   // signal dispatcher
   std::unique_ptr<SignalDispatcher> signal_dispatcher_;
-  // adaptive backoff tracking
-  size_t consecutive_204_count_{0};
-  int backoff_level_{0};
-  static constexpr int max_backoff_level_{5};
-  static constexpr int base_interval_{5}; // seconds
-  static constexpr std::array<int, 5> backoff_schedule_{300, 900, 3600, 21600, 86400};
+  std::shared_ptr<InstallConfigManager> install_config_manager_;
+  std::optional<int> server_override_delay_ms_;
 
 public:
   UpdatesPollingHandler(
@@ -98,8 +97,8 @@ public:
     "limit",
     po::value<std::size_t>()->default_value(static_cast<std::size_t>(20)),
     "max signals (1-100)")(
-        "interval", po::value<int>()->default_value(1000),
-        "interval ms between polls when not long-polling");
+      "interval", po::value<int>()->default_value(5000),
+        "interval milliseconds between polls when not long-polling (default 5000 = 5s)");
     opt_desc_.add(create_opts);
     po::parsed_options parsed = po::command_line_parser(cli_ctx_.unrecognized)
                                     .options(opt_desc_)
@@ -124,25 +123,28 @@ public:
         << "UpdatesPollingHandler initialized with options: " << opt_desc_
         << std::endl;
     
-    // Initialize signal dispatcher with handlers
-    auto config_dir = config_sources_.paths_.back();
-    signal_dispatcher_ = std::make_unique<SignalDispatcher>(config_dir);
-    
-    // Register signal handlers
-    signal_dispatcher_->register_handler(
-        std::make_shared<signal_handlers::InstallUpdatedHandler>(
-            config_dir,
-            output_hub_));
-    
-    signal_dispatcher_->register_handler(
-        std::make_shared<signal_handlers::CertRenewedHandler>(
-            config_dir,
-            output_hub_));
-    
-    signal_dispatcher_->register_handler(
-        std::make_shared<signal_handlers::CertRevokedHandler>(
-            config_dir,
-            output_hub_));
+  // Initialize signal dispatcher with handlers
+  auto runtime_dir = config_sources_.paths_.back();
+  signal_dispatcher_ = std::make_unique<SignalDispatcher>(runtime_dir);
+
+  install_config_manager_ = std::make_shared<InstallConfigManager>(
+    runtime_dir, certctrl_config_provider_, output_hub_, &http_client_);
+
+  // Register signal handlers
+  signal_dispatcher_->register_handler(
+    std::make_shared<signal_handlers::InstallUpdatedHandler>(
+      install_config_manager_,
+      output_hub_));
+
+  signal_dispatcher_->register_handler(
+    std::make_shared<signal_handlers::CertRenewedHandler>(
+      install_config_manager_,
+      output_hub_));
+
+  signal_dispatcher_->register_handler(
+    std::make_shared<signal_handlers::CertRevokedHandler>(
+      install_config_manager_,
+      output_hub_));
     
     output_hub_.logger().info()
         << "Registered " << signal_dispatcher_->handler_count() 
@@ -150,6 +152,10 @@ public:
   }
 
   std::string command() const override { return "updates"; }
+
+  const std::string &last_request_url() const noexcept {
+    return last_request_url_;
+  }
 
   monad::IO<void> start() override {
     if (!cli_ctx_.params.keep_running) {
@@ -162,12 +168,12 @@ public:
     // perform one poll, swallow/log error, then schedule next (async delay if
     // needed)
     return poll_once()
-        .catch_then([self = shared_from_this(), iter](monad::Error e) {
+  .catch_then([self = this->shared_from_this(), iter](monad::Error e) {
           self->output_hub_.logger().error()
               << "poll iteration error: " << e.what << std::endl;
           return monad::IO<void>::pure(); // continue
         })
-        .then([self = shared_from_this(), iter]() {
+  .then([self = this->shared_from_this(), iter]() {
           if (!self->cli_ctx_.params.keep_running) {
             self->output_hub_.logger().info()
                 << "keep_running flag cleared; stopping polling loop"
@@ -177,8 +183,12 @@ public:
           // Use asynchronous delay to avoid blocking thread when not
           // long-polling
           if (!self->options_.long_poll) {
-            return monad::delay_for<void>(self->ioc_, std::chrono::milliseconds(
-                                                          self->interval_ms_))
+            int delay_ms = self->server_override_delay_ms_.value_or(self->interval_ms_);
+            if (delay_ms < 10) {
+              delay_ms = 10;
+            }
+            self->server_override_delay_ms_.reset();
+            return monad::delay_for<void>(self->ioc_, std::chrono::milliseconds(delay_ms))
                 .then([self, iter]() { return self->poll_loop(iter + 1); });
           }
           // Long-poll immediately chains next iteration (server waits
@@ -197,23 +207,24 @@ private:
     // Extract cursor from ETag header
     if (auto it = ex->response->find(http::field::etag); 
         it != ex->response->end()) {
-      cursor_ = std::string(it->value());
+      std::string etag = std::string(it->value());
+      if (!etag.empty() && etag.front() == '"' && etag.back() == '"' && etag.size() >= 2) {
+        cursor_ = etag.substr(1, etag.size() - 2);
+      } else {
+        cursor_ = std::move(etag);
+      }
       save_cursor(cursor_);
     }
     
     output_hub_.logger().debug()
         << "204 No Content, cursor=" << cursor_ << std::endl;
     
-    // Track consecutive 204s for adaptive backoff
-    ++consecutive_204_count_;
-    adjust_backoff();
-    
     return monad::IO<void>::pure();
   }
   
   template<typename ExchangePtr>
   monad::IO<void> handle_ok_with_signals(ExchangePtr ex) {
-    auto parse_result = ex->template parseJsonDataResponse<data::DeviceUpdatesResponse>();
+  auto parse_result = ex->template parseJsonDataResponse<::data::DeviceUpdatesResponse>();
     
     if (parse_result.is_err()) {
       return monad::IO<void>::from_result(
@@ -225,10 +236,6 @@ private:
     // Update cursor
     cursor_ = resp.data.cursor;
     save_cursor(cursor_);
-    
-    // Reset backoff on updates
-    consecutive_204_count_ = 0;
-    backoff_level_ = 0;
     
     output_hub_.logger().info()
         << "200 OK, " << resp.data.signals.size()
@@ -260,12 +267,55 @@ private:
   monad::IO<void> handle_error_status(ExchangePtr ex, int status) {
     std::string body = ex->response->body();
     output_hub_.logger().error()
-        << "HTTP " << status << " error: " 
+        << "HTTP " << status << " error on " << last_request_url_ << ": "
         << body.substr(0, 200) << std::endl;
     
     // Parse JSON error if available
     parse_error_ = body;
-    
+
+    if (status == 429 || status == 503) {
+      namespace http = boost::beast::http;
+      auto header_it = ex->response->find(http::field::retry_after);
+      bool applied = false;
+      if (header_it != ex->response->end()) {
+        std::string header_value = std::string(header_it->value());
+        try {
+          int retry_seconds = std::stoi(header_value);
+          if (retry_seconds > 0) {
+            server_override_delay_ms_ = std::max(interval_ms_, retry_seconds * 1000);
+            applied = true;
+          }
+        } catch (const std::exception &) {
+          // ignore malformed Retry-After header
+        }
+      }
+      if (!applied) {
+        try {
+          auto jv = boost::json::parse(body);
+          if (jv.is_object()) {
+            if (auto *err = jv.as_object().if_contains("error")) {
+              if (err->is_object()) {
+                if (auto *params = err->as_object().if_contains("params")) {
+                  if (params->is_object()) {
+                    if (auto *retry_after = params->as_object().if_contains("retry_after")) {
+                      if (retry_after->is_int64()) {
+                        int retry_seconds = static_cast<int>(retry_after->as_int64());
+                        if (retry_seconds > 0) {
+                          server_override_delay_ms_ = std::max(interval_ms_, retry_seconds * 1000);
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (const std::exception &) {
+          // ignore malformed JSON
+        }
+      }
+    }
+
     return monad::IO<void>::fail(
         monad::Error{
             .code = my_errors::NETWORK::READ_ERROR,
@@ -296,23 +346,6 @@ private:
     }
   }
   
-  void adjust_backoff() {
-    if (consecutive_204_count_ >= 3 && backoff_level_ < max_backoff_level_) {
-      backoff_level_++;
-      int new_interval = get_backoff_interval();
-      output_hub_.logger().debug()
-          << "Adjusting backoff: level=" << backoff_level_
-          << " interval=" << new_interval << "s"
-          << " (after " << consecutive_204_count_ << " consecutive 204s)" << std::endl;
-    }
-  }
-  
-  int get_backoff_interval() const {
-    if (backoff_level_ == 0) return base_interval_;
-    return backoff_schedule_[std::min(backoff_level_ - 1, 
-                                     static_cast<int>(backoff_schedule_.size() - 1))];
-  }
-  
   monad::IO<void> poll_once() {
     using namespace monad;
     namespace http = boost::beast::http;
@@ -321,12 +354,15 @@ private:
     using monad::http_request_io;
     
     // Obtain device token from env for prototype
-    const char *tok = std::getenv("DEVICE_ACCESS_TOKEN");
-    if (!tok || !*tok) {
-      return IO<void>::fail(
-          monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                       .what = "DEVICE_ACCESS_TOKEN env not set"});
-    }
+  const char *tok = std::getenv("DEVICE_ACCESS_TOKEN");
+  if (!tok || !*tok) {
+    output_hub_.printer().yellow()
+      << "No device access token found; please run `cert_ctrl login` first."
+      << std::endl;
+    return IO<void>::fail(
+      monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
+             .what = "DEVICE_ACCESS_TOKEN env not set; run cert_ctrl login"});
+  }
     
     // Build URL with query parameters
     std::string url = endpoint_base_;
@@ -343,14 +379,18 @@ private:
       query += (query.empty() ? "?" : "&");
       query += "wait=" + std::to_string(options_.wait_seconds);
     }
-    url += query;
-    
-    return http_io<GetStringTag>(url)
+  url += query;
+
+  last_request_url_ = url;
+  parse_error_.clear();
+
+  return http_io<GetStringTag>(url)
         .map([tok, this](auto ex) {
           ex->request.set(http::field::authorization,
                           std::string("Bearer ") + tok);
           if (!cursor_.empty()) {
-            ex->request.set(http::field::if_none_match, cursor_);
+            ex->request.set(http::field::if_none_match,
+                            std::format("\"{}\"", cursor_));
           }
           return ex;
         })
@@ -380,7 +420,7 @@ private:
 
 public:
   int last_http_status() const { return last_http_status_; }
-  const std::optional<data::DeviceUpdatesResponse> &last_updates() const {
+  const std::optional<::data::DeviceUpdatesResponse> &last_updates() const {
     return last_updates_;
   }
   const std::string &last_cursor() const { return cursor_; }

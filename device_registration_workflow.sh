@@ -272,7 +272,7 @@ save_device_secret_key() {
     print_substep "Saving device secret key to client config"
     
     # Save the private key in binary format to a secure location
-    local secret_key_file="$CLIENT_CONFIG_DIR/device.key"
+    local secret_key_file="$CLIENT_CONFIG_DIR/dev_sk.bin"
     echo "$X25519_PRIVATE_KEY" | base64 -d > "$secret_key_file"
     chmod 600 "$secret_key_file"  # Secure permissions
     

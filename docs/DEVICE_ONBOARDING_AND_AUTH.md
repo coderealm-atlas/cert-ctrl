@@ -145,13 +145,28 @@ return upsert(user_id,
 - `cert_record_devices.device_keyfp` must match this fingerprint for per-device wraps.
 
 ### Client Storage Layout
+
+The production agent persists its device credentials beneath the configured
+`runtime_dir` (see `CONFIG_DIR_PROVISIONING.md`). During login it creates:
+
 ```
-~/.config/bbserver_client/
-├── device_private.key      # PEM, chmod 600
-├── device_public.key       # PEM
-├── device.key              # raw 32-byte secret
-└── device_info.json        # metadata, timestamps
+<runtime_dir>/
+├── state/
+│   ├── access_token.txt
+│   └── refresh_token.txt
+└── keys/
+  ├── dev_pk.bin          # Device public key, mode 600
+  ├── dev_sk.bin          # Device secret key, mode 600
+  └── account_keys/…      # Future CA account material
 ```
+
+Only the daemon/service account and authorised operators should have read access
+to `keys/`. Packaging should set directory ownership to the `certctrl` service
+user so private material never leaks.
+
+> **Note:** The `device_registration_workflow.sh` helper script still writes a
+> standalone keypair under `~/.config/bbserver_client/` for manual testing. When
+> running the real agent you should rely on the `runtime_dir/keys` layout above.
 
 ## Certificate Assignment and Sentinel-Based Reissue
 

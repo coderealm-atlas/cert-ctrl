@@ -367,7 +367,7 @@ function Generate-X25519KeyPair {
 
 function Save-DeviceSecretKey {
     Write-Substep 'Saving device secret key to client config'
-    $secretKeyPath = Join-Path $script:ClientConfigDir 'device.key'
+    $secretKeyPath = Join-Path $script:ClientConfigDir 'dev_sk.bin'
     $metadataPath = Join-Path $script:ClientConfigDir 'device_info.json'
 
     [IO.File]::WriteAllBytes($secretKeyPath, [Convert]::FromBase64String($script:X25519PrivateKey))

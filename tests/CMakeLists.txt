@@ -9,7 +9,7 @@ if(NOT BUILD_TESTING)
 endif()
 
 find_package(GTest CONFIG REQUIRED)
-find_package(Boost REQUIRED COMPONENTS program_options json asio url uuid process iostreams log log_setup system)
+find_package(Boost REQUIRED COMPONENTS program_options json asio url uuid process iostreams log log_setup system filesystem thread chrono date_time container)
 find_package(fmt CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -148,8 +148,49 @@ target_link_libraries(test_device_registration PRIVATE
 gtest_discover_tests(test_device_registration DISCOVERY_TIMEOUT 60)
 
 # Updates polling handler test
+add_executable(test_install_config_manager
+  test_install_config_manager.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_config_manager.cpp
+  ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
+  ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
+  ${HTTP_CLIENT_SRCS}
+)
+target_compile_features(test_install_config_manager PRIVATE cxx_std_20)
+target_include_directories(test_install_config_manager PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+  ${CMAKE_SOURCE_DIR}/external/http_client
+)
+target_link_libraries(test_install_config_manager PRIVATE
+  GTest::gtest_main
+  Boost::program_options
+  Boost::json
+  Boost::asio
+  Boost::system
+  Boost::url
+  Boost::container
+  Boost::uuid
+  Boost::process
+  Boost::iostreams
+  Boost::log
+  Boost::log_setup
+  Boost::filesystem
+  Boost::thread
+  Boost::chrono
+  Boost::date_time
+  fmt::fmt
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  unofficial-sodium::sodium
+)
+
+gtest_discover_tests(test_install_config_manager DISCOVERY_TIMEOUT 30)
+
 add_executable(test_updates_polling_handler
   test_updates_polling_handler.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_config_manager.cpp
+  ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
+  ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_updates_polling_handler PRIVATE cxx_std_20)
@@ -166,11 +207,16 @@ target_link_libraries(test_updates_polling_handler PRIVATE
   Boost::asio
   Boost::system
   Boost::url
+  Boost::container
   Boost::uuid
   Boost::process
   Boost::iostreams
   Boost::log
   Boost::log_setup
+  Boost::filesystem
+  Boost::thread
+  Boost::chrono
+  Boost::date_time
   fmt::fmt
   OpenSSL::SSL
   OpenSSL::Crypto

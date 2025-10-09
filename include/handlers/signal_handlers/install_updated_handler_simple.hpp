@@ -23,7 +23,7 @@ public:
         return "install.updated";
     }
     
-    monad::IO<void> handle(const data::DeviceUpdateSignal& signal) override {
+    monad::IO<void> handle(const ::data::DeviceUpdateSignal& signal) override {
         output_hub_.logger().info()
             << "Processing install.updated signal: "
             << "ts_ms=" << signal.ts_ms
@@ -34,7 +34,7 @@ public:
         return monad::IO<void>::pure();
     }
     
-    bool should_process(const data::DeviceUpdateSignal& signal) const override {
+    bool should_process(const ::data::DeviceUpdateSignal& signal) const override {
         return true; // Process all for now
     }
 };

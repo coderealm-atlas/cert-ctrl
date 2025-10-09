@@ -1,8 +1,9 @@
 #pragma once
 
+#include "handlers/install_config_manager.hpp"
 #include "handlers/signal_handlers/signal_handler_base.hpp"
 #include "customio/console_output.hpp"
-#include <filesystem>
+#include <boost/json.hpp>
 
 namespace certctrl {
 namespace signal_handlers {
@@ -13,50 +14,26 @@ namespace signal_handlers {
  */
 class CertRenewedHandler : public ISignalHandler {
 private:
-    std::filesystem::path config_dir_;
+    std::shared_ptr<InstallConfigManager> config_manager_;
     customio::ConsoleOutput& output_hub_;
     
 public:
     CertRenewedHandler(
-        const std::filesystem::path& config_dir,
+        std::shared_ptr<InstallConfigManager> config_manager,
         customio::ConsoleOutput& output_hub)
-        : config_dir_(config_dir)
+        : config_manager_(std::move(config_manager))
         , output_hub_(output_hub) {}
     
     std::string signal_type() const override {
         return "cert.renewed";
     }
     
-    monad::IO<void> handle(const data::DeviceUpdateSignal& signal) override {
+    monad::IO<void> handle(const ::data::DeviceUpdateSignal& signal) override {
         output_hub_.logger().info()
             << "Processing cert.renewed: "
             << boost::json::serialize(signal.ref) << std::endl;
         
-        try {
-            auto cert_id = signal.ref.at("cert_id").as_int64();
-            
-            std::string serial;
-            if (signal.ref.contains("serial")) {
-                serial = std::string(signal.ref.at("serial").as_string());
-            }
-            
-            output_hub_.logger().info()
-                << "Certificate renewed: cert_id=" << cert_id
-                << " serial=" << serial << std::endl;
-            
-            // TODO: Fetch certificate from server and install
-            output_hub_.logger().info()
-                << "Certificate " << cert_id << " processed successfully" << std::endl;
-            
-            return monad::IO<void>::pure();
-            
-        } catch (const std::exception& e) {
-            return monad::IO<void>::fail(
-                monad::Error{
-                    .code = my_errors::GENERAL::INVALID_ARGUMENT,
-                    .what = std::string("Failed to parse signal ref: ") + e.what()
-                });
-        }
+        return config_manager_->apply_copy_actions_for_signal(signal);
     }
 };
 

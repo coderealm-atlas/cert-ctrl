@@ -1,19 +1,38 @@
 name = "cert-ctrl-install-service"
 main = "src/index.js"
+account_id = "4f3c7b8bd8c76a7cf8072775c945762b"
 compatibility_date = "2024-10-05"
 compatibility_flags = ["nodejs_compat"]
 
 # Custom domain configuration
-[triggers]
-routes = [ "install.cjj365.cc/*" ]
+routes = [
+  "install.lets-script.com/*"
+]
 
 # Environment variables
+[env.production]
+
 [env.production.vars]
 GITHUB_REPO_OWNER = "coderealm-atlas"
 GITHUB_REPO_NAME = "cert-ctrl"
 ANALYTICS_ENABLED = true
 RATE_LIMIT_ENABLED = true
-CURRENT_HOST = "install.cjj365.cc"
+CURRENT_HOST = "install.lets-script.com"
+
+[[env.production.kv_namespaces]]
+binding = "RELEASE_CACHE"
+id = "7d87a6cbe7dd48ebbc8bb54a655e40a8"
+preview_id = "33088a6fcb0d4a0bb3b9d13243599708"
+
+[[env.production.kv_namespaces]]
+binding = "ANALYTICS"
+id = "0ab9c31d7c6d4e59a18f185cc18b39d6"
+preview_id = "ea417275a55249a2834167f3ff6037f6"
+
+[[env.production.kv_namespaces]]
+binding = "CONFIG"
+id = "c0556b85fcba499c8773bda3ba09ddac"
+preview_id = "2157f79c7de240c58be6831f4e1c144e"
 
 [env.staging.vars]
 GITHUB_REPO_OWNER = "coderealm-atlas"
@@ -22,22 +41,6 @@ ANALYTICS_ENABLED = false
 RATE_LIMIT_ENABLED = false
 CURRENT_HOST = "install-staging.cjj365.cc"
 
-# KV Namespaces for caching and analytics
-[[kv_namespaces]]
-binding = "RELEASE_CACHE"
-id = "your-release-cache-namespace-id"
-preview_id = "your-preview-release-cache-namespace-id"
-
-[[kv_namespaces]]
-binding = "ANALYTICS"
-id = "your-analytics-namespace-id"
-preview_id = "your-preview-analytics-namespace-id"
-
-[[kv_namespaces]]
-binding = "CONFIG"
-id = "your-config-namespace-id"
-preview_id = "your-preview-config-namespace-id"
-
 # D1 Database for advanced analytics (optional)
 # [[d1_databases]]
 # binding = "DB"
@@ -45,10 +48,10 @@ preview_id = "your-preview-config-namespace-id"
 # database_id = "your-database-id"
 
 # Custom domains
-# Note: These sections are now replaced by the [triggers] configuration above
+# Note: These sections are now replaced by the top-level `routes` configuration above
 # [env.production]
 # routes = [
-#   { pattern = "install.cjj365.cc/*", custom_domain = true }
+#   { pattern = "install.lets-script.com/*", custom_domain = true }
 # ]
 
 # [env.staging]  
@@ -56,10 +59,6 @@ preview_id = "your-preview-config-namespace-id"
 #   { pattern = "install-staging.cjj365.cc/*", custom_domain = true }
 # ]
 
-# Rate limiting
-[[env.production.durable_objects.bindings]]
-name = "RATE_LIMITER"
-class_name = "RateLimiter"
 
 # Build configuration
 [build]
@@ -67,5 +66,5 @@ command = "npm run build"
 watch_dir = "src"
 
 # Cron triggers for cache warming and cleanup
-[[triggers]]
+[triggers]
 crons = ["0 */6 * * *"]  # Every 6 hours

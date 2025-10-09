@@ -8,6 +8,7 @@
 #include <boost/system/error_code.hpp>
 #include <jwt-cpp/jwt.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -115,6 +116,9 @@ public:
   int start_calls() const { return start_calls_.load(); }
   int poll_calls() const { return poll_calls_.load(); }
   int registration_calls() const { return registration_calls_.load(); }
+  void set_pending_before_approve(int attempts) {
+    pending_before_approve_.store(std::max(0, attempts));
+  }
 
   std::optional<RegistrationRecord>
   wait_for_registration(std::chrono::milliseconds timeout) {
@@ -220,21 +224,28 @@ private:
     auto action = parsed.as_object().at("action").as_string();
     if (action == "device_start") {
       ++start_calls_;
-      json::object body{{"device_code", device_code_},
-                        {"user_code", "ABCD-EFGH"},
-                        {"verification_uri", base_url() + "/device"},
-                        {"verification_uri_complete",
-                         base_url() + "/device?user_code=ABCD-EFGH"},
-                        {"interval", 5},
-                        {"expires_in", 600}};
+      std::cerr << "device_start" << std::endl;
+  json::object body{{"device_code", device_code_},
+        {"user_code", "ABCD-EFGH"},
+        {"verification_uri", base_url() + "/device"},
+        {"verification_uri_complete",
+         base_url() + "/device?user_code=ABCD-EFGH"},
+        {"interval", 1},
+        {"expires_in", 600}};
       res.body() = json::serialize(json::object{{"data", body}});
     } else if (action == "device_poll") {
       ++poll_calls_;
-      json::object body{{"status", "approved"},
-                        {"access_token", access_token_},
-                        {"refresh_token", refresh_token_},
-                        {"expires_in", 600}};
-      res.body() = json::serialize(json::object{{"data", body}});
+      std::cerr << "device_poll #" << poll_calls_.load() << std::endl;
+      if (poll_calls_.load() <= pending_before_approve_.load()) {
+        json::object body{{"status", "authorization_pending"}};
+        res.body() = json::serialize(json::object{{"data", body}});
+      } else {
+        json::object body{{"status", "approved"},
+                          {"access_token", access_token_},
+                          {"refresh_token", refresh_token_},
+                          {"expires_in", 600}};
+        res.body() = json::serialize(json::object{{"data", body}});
+      }
     } else {
       res.result(http::status::bad_request);
       res.body() = json::serialize(json::object{{"error", "unsupported"}});
@@ -278,6 +289,7 @@ private:
   std::atomic<int> start_calls_{0};
   std::atomic<int> poll_calls_{0};
   std::atomic<int> registration_calls_{0};
+  std::atomic<int> pending_before_approve_{0};
 
   std::mutex mutex_;
   std::condition_variable cv_;
@@ -399,7 +411,7 @@ protected:
 };
 
 TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
-  misc::ThreadNotifier notifier(5000);
+  misc::ThreadNotifier notifier(15000);
 
   std::optional<monad::MyVoidResult> start_result;
   handler_->start().run([&](auto r) {
@@ -407,7 +419,12 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
     notifier.notify();
   });
   notifier.waitForNotification();
-  ASSERT_TRUE(start_result.has_value());
+  int start_calls = server_->start_calls();
+  int poll_calls = server_->poll_calls();
+  std::cerr << "start_calls=" << start_calls
+            << " poll_calls=" << poll_calls << std::endl;
+  ASSERT_TRUE(start_result.has_value())
+      << "start_calls=" << start_calls << " poll_calls=" << poll_calls;
   ASSERT_FALSE(start_result->is_err()) << start_result->error();
 
   EXPECT_GE(server_->poll_calls(), 1);
@@ -443,8 +460,9 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   EXPECT_EQ(record->payload.at("refresh_token").as_string(),
             server_->refresh_token());
 
-  auto pk_path = temp_dir.path / "dev_pk.bin";
-  auto sk_path = temp_dir.path / "dev_sk.bin";
+  auto key_dir = temp_dir.path / "keys";
+  auto pk_path = key_dir / "dev_pk.bin";
+  auto sk_path = key_dir / "dev_sk.bin";
   EXPECT_TRUE(fs::exists(pk_path));
   EXPECT_TRUE(fs::exists(sk_path));
 
@@ -460,6 +478,42 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   //   io_manager.stop();
   //   server.stop();
   //   cjj365::ConfigSources::instance_count.store(0);
+}
+
+TEST_F(LoginHandlerWorkflowTest, PollRetriesBeforeApproval) {
+  server_->set_pending_before_approve(3);
+
+  misc::ThreadNotifier notifier(30000);
+
+  std::optional<monad::MyVoidResult> start_result;
+  handler_->start().run([&](auto r) {
+    start_result = std::move(r);
+    notifier.notify();
+  });
+  notifier.waitForNotification();
+  ASSERT_TRUE(start_result.has_value());
+  ASSERT_FALSE(start_result->is_err()) << start_result->error();
+
+  EXPECT_GE(server_->poll_calls(), 4);
+  auto record = server_->wait_for_registration(std::chrono::seconds(20));
+  ASSERT_TRUE(record.has_value()) << "registration payload missing";
+  EXPECT_EQ(server_->registration_calls(), 1);
+  EXPECT_EQ(server_->start_calls(), 1);
+  EXPECT_EQ(record->authorization,
+            std::string("Bearer ") + server_->access_token());
+
+  std::optional<monad::MyVoidResult> reg_result;
+  handler_->register_device().run([&](auto r) {
+    reg_result = std::move(r);
+    notifier.notify();
+  });
+  notifier.waitForNotification();
+  ASSERT_TRUE(reg_result.has_value());
+  ASSERT_FALSE(reg_result->is_err()) << reg_result->error();
+  EXPECT_EQ(server_->registration_calls(), 1);
+
+  EXPECT_EQ(record->target,
+            "/apiv1/users/" + server_->expected_user_id() + "/devices");
 }
 
 // int main(int argc, char **argv) {

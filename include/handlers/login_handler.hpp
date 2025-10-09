@@ -25,6 +25,7 @@
 #include "simple_data.hpp"
 #include "util/device_fingerprint.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
+#include "data/data_shape.hpp"
 
 namespace po = boost::program_options;
 
@@ -44,8 +45,8 @@ class LoginHandler : public certctrl::IHandler,
   po::options_description opt_desc_;
   LoginHandlerOptions options_;
   std::string device_auth_url_;
-  std::optional<data::deviceauth::StartResp> start_resp_;
-  std::optional<data::deviceauth::PollResp> poll_resp_;
+  std::optional<::data::deviceauth::StartResp> start_resp_;
+  std::optional<::data::deviceauth::PollResp> poll_resp_;
   bool registration_completed_{false};
   boost::asio::any_io_executor exec_;
 
@@ -97,7 +98,7 @@ public:
   monad::IO<void> poll();
   monad::IO<void> register_device();
 
-  monad::IO<data::deviceauth::StartResp> start_device_authorization();
-  monad::IO<data::deviceauth::PollResp> poll_device_once();
+  monad::IO<::data::deviceauth::StartResp> start_device_authorization();
+  monad::IO<::data::deviceauth::PollResp> poll_device_once();
 };
 } // namespace certctrl
