@@ -318,5 +318,3 @@ done
 # Run installation
 main
 `;
-
-export { bashTemplate };

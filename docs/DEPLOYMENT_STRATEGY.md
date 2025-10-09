@@ -10,7 +10,8 @@ This document outlines deployment strategies for the `cert_ctrl` application, co
 2. [Version Notification](#version-notification)
 3. [Update Mechanisms](#update-mechanisms)
 4. [Security Considerations](#security-considerations)
-5. [Implementation Examples](#implementation-examples)
+5. [Runtime Architecture](#runtime-architecture)
+6. [Implementation Examples](#implementation-examples)
 
 ---
 
@@ -393,7 +394,57 @@ public:
 
 ---
 
-## 5. Implementation Examples
+## 5. Runtime Architecture
+
+### 5.1 Motivation and Reference Model
+
+Tailscale separates its functionality into two personas:
+
+- **`tailscaled`** — a privileged daemon that maintains device state, manages WireGuard tunnels, and persists configuration.
+- **`tailscale`** — an unprivileged CLI used by operators to interrogate or instruct the daemon over an authenticated control channel.
+
+Following the same pattern, `cert-ctrl` should ship with distinct entry points for its background work and its interactive tooling. Borrowing this approach gives us:
+
+- A hardened surface area for privileged operations (certificate provisioning, key management, secure storage writes).
+- A lightweight user-experience layer that can run without elevated privileges but still leverage the daemon via IPC.
+
+### 5.2 Executable Layout
+
+| Role             | Suggested Binary Name | Runs As                | Responsibilities |
+| ---------------- | --------------------- | ---------------------- | ---------------- |
+| Long-running service | `certctrld` (Linux/macOS) / `CertCtrlService.exe` (Windows) | `root` or a locked-down system account |
+| | | | - Boot-time startup via `systemd`/Windows Service Manager  
+| | | | - Watches config/runtime directories, applies policy when `auto_apply_config` is enabled  
+| | | | - Owns device enrollment, certificate issuance, token refresh, and telemetry flush  
+| Operator CLI    | `certctrl`            | invoking user (non-root) | - Sends requests to the daemon over UDS/Named Pipe  
+| | | | - Presents status, log tails, and one-shot operations (login, updates poll)  
+| | | | - Falls back gracefully when the daemon is unavailable, offering actionable guidance |
+
+### 5.3 Single Binary vs. Multi-Binary Delivery
+
+Both binaries can originate from the same build artifact, enabling a BusyBox-style multi-call pattern:
+
+- Install a single ELF/PE and create symlinks (`certctrld` ➝ `certctrl`, `certctrl` ➝ `certctrl`).
+- At startup we derive the active persona from `argv[0]`, with override flags (`--daemon`, `--cli`) for clarity.
+- On Windows we ship the same executable twice under different filenames to keep the SCM metadata straightforward.
+
+This affords shared code reuse while still giving package maintainers explicit file names for service definitions.
+
+### 5.4 Privilege and Service Management
+
+- **Linux/macOS**: Ship `certctrld.service` units that run as `root` (or a dedicated system user with membership in required groups). Ensure runtime directories (`/var/lib/certctrl`, `/var/log/certctrl`) are owned by that account. Harden with `ProtectSystem=strict`, `PrivateTmp=yes`, and tight `CapabilityBoundingSet` rules.
+- **Windows**: Register `CertCtrlService.exe` with the Service Control Manager under the `LocalSystem` account by default, with an opt-in path to run under a managed service account.
+- **IPC Channel**: Use a Unix Domain Socket (Linux/macOS) or Named Pipe (Windows) under the daemon-owned runtime directory. Gate access via filesystem ACLs so only intended operators (e.g., `certctrl` group) can reach it.
+- **CLI Authentication**: Require the CLI to present device tokens stored in `runtime_dir/state`. Optionally layer mutual TLS or per-user API keys when the daemon is exposed off-box.
+
+### 5.5 Packaging Implications
+
+- Include both entry point names in every distribution artifact, even if they map back to the same binary, so scripts and docs remain explicit.
+- Update install scripts to create/manage the service unit (enable + start) and drop a `certctrl` convenience wrapper into `/usr/local/bin` or `%ProgramFiles%\CertCtrl`.
+- Document manual workflows (copy binary, register service, run CLI) for air-gapped deployments.
+- Ensure auto-update logic differentiates between daemon restarts (which require coordination) and CLI updates (which can often be transparent).
+
+## 6. Implementation Examples
 
 ### 5.1 Installation Script (install.sh)
 

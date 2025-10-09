@@ -49,7 +49,7 @@ public:
      * @param signal The signal to dispatch
      * @return IO<void> monad that logs errors and continues
      */
-    monad::IO<void> dispatch(const data::DeviceUpdateSignal& signal) {
+    monad::IO<void> dispatch(const ::data::DeviceUpdateSignal& signal) {
         // Generate unique signal ID for deduplication
         std::string signal_id = make_signal_id(signal);
         
@@ -114,7 +114,7 @@ private:
     /**
      * Generate unique signal ID from type and timestamp.
      */
-    std::string make_signal_id(const data::DeviceUpdateSignal& signal) const {
+    std::string make_signal_id(const ::data::DeviceUpdateSignal& signal) const {
         // Use type + timestamp as unique ID
         return signal.type + ":" + std::to_string(signal.ts_ms);
     }

@@ -81,7 +81,7 @@ The agent requires a mandatory `-c` (config directory) parameter. All persistent
 │   ├── last_poll_time.txt        # Last successful poll timestamp
 │   └── pending_acks.json         # Pending acknowledgments queue
 ├── keys/                          # Cryptographic keys directory
-│   ├── dev_pk.bin                # Device public key (mode 644)
+│   ├── dev_pk.bin                # Device public key (mode 600)
 │   ├── dev_sk.bin                # Device secret key (mode 600)
 │   └── account_keys/             # CA account keys
 ├── certs/                         # Certificate storage
@@ -445,7 +445,7 @@ Signals that a certificate used by this device has been revoked or removed.
 }
 ```
 
-**Agent Action:** Exponential backoff and retry
+**Agent Action:** Honor any `Retry-After` guidance and retry after that delay (or the configured poll interval if none is provided)
 
 ### 503 Service Unavailable
 
@@ -613,9 +613,8 @@ stateDiagram-v2
     Refreshing --> Polling: New token obtained
     Refreshing --> Terminated: Refresh failed
     
-    Error --> Backoff: Retryable error
-    Backoff --> Polling: After delay
-    Error --> Terminated: Fatal error
+  Error --> Polling: Retryable error
+  Error --> Terminated: Fatal error
     
     Terminated --> [*]
 ```
@@ -629,7 +628,6 @@ stateDiagram-v2
 | `Processing` | Processing received updates | Execute update actions |
 | `Acknowledging` | Sending acknowledgments | Send ack in next poll |
 | `Refreshing` | Refreshing access token | Use refresh token to get new access token |
-| `Backoff` | Exponential backoff delay | Wait before retry |
 | `Error` | Error state | Log error, determine if retryable |
 | `Terminated` | Agent stopped | Clean shutdown or fatal error |
 
@@ -637,53 +635,30 @@ stateDiagram-v2
 
 ### 1. Poll Interval Management
 
-The agent supports both immediate polling (`wait=0`, default) and long-polling (`wait=1-30`).
+The agent supports both immediate polling (`wait=0`, default) and long-polling (`wait=1-30`). Regular polling uses a fixed base interval (default 5 seconds) that operators can adjust. When the server asks the client to slow down (for example via an HTTP `Retry-After` header), the next poll waits for that server-specified delay before resuming the fixed cadence.
 
 ```cpp
 class PollIntervalManager {
 private:
-    int base_interval_ = 5;        // seconds between polls
-    int current_backoff_ = 0;      // current backoff level
-    int max_backoff_level_ = 5;    // max backoff: 24h
-    int consecutive_204s_ = 0;     // count of consecutive no-updates
-    bool use_long_poll_ = false;   // whether to use wait parameter
-    int wait_seconds_ = 0;         // long-poll wait time (0-30)
-    
-    // Backoff schedule: 5m, 15m, 1h, 6h, 24h
-    const std::vector<int> backoff_schedule_ = {
-        300,   // 5 minutes
-        900,   // 15 minutes
-        3600,  // 1 hour
-        21600, // 6 hours
-        86400  // 24 hours (cap)
-    };
-    
+  int base_interval_ms_ = 5000;                 // default 5 seconds
+  std::optional<int> server_delay_ms_;          // one-shot delay from Retry-After
+
 public:
-    void on_204_response() {
-        consecutive_204s_++;
-        
-        // Adaptive backoff on repeated 204s
-        if (consecutive_204s_ >= 3 && current_backoff_ < max_backoff_level_) {
-            current_backoff_++;
-        }
+  void set_base_interval_ms(int value) {
+    base_interval_ms_ = std::max(value, 10);  // never sleep less than 10 ms
+  }
+
+  void apply_server_retry_after(std::optional<int> retry_after_seconds) {
+    if (retry_after_seconds && *retry_after_seconds > 0) {
+      server_delay_ms_ = std::max(base_interval_ms_, *retry_after_seconds * 1000);
     }
-    
-    void on_200_response() {
-        // Reset backoff on updates
-        consecutive_204s_ = 0;
-        current_backoff_ = 0;
-    }
-    
-    int get_interval() const {
-        if (current_backoff_ > 0) {
-            return backoff_schedule_[current_backoff_ - 1];
-        }
-        return base_interval_;
-    }
-    
-    int get_wait_param() const {
-        return use_long_poll_ ? wait_seconds_ : 0;
-    }
+  }
+
+  int next_delay_ms() {
+    int delay = server_delay_ms_.value_or(base_interval_ms_);
+    server_delay_ms_.reset();
+    return delay;
+  }
 };
 ```
 
@@ -802,13 +777,13 @@ private:
 
 - **Keep-Alive:** Reuse HTTP connections for multiple polls
 - **Timeout:** Set reasonable timeouts (30 seconds for immediate, 35 seconds for long-poll with wait=30)
-- **Retry Logic:** Implement exponential backoff for failures
+- **Retry Logic:** Honor server-provided slow-down hints (e.g., `Retry-After`) and otherwise retry at the configured interval
 - **Circuit Breaker:** Stop polling after consecutive failures (e.g., 10), alert and require manual intervention
 
 ### 2. Error Handling
 
 - **204 Responses:** Normal case with no updates; persist ETag cursor and continue
-- **Transient Errors:** Retry with backoff (network errors, 5xx)
+- **Transient Errors:** Retry after any server-specified delay (network errors, 5xx) or the configured interval if none is provided
 - **Authentication Errors:** Refresh token and retry once; if refresh fails, stop and alert
 - **Cursor Expired (409):** Clear cursor and retry without cursor
 - **Fatal Errors:** Stop polling, log, alert user (device revoked, refresh failed repeatedly)
@@ -824,7 +799,8 @@ private:
 
 - **Default Mode:** Use `wait=0` (immediate return) for simplicity and most deployments
 - **Long-Poll Mode:** Use `wait=10-25` only during active rollouts or high-interest windows
-- **Adaptive Backoff:** On repeated 204s, gradually increase interval: 5m → 15m → 1h → 6h → 24h (cap)
+- **Fixed Interval:** Keep polling on the configured cadence (default 5 s) for predictable certificate delivery windows
+- **Server Slow-Down:** If the server returns `Retry-After`, pause for that duration before resuming the normal cadence
 - **Reset on Activity:** On 200 response, reset to base interval (5 seconds)
 
 ### 5. Resource Management
@@ -853,8 +829,7 @@ private:
 - Error rate by type
 - Signal queue depth
 - Cursor age (time since last cursor update)
-- Consecutive 204 count
-- Current backoff level
+- Most recent `Retry-After` delay applied (if any)
 
 ### Logging
 
@@ -879,7 +854,7 @@ private:
 [2025-10-03 05:46:04] [INFO] [Signal] Certificate 9981 updated
 [2025-10-03 05:46:05] [WARN] [Token] Access token expires in 60 seconds
 [2025-10-03 05:46:06] [INFO] [Token] Token refresh successful, expires in 900s
-[2025-10-03 05:47:01] [DEBUG] [Poll] Consecutive 204s: 3, applying backoff to 5m
+[2025-10-03 05:47:01] [DEBUG] [Poll] Server requested slow-down (Retry-After=30s); deferring next poll
 ```
 
 ### Daemon Status Command
@@ -897,8 +872,8 @@ Uptime: 2d 14h 32m
 Last Poll: 5 seconds ago (204 No Content)
 Cursor: 1736900123-42
 Poll Interval: 5 seconds (base)
-Consecutive 204s: 1
-Backoff Level: 0 (none)
+Next Poll In: 5 seconds
+Last Retry-After: none
 Queue Depth: 0 pending signals
 Token Expires: 14m 23s
 Last Signal: 2h 15m ago (install.updated)
@@ -984,7 +959,7 @@ cert-ctrl -c /etc/cert-ctrl renew --domain example.com
 
 The client agent polling mechanism provides a lightweight, efficient way to receive update notifications from the server after device registration. By following the patterns and best practices outlined in this document, implementations can achieve:
 
-- **Efficiency:** Minimal bandwidth via 204 responses and compact signals; adaptive backoff
+- **Efficiency:** Minimal bandwidth via 204 responses and compact signals; fixed polling cadence keeps behavior predictable while still honoring server slow-down hints
 - **Reliability:** Cursor-based resumption, robust error handling and retry logic
 - **Security:** Secure token/key storage with proper file permissions
 - **Scalability:** Support for large device fleets with configurable polling strategies

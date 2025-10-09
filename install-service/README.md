@@ -54,7 +54,7 @@ npm run deploy
 Once deployed, your service will provide:
 
 ```
-https://install.cjj365.cc/
+https://install.lets-script.com/
 ├── /                           # Service information
 ├── /install.sh                 # Unix installation script
 ├── /install.ps1                # Windows PowerShell script
@@ -70,33 +70,33 @@ https://install.cjj365.cc/
 
 ```bash
 # Unix/Linux/macOS
-curl -fsSL https://install.cjj365.cc/install.sh | bash
+curl -fsSL https://install.lets-script.com/install.sh | bash
 
 # Windows PowerShell
-iwr -useb https://install.cjj365.cc/install.ps1 | iex
+iwr -useb https://install.lets-script.com/install.ps1 | iex
 ```
 
 ### Advanced Installation
 
 ```bash
 # User installation (no sudo)
-curl -fsSL https://install.cjj365.cc/install.sh | bash -s -- --user-install
+curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --user-install
 
 # Specific version
-curl -fsSL https://install.cjj365.cc/install.sh | bash -s -- --version v1.2.3
+curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --version v1.2.3
 
 # Verbose output
-curl -fsSL https://install.cjj365.cc/install.sh | bash -s -- --verbose
+curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --verbose
 ```
 
 ### Version Checking
 
 ```bash
 # Get latest version
-curl https://install.cjj365.cc/api/version/latest
+curl https://install.lets-script.com/api/version/latest
 
 # Check if update available
-curl "https://install.cjj365.cc/api/version/check?current=v1.0.0&platform=linux&arch=x64"
+curl "https://install.lets-script.com/api/version/check?current=v1.0.0&platform=linux&arch=x64"
 ```
 
 ## Configuration
@@ -146,10 +146,10 @@ The service tracks (anonymously):
 
 ```bash
 # Get daily installation stats
-curl https://install.cert-ctrl.com/api/stats/daily
+curl https://install.lets-script.com/api/stats/daily
 
 # Get platform breakdown
-curl https://install.cert-ctrl.com/api/stats/platforms
+curl https://install.lets-script.com/api/stats/platforms
 ```
 
 ## Development
@@ -210,7 +210,7 @@ The service provides health endpoints:
 
 ```bash
 # Basic health check
-curl https://install.cert-ctrl.com/health
+curl https://install.lets-script.com/health
 
 # Response:
 {
@@ -295,7 +295,7 @@ Cloudflare Workers automatically scale:
 To migrate from static file hosting:
 
 1. **Deploy Worker**: Set up Cloudflare Worker
-2. **Update DNS**: Point install.cert-ctrl.com to Worker
+2. **Update DNS**: Point install.lets-script.com to Worker
 3. **Test Installation**: Verify all platforms work
 4. **Monitor**: Watch for any issues
 5. **Cleanup**: Remove old static files

@@ -83,7 +83,7 @@ async function selectBestMirror(country, env) {
     },
     proxy: {
       name: 'cloudflare-proxy',
-      url: `https://${env.CURRENT_HOST || 'install.cert-ctrl.com'}/releases/proxy`,
+      url: `https://${env.CURRENT_HOST || 'install.lets-script.com'}/releases/proxy`,
       regions: ['all']
     }
   };

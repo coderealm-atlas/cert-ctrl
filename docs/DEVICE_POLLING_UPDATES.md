@@ -158,7 +158,7 @@ Implementation notes:
 - Always send your last cursor via `If-None-Match`. Persist the `ETag` returned on both 200 and 204.
 - For very low update frequency (weeks / months) prefer periodic non-blocking polling (`wait=0`) at your heartbeat interval (e.g. every few minutes). This keeps implementation simple and avoids holding idle connections.
 - Optionally escalate to long-poll (`wait` 10–25) only during high-interest windows requiring lower latency (e.g. active rollout). Revert to `wait=0` afterwards.
-- Consider adaptive backoff on repeated 204s (e.g. 5m → 15m → 1h → 6h → 24h cap) resetting after any 200.
+- Poll on a fixed cadence (default 5 s) so that certificate delivery remains predictable; only defer longer when the server explicitly returns `Retry-After`.
 - On 409 (cursor expired), clear cursor and retry; optionally perform a state resync.
 - Handle unknown `type` values by ignoring them.
 - For `install.updated`: refetch install config; compare `version` or `installs_hash_b64` if needed.

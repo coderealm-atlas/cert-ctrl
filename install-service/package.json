@@ -11,7 +11,8 @@
     "test:coverage": "vitest --coverage",
     "format": "prettier --write .",
     "lint": "eslint src/",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "echo \"Skipping pre-build; Wrangler handles bundling\""
   },
   "keywords": [
     "cloudflare-workers",

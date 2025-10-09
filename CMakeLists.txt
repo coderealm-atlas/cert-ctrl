@@ -253,6 +253,10 @@ set(HTTP_CLIENT_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/external/http_client/src/misc_util.cpp
 )
 
+list(APPEND APP_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_manager.cpp
+)
+
 # Always use a stable target name; vary only the output file name per config
 set(CERT_CTRL_APP_NAME cert_ctrl)
 

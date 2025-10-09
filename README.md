@@ -6,6 +6,7 @@
 
 - Orchestrates device onboarding, login, and certificate enrollment workflows.
 - Polls the control plane for install-config changes and new certificate material.
+- On startup without a subcommand, automatically checks for agent updates and performs a device updates poll.
 - Safely stores issued certificates and replaces them when updates are available.
 - Communicates with the backend over authenticated APIs, supporting constrained networks with long-poll update checks.
 

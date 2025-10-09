@@ -1,7 +1,9 @@
 #pragma once
 
+#include "handlers/install_config_manager.hpp"
 #include "handlers/signal_handlers/signal_handler_base.hpp"
 #include "customio/console_output.hpp"
+#include <boost/json.hpp>
 #include <filesystem>
 
 namespace certctrl {
@@ -13,21 +15,21 @@ namespace signal_handlers {
  */
 class CertRevokedHandler : public ISignalHandler {
 private:
-    std::filesystem::path config_dir_;
+    std::shared_ptr<InstallConfigManager> config_manager_;
     customio::ConsoleOutput& output_hub_;
     
 public:
     CertRevokedHandler(
-        const std::filesystem::path& config_dir,
+        std::shared_ptr<InstallConfigManager> config_manager,
         customio::ConsoleOutput& output_hub)
-        : config_dir_(config_dir)
+        : config_manager_(std::move(config_manager))
         , output_hub_(output_hub) {}
     
     std::string signal_type() const override {
         return "cert.revoked";
     }
     
-    monad::IO<void> handle(const data::DeviceUpdateSignal& signal) override {
+    monad::IO<void> handle(const ::data::DeviceUpdateSignal& signal) override {
         output_hub_.logger().warning()
             << "Processing cert.revoked: "
             << boost::json::serialize(signal.ref) << std::endl;

@@ -196,6 +196,92 @@ inline void tag_invoke(boost::json::value_from_tag, boost::json::value& v,
   v = std::move(o);
 }
 
+inline DeviceInstallConfigDto tag_invoke(
+  boost::json::value_to_tag<DeviceInstallConfigDto> const&,
+  boost::json::value const& jv) {
+  DeviceInstallConfigDto cfg{};
+
+  if (auto const* obj = jv.if_object()) {
+    if (auto const* id_p = obj->if_contains("id")) {
+      if (id_p->is_int64()) {
+        cfg.id = id_p->as_int64();
+      } else if (id_p->is_uint64()) {
+        cfg.id = static_cast<std::int64_t>(id_p->as_uint64());
+      }
+    }
+
+    if (auto const* device_id_p = obj->if_contains("user_device_id")) {
+      if (device_id_p->is_int64()) {
+        cfg.user_device_id = device_id_p->as_int64();
+      } else if (device_id_p->is_uint64()) {
+        cfg.user_device_id =
+            static_cast<std::int64_t>(device_id_p->as_uint64());
+      }
+    }
+
+    if (auto const* version_p = obj->if_contains("version")) {
+      if (version_p->is_int64()) {
+        cfg.version = version_p->as_int64();
+      } else if (version_p->is_uint64()) {
+        cfg.version = static_cast<std::int64_t>(version_p->as_uint64());
+      }
+    }
+
+    if (auto const* installs_p = obj->if_contains("installs")) {
+      if (installs_p->is_array()) {
+        cfg.installs = json::value_to<std::vector<InstallItem>>(*installs_p);
+      }
+    } else if (auto const* legacy_json = obj->if_contains("installs_json")) {
+      if (legacy_json->is_string()) {
+        try {
+          auto installs_parsed = boost::json::parse(legacy_json->as_string());
+          if (installs_parsed.is_array()) {
+            cfg.installs =
+                json::value_to<std::vector<InstallItem>>(installs_parsed);
+          }
+        } catch (const std::exception&) {
+          // Ignore parse errors and leave installs empty
+        }
+      }
+    }
+
+    if (auto const* hash_p = obj->if_contains("installs_hash")) {
+      if (hash_p->is_string()) {
+        cfg.installs_hash = json::value_to<std::string>(*hash_p);
+      }
+    }
+
+    if (auto const* updated_by_p = obj->if_contains("updated_by")) {
+      if (updated_by_p->is_string()) {
+        auto value = json::value_to<std::string>(*updated_by_p);
+        if (!value.empty()) {
+          cfg.updated_by = std::move(value);
+        }
+      }
+    }
+
+    if (auto const* created_at_p = obj->if_contains("created_at")) {
+      if (created_at_p->is_int64()) {
+        cfg.created_at = created_at_p->as_int64();
+      } else if (created_at_p->is_uint64()) {
+        cfg.created_at =
+            static_cast<std::int64_t>(created_at_p->as_uint64());
+      }
+    }
+
+    if (auto const* updated_at_p = obj->if_contains("updated_at")) {
+      if (updated_at_p->is_int64()) {
+        cfg.updated_at = updated_at_p->as_int64();
+      } else if (updated_at_p->is_uint64()) {
+        cfg.updated_at =
+            static_cast<std::int64_t>(updated_at_p->as_uint64());
+      }
+    }
+  }
+
+  return cfg;
+}
+
 inline void tag_invoke(boost::json::value_from_tag, boost::json::value& v,
                        DeviceInstallConfigDto const& x) {
   json::object o;

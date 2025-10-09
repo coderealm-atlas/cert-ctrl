@@ -27,7 +27,7 @@ public:
      * @param signal The signal to process
      * @return IO<void> monad representing the processing operation
      */
-    virtual monad::IO<void> handle(const data::DeviceUpdateSignal& signal) = 0;
+    virtual monad::IO<void> handle(const ::data::DeviceUpdateSignal& signal) = 0;
     
     /**
      * Check if this signal should be processed.
@@ -35,7 +35,7 @@ public:
      * @param signal The signal to check
      * @return true if the signal should be processed
      */
-    virtual bool should_process(const data::DeviceUpdateSignal& signal) const {
+    virtual bool should_process(const ::data::DeviceUpdateSignal& signal) const {
         return true; // Default: process all signals
     }
 };

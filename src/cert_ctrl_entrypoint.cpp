@@ -83,6 +83,8 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
   js::object application{{"auto_apply_config", false},
                            {"verbose", "info"},
                            {"url_base", "https://api.cjj365.cc"},
+                           {"update_check_url",
+                            "https://install.cert-ctrl.com/api/version/check"},
                            {"runtime_dir", runtime_dir.string()}};
     write_json_if_missing(config_dir / "application.json", application);
 
@@ -236,6 +238,9 @@ int main(int argc, char *argv[]) {
       std::cerr << "  login          Login the device." << std::endl;
       std::cerr << "  conf           Configure the device." << std::endl
                 << std::endl;
+      std::cerr << "Default behavior:" << std::endl;
+      std::cerr << "  No subcommand -> agent update check followed by a device updates poll." << std::endl
+                << std::endl;
     };
 
     if (vm.count("help")) {
@@ -246,12 +251,6 @@ int main(int argc, char *argv[]) {
     if (vm.count("version")) {
       std::cout << MYAPP_VERSION << std::endl;
       return 0;
-    }
-
-
-    if (cli_params.subcmd.empty() && !cli_params.keep_running) {
-      showUsage();
-      return EXIT_SUCCESS;
     }
 
     const DefaultPaths defaults = resolve_default_paths();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <boost/json.hpp>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -458,12 +459,19 @@ inline monad::IO<void> associate_ca_with_device_io(
       })
       .then(http_request_io<monad::PostJsonTag>(mgr))
       .then([](auto ex) {
-        if (ex->response->result() == http::status::ok || 
-            ex->response->result() == http::status::no_content) {
+        const auto status = ex->response->result();
+        std::string body_str{ex->response->body().begin(),
+                             ex->response->body().end()};
+        std::cout << "associate_ca_with_device responded status="
+                  << static_cast<int>(status) << ", body=" << body_str
+                  << std::endl;
+
+        if (status == http::status::ok || 
+            status == http::status::no_content) {
           return VoidIO::from_result(monad::MyVoidResult::Ok());
         }
         return VoidIO::from_result(monad::MyVoidResult::Err(
-            monad::Error{static_cast<int>(ex->response->result()), 
+            monad::Error{static_cast<int>(status), 
                         "Failed to associate CA with device"}));
       });
 }

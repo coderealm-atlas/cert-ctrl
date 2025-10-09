@@ -26,6 +26,13 @@ Note: Schemas below reflect current server behavior and conventions. Some domain
 ### General Login and Session (LoginHandler)
 Paths:
 - GET /auth/general — Auxiliary (e.g., name availability)
+
+Notes:
+- `device_poll` requests may include a numeric `device_id` alongside
+  `device_code`. When provided and owned by the approved user, the issued
+  access token carries a `device_id` claim so device-scoped APIs (for example
+  `/apiv1/devices/self/updates`) accept it without additional session setup.
+
 - GET /auth/status — Inspect current session
 - POST /auth/logout — Logout; clears session
 - GET /auth/profile — Current profile summary
@@ -89,6 +96,7 @@ Base paths under user scope:
 - /apiv1/users/:user_id/devices/:device_id/certificates/:certificate_id
 - /apiv1/users/:user_id/devices/:device_id/cas
 - /apiv1/users/:user_id/devices/:device_id/cas/:ca_id
+- /apiv1/users/:user_id/devices/:device_id/cas/:ca_id/bundle
 - /apiv1/users/:user_id/devices/:device_id/install-config
 - /apiv1/users/:user_id/devices/:device_id/install-config/restore
 - /apiv1/users/:user_id/devices/:device_id/install-config-histories
@@ -112,6 +120,7 @@ CAs (Certificate Authorities):
 - GET /.../devices/:device_id/cas — List CAs associated with device
 - POST /.../devices/:device_id/cas — Associate CA with device
 - DELETE /.../devices/:device_id/cas/:ca_id — Disassociate CA from device
+- GET /.../devices/:device_id/cas/:ca_id/bundle[?pack=download] — Download CA certificate payload (PEM + optional DER base64)
 
 Install Configuration:
 - GET /.../devices/:device_id/install-config — Current install config DTO
@@ -329,6 +338,45 @@ Responses:
       "enc_scheme": "plaintext",
       "private_key_der_b64": "...",
       "certificate_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"  // present if stored
+    }
+  }
+
+## Device Self CA Bundle (DeviceSelfCasHandler)
+Path:
+- GET /apiv1/devices/self/cas/:ca_id/bundle[?pack=download]
+
+Auth:
+- Device Bearer JWT (HS256) with `device_id` claim matching the assigned device.
+
+Behavior:
+- Returns the self-CA certificate materials (PEM always, DER when stored) that are assigned to the calling device.
+- 404 if the CA is not assigned to the device or belongs to another user.
+- 403 if ownership doesn't match or the device is inactive.
+
+Query params:
+- pack=download — adds `Content-Disposition: attachment` to simplify CLI downloads.
+
+Responses:
+- Success, 200:
+  {
+    "data": {
+      "id": 42,
+      "name": "device-self-ca",
+      "serial_number": "...",
+      "status": "ACTIVE",
+      "algorithm": "RSA",
+      "key_size": 2048,
+      "valid_days": 365,
+      "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\n...",
+      "ca_certificate_der_b64": "..."  // present when DER is stored
+    }
+  }
+
+- Error, 404 (not assigned):
+  {
+    "error": {
+      "code": 404,
+      "what": "CA not assigned to device"
     }
   }
 

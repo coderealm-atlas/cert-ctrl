@@ -167,6 +167,14 @@ The agent writes several artifacts locally: device tokens, processed-signal curs
 
 **Recommendation:** Use a fixed read-only base such as `/etc/certctrl` for shared configuration and append a writable directory like `/var/lib/certctrl` (or `/srv/certctrl/site`) as the final `--config-dirs` entry. This gives you consistent configuration across service and CLI while keeping mutable data segregated. Ensure file permissions allow both the service account and interactive operators (if any) to access the runtime directory safely.
 
+Within that runtime directory the agent creates well-known subfolders:
+
+- `state/` – access and refresh tokens, update cursors, and other transient session artifacts.
+- `keys/` – device X25519 key material (`dev_pk.bin`, `dev_sk.bin`, both mode 0600) generated during login.
+- (future) `resources/` – cached certificates and policy payloads.
+
+Package the directory with the correct ownership (e.g., `certctrl:certctrl`) so only the daemon and authorised operators can read the private key material.
+
 ## 5. Platform defaults & auto-provisioning
 
 The application itself is responsible for bootstrapping a usable configuration stack when no explicit flags are supplied. At startup it should:
