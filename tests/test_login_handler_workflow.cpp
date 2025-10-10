@@ -21,6 +21,7 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <iterator>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -111,13 +112,28 @@ public:
 
   const std::string &access_token() const { return access_token_; }
   const std::string &refresh_token() const { return refresh_token_; }
+  const std::string &registration_code() const { return registration_code_; }
   std::string expected_user_id() const { return "12345"; }
+
+  const std::string &refreshed_access_token() const {
+    return refreshed_access_token_;
+  }
+  const std::string &refreshed_refresh_token() const {
+    return refreshed_refresh_token_;
+  }
 
   int start_calls() const { return start_calls_.load(); }
   int poll_calls() const { return poll_calls_.load(); }
   int registration_calls() const { return registration_calls_.load(); }
+  int refresh_calls() const { return refresh_calls_.load(); }
   void set_pending_before_approve(int attempts) {
     pending_before_approve_.store(std::max(0, attempts));
+  }
+
+  void set_refresh_response_tokens(std::string new_access,
+                                   std::string new_refresh) {
+    refreshed_access_token_ = std::move(new_access);
+    refreshed_refresh_token_ = std::move(new_refresh);
   }
 
   std::optional<RegistrationRecord>
@@ -205,7 +221,10 @@ private:
     if (req.method() == http::verb::post && req.target() == "/auth/device") {
       handle_device_auth(std::move(req), res);
     } else if (req.method() == http::verb::post &&
-               req.target().starts_with("/apiv1/users/")) {
+               req.target() == "/auth/refresh") {
+      handle_refresh(std::move(req), res);
+  } else if (req.method() == http::verb::post &&
+         req.target() == "/apiv1/device/registration") {
       handle_registration(std::move(req), res);
     } else {
       res.result(http::status::not_found);
@@ -240,10 +259,10 @@ private:
         json::object body{{"status", "authorization_pending"}};
         res.body() = json::serialize(json::object{{"data", body}});
       } else {
-        json::object body{{"status", "approved"},
-                          {"access_token", access_token_},
-                          {"refresh_token", refresh_token_},
-                          {"expires_in", 600}};
+        json::object body{{"status", "ready"},
+                          {"registration_code", registration_code_},
+                          {"registration_code_ttl", 600},
+                          {"user_id", expected_user_id()}};
         res.body() = json::serialize(json::object{{"data", body}});
       }
     } else {
@@ -277,9 +296,57 @@ private:
     }
     cv_.notify_all();
 
-  res.body() = json::serialize(
-    json::object{{"data", json::object{{"status", "ok"}}}});
+    json::object device_obj{{"id", device_numeric_id_}};
+    if (auto *p = record.payload.if_contains("device_public_id");
+        p && p->is_string()) {
+      device_obj["device_public_id"] = p->as_string();
+    }
+    json::object session_obj{{"access_token", access_token_},
+                             {"refresh_token", refresh_token_},
+                             {"expires_in", 600}};
+
+    json::object data_obj{{"status", "ok"},
+                          {"device", std::move(device_obj)},
+                          {"session", std::move(session_obj)}};
+
+    res.body() =
+        json::serialize(json::object{{"data", std::move(data_obj)}});
   res.prepare_payload();
+  }
+
+  void handle_refresh(http::request<http::string_body> &&req,
+                      http::response<http::string_body> &res) {
+    json::value parsed;
+    try {
+      parsed = json::parse(req.body());
+    } catch (...) {
+      res.result(http::status::bad_request);
+      res.body() = json::serialize(json::object{{"error", "invalid"}});
+      res.prepare_payload();
+      return;
+    }
+    std::string provided_refresh;
+    if (auto *obj = parsed.if_object()) {
+      if (auto *token = obj->if_contains("refresh_token");
+          token && token->is_string()) {
+        provided_refresh = std::string(token->as_string().c_str(),
+                                       token->as_string().size());
+      }
+    }
+    if (provided_refresh.empty()) {
+      res.result(http::status::bad_request);
+      res.body() = json::serialize(json::object{{"error", "missing_token"}});
+      res.prepare_payload();
+      return;
+    }
+    refresh_calls_.fetch_add(1);
+
+    json::object session_obj{{"access_token", refreshed_access_token_},
+                             {"refresh_token", refreshed_refresh_token_},
+                             {"expires_in", 600}};
+    json::object data_obj{{"session", std::move(session_obj)}};
+    res.body() = json::serialize(json::object{{"data", std::move(data_obj)}});
+    res.prepare_payload();
   }
 
   asio::ip::tcp::acceptor acceptor_;
@@ -289,6 +356,7 @@ private:
   std::atomic<int> start_calls_{0};
   std::atomic<int> poll_calls_{0};
   std::atomic<int> registration_calls_{0};
+  std::atomic<int> refresh_calls_{0};
   std::atomic<int> pending_before_approve_{0};
 
   std::mutex mutex_;
@@ -299,6 +367,11 @@ private:
   std::string device_code_{"device-code-xyz"};
   std::string access_token_;
   std::string refresh_token_;
+  std::string registration_code_{"mock-registration-code"};
+  std::string device_numeric_id_{"4242"};
+  std::string refreshed_access_token_{
+      issue_access_token("12345", device_code_ + "-refresh")};
+  std::string refreshed_refresh_token_{issue_refresh_token("12345-refresh")};
 };
 
 // Regex to validate device_public_id format 8-4-4-4-12 hex digits.
@@ -432,8 +505,7 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   ASSERT_TRUE(record.has_value()) << "registration payload missing";
   EXPECT_EQ(server_->registration_calls(), 1);
   EXPECT_EQ(server_->start_calls(), 1);
-  EXPECT_EQ(record->authorization,
-            std::string("Bearer ") + server_->access_token());
+  EXPECT_TRUE(record->authorization.empty());
 
   std::optional<monad::MyVoidResult> reg_result;
   handler_->register_device().run([&](auto r) {
@@ -445,8 +517,17 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   ASSERT_FALSE(reg_result->is_err()) << reg_result->error();
   EXPECT_EQ(server_->registration_calls(), 1);
 
-  EXPECT_EQ(record->target,
-            "/apiv1/users/" + server_->expected_user_id() + "/devices");
+  EXPECT_EQ(record->target, "/apiv1/device/registration");
+  ASSERT_TRUE(record->payload.if_contains("user_id"));
+  const auto &user_id_value = record->payload.at("user_id");
+  if (user_id_value.is_string()) {
+    EXPECT_EQ(user_id_value.as_string(), server_->expected_user_id());
+  } else if (user_id_value.is_int64()) {
+    EXPECT_EQ(user_id_value.as_int64(),
+              std::stoll(server_->expected_user_id()));
+  } else {
+    ADD_FAILURE() << "user_id has unexpected type";
+  }
   ASSERT_TRUE(record->payload.if_contains("device_public_id"));
   auto device_id = record->payload.at("device_public_id").as_string();
   EXPECT_TRUE(is_valid_device_id(device_id)) << device_id;
@@ -456,9 +537,10 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   EXPECT_FALSE(dev_pk_b64.empty());
 
   EXPECT_FALSE(record->payload.if_contains("access_token"));
-  ASSERT_TRUE(record->payload.if_contains("refresh_token"));
-  EXPECT_EQ(record->payload.at("refresh_token").as_string(),
-            server_->refresh_token());
+  EXPECT_FALSE(record->payload.if_contains("refresh_token"));
+  ASSERT_TRUE(record->payload.if_contains("registration_code"));
+  EXPECT_EQ(record->payload.at("registration_code").as_string(),
+            server_->registration_code());
 
   auto key_dir = temp_dir.path / "keys";
   auto pk_path = key_dir / "dev_pk.bin";
@@ -469,8 +551,19 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   auto state_dir = temp_dir.path / "state";
   auto access_path = state_dir / "access_token.txt";
   auto refresh_path = state_dir / "refresh_token.txt";
-  EXPECT_TRUE(fs::exists(access_path));
-  EXPECT_TRUE(fs::exists(refresh_path));
+  ASSERT_TRUE(fs::exists(access_path));
+  ASSERT_TRUE(fs::exists(refresh_path));
+
+  {
+    std::ifstream ifs(access_path);
+    std::string stored_access((std::istreambuf_iterator<char>(ifs)), {});
+    EXPECT_EQ(stored_access, server_->access_token());
+  }
+  {
+    std::ifstream ifs(refresh_path);
+    std::string stored_refresh((std::istreambuf_iterator<char>(ifs)), {});
+    EXPECT_EQ(stored_refresh, server_->refresh_token());
+  }
 
   //   auto &http_manager = injector.create<client_async::HttpClientManager
   //   &>(); auto &io_manager = injector.create<cjj365::IoContextManager &>();
@@ -499,8 +592,7 @@ TEST_F(LoginHandlerWorkflowTest, PollRetriesBeforeApproval) {
   ASSERT_TRUE(record.has_value()) << "registration payload missing";
   EXPECT_EQ(server_->registration_calls(), 1);
   EXPECT_EQ(server_->start_calls(), 1);
-  EXPECT_EQ(record->authorization,
-            std::string("Bearer ") + server_->access_token());
+  EXPECT_TRUE(record->authorization.empty());
 
   std::optional<monad::MyVoidResult> reg_result;
   handler_->register_device().run([&](auto r) {
@@ -512,8 +604,151 @@ TEST_F(LoginHandlerWorkflowTest, PollRetriesBeforeApproval) {
   ASSERT_FALSE(reg_result->is_err()) << reg_result->error();
   EXPECT_EQ(server_->registration_calls(), 1);
 
-  EXPECT_EQ(record->target,
-            "/apiv1/users/" + server_->expected_user_id() + "/devices");
+  EXPECT_EQ(record->target, "/apiv1/device/registration");
+}
+
+TEST_F(LoginHandlerWorkflowTest, ReusesExistingValidTokens) {
+  auto state_dir = temp_dir.path / "state";
+  fs::create_directories(state_dir);
+
+  const auto now = std::chrono::system_clock::now();
+  auto access_token =
+      jwt::create()
+          .set_type("JWT")
+          .set_payload_claim("sub", jwt::claim(server_->expected_user_id()))
+          .set_payload_claim("device_id",
+                              jwt::claim(std::string{"device-code-xyz"}))
+          .set_expires_at(now + std::chrono::hours(1))
+          .sign(jwt::algorithm::hs256{"secret"});
+  auto refresh_token = server_->refresh_token();
+
+  {
+    std::ofstream ofs(state_dir / "access_token.txt");
+    ofs << access_token;
+  }
+  {
+    std::ofstream ofs(state_dir / "refresh_token.txt");
+    ofs << refresh_token;
+  }
+
+  misc::ThreadNotifier notifier(5000);
+  std::optional<monad::MyVoidResult> start_result;
+  handler_->start().run([&](auto r) {
+    start_result = std::move(r);
+    notifier.notify();
+  });
+  notifier.waitForNotification();
+
+  ASSERT_TRUE(start_result.has_value());
+  ASSERT_FALSE(start_result->is_err()) << start_result->error();
+  EXPECT_EQ(server_->start_calls(), 0);
+  EXPECT_EQ(server_->poll_calls(), 0);
+  EXPECT_EQ(server_->registration_calls(), 0);
+
+  {
+    std::ifstream ifs(state_dir / "access_token.txt");
+    std::string stored((std::istreambuf_iterator<char>(ifs)), {});
+    EXPECT_EQ(stored, access_token);
+  }
+  {
+    std::ifstream ifs(state_dir / "refresh_token.txt");
+    std::string stored((std::istreambuf_iterator<char>(ifs)), {});
+    EXPECT_EQ(stored, refresh_token);
+  }
+
+  const char *env_access = std::getenv("DEVICE_ACCESS_TOKEN");
+  EXPECT_TRUE(env_access == nullptr || std::string_view(env_access).empty());
+  const char *env_refresh = std::getenv("DEVICE_REFRESH_TOKEN");
+  EXPECT_TRUE(env_refresh == nullptr || std::string_view(env_refresh).empty());
+
+  misc::ThreadNotifier register_notifier(2000);
+  std::optional<monad::MyVoidResult> register_result;
+  handler_->register_device().run([&](auto r) {
+    register_result = std::move(r);
+    register_notifier.notify();
+  });
+  register_notifier.waitForNotification();
+
+  ASSERT_TRUE(register_result.has_value());
+  ASSERT_FALSE(register_result->is_err()) << register_result->error();
+  EXPECT_EQ(server_->registration_calls(), 0);
+}
+
+TEST_F(LoginHandlerWorkflowTest, RefreshesUsingStoredRefreshToken) {
+  auto state_dir = temp_dir.path / "state";
+  fs::create_directories(state_dir);
+
+  const auto now = std::chrono::system_clock::now();
+  auto expired_access =
+      jwt::create()
+          .set_type("JWT")
+          .set_payload_claim("sub", jwt::claim(server_->expected_user_id()))
+          .set_expires_at(now - std::chrono::minutes(5))
+          .sign(jwt::algorithm::hs256{"secret"});
+  auto stored_refresh = server_->refresh_token();
+
+  {
+    std::ofstream ofs(state_dir / "access_token.txt");
+    ofs << expired_access;
+  }
+  {
+    std::ofstream ofs(state_dir / "refresh_token.txt");
+    ofs << stored_refresh;
+  }
+
+  auto refreshed_access =
+      jwt::create()
+          .set_type("JWT")
+          .set_payload_claim("sub", jwt::claim(server_->expected_user_id()))
+          .set_payload_claim("device_id",
+                              jwt::claim(std::string{"device-code-xyz"}))
+          .set_expires_at(now + std::chrono::hours(1))
+          .sign(jwt::algorithm::hs256{"secret"});
+  auto refreshed_refresh = server_->refresh_token() + "-rotated";
+  server_->set_refresh_response_tokens(refreshed_access, refreshed_refresh);
+
+  misc::ThreadNotifier notifier(5000);
+  std::optional<monad::MyVoidResult> start_result;
+  handler_->start().run([&](auto r) {
+    start_result = std::move(r);
+    notifier.notify();
+  });
+  notifier.waitForNotification();
+
+  ASSERT_TRUE(start_result.has_value());
+  ASSERT_FALSE(start_result->is_err()) << start_result->error();
+  EXPECT_EQ(server_->start_calls(), 0);
+  EXPECT_EQ(server_->poll_calls(), 0);
+  EXPECT_EQ(server_->registration_calls(), 0);
+  EXPECT_EQ(server_->refresh_calls(), 1);
+
+  const char *env_access = std::getenv("DEVICE_ACCESS_TOKEN");
+  EXPECT_TRUE(env_access == nullptr || std::string_view(env_access).empty());
+  const char *env_refresh = std::getenv("DEVICE_REFRESH_TOKEN");
+  EXPECT_TRUE(env_refresh == nullptr || std::string_view(env_refresh).empty());
+
+  {
+    std::ifstream ifs(state_dir / "access_token.txt");
+    std::string stored((std::istreambuf_iterator<char>(ifs)), {});
+    EXPECT_EQ(stored, refreshed_access);
+  }
+  {
+    std::ifstream ifs(state_dir / "refresh_token.txt");
+    std::string stored((std::istreambuf_iterator<char>(ifs)), {});
+    EXPECT_EQ(stored, refreshed_refresh);
+  }
+
+  misc::ThreadNotifier register_notifier(2000);
+  std::optional<monad::MyVoidResult> register_result;
+  handler_->register_device().run([&](auto r) {
+    register_result = std::move(r);
+    register_notifier.notify();
+  });
+  register_notifier.waitForNotification();
+
+  ASSERT_TRUE(register_result.has_value());
+  ASSERT_FALSE(register_result->is_err()) << register_result->error();
+  EXPECT_EQ(server_->registration_calls(), 0);
 }
 
 // int main(int argc, char **argv) {

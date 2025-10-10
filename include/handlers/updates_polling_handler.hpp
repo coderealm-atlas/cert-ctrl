@@ -10,9 +10,14 @@
 #include <algorithm>
 #include <format>
 #include <optional>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector> // indirectly needed via data structures; keep if build complains
 #include <memory>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
@@ -76,6 +81,8 @@ class UpdatesPollingHandler
   std::unique_ptr<SignalDispatcher> signal_dispatcher_;
   std::shared_ptr<InstallConfigManager> install_config_manager_;
   std::optional<int> server_override_delay_ms_;
+  std::optional<std::string> cached_access_token_;
+  std::optional<std::filesystem::file_time_type> cached_access_token_mtime_;
 
 public:
   UpdatesPollingHandler(
@@ -198,6 +205,252 @@ public:
   }
 
 private:
+  std::optional<std::string> load_access_token_from_state() {
+    if (config_sources_.paths_.empty()) {
+      cached_access_token_.reset();
+      cached_access_token_mtime_.reset();
+      return std::nullopt;
+    }
+
+    const auto runtime_dir = config_sources_.paths_.back();
+    const auto token_path = runtime_dir / "state" / "access_token.txt";
+
+    std::error_code ec;
+    const auto mtime = std::filesystem::last_write_time(token_path, ec);
+    if (!ec && cached_access_token_ && cached_access_token_mtime_ &&
+        mtime == *cached_access_token_mtime_) {
+      return cached_access_token_;
+    }
+
+    std::ifstream ifs(token_path, std::ios::binary);
+    if (!ifs.is_open()) {
+      cached_access_token_.reset();
+      cached_access_token_mtime_.reset();
+      return std::nullopt;
+    }
+
+    std::string token((std::istreambuf_iterator<char>(ifs)),
+                      std::istreambuf_iterator<char>());
+    auto first = token.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+      cached_access_token_.reset();
+      cached_access_token_mtime_.reset();
+      return std::nullopt;
+    }
+    auto last = token.find_last_not_of(" \t\r\n");
+    if (last == std::string::npos || last < first) {
+      cached_access_token_.reset();
+      cached_access_token_mtime_.reset();
+      return std::nullopt;
+    }
+
+    cached_access_token_ = token.substr(first, last - first + 1);
+    if (!ec) {
+      cached_access_token_mtime_ = mtime;
+    } else {
+      cached_access_token_mtime_.reset();
+    }
+    return cached_access_token_;
+  }
+
+  std::optional<std::string> load_refresh_token_from_state() {
+    if (config_sources_.paths_.empty()) {
+      return std::nullopt;
+    }
+
+    const auto runtime_dir = config_sources_.paths_.back();
+    const auto token_path = runtime_dir / "state" / "refresh_token.txt";
+
+    std::ifstream ifs(token_path, std::ios::binary);
+    if (!ifs.is_open()) {
+      return std::nullopt;
+    }
+
+    std::string token((std::istreambuf_iterator<char>(ifs)),
+                      std::istreambuf_iterator<char>());
+    auto first = token.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+      return std::nullopt;
+    }
+    auto last = token.find_last_not_of(" \t\r\n");
+    if (last == std::string::npos || last < first) {
+      return std::nullopt;
+    }
+
+    return token.substr(first, last - first + 1);
+  }
+
+  std::optional<std::filesystem::path> resolve_state_dir() const {
+    if (config_sources_.paths_.empty()) {
+      return std::nullopt;
+    }
+    try {
+      return config_sources_.paths_.back() / "state";
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  static std::optional<std::string>
+  write_text_0600(const std::filesystem::path &p, const std::string &text) {
+    try {
+      std::error_code ec;
+      if (auto parent = p.parent_path(); !parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+          return std::string{"create_directories failed: "} + ec.message();
+        }
+      }
+      std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
+      if (!ofs.is_open()) {
+        return std::string{"open failed for "} + p.string();
+      }
+      ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
+      if (!ofs) {
+        return std::string{"write failed for "} + p.string();
+      }
+#ifndef _WIN32
+      ::chmod(p.c_str(), 0600);
+#endif
+      return std::nullopt;
+    } catch (const std::exception &e) {
+      return std::string{"write_text_0600 exception: "} + e.what();
+    }
+  }
+
+  monad::IO<void> refresh_access_token() {
+    using namespace monad;
+    using monad::PostJsonTag;
+    using monad::http_io;
+    using monad::http_request_io;
+
+    auto refresh_token_opt = load_refresh_token_from_state();
+    if (!refresh_token_opt || refresh_token_opt->empty()) {
+      return IO<void>::fail(monad::Error{
+          .code = my_errors::GENERAL::INVALID_ARGUMENT,
+          .what = "refresh token unavailable in state"});
+    }
+
+    auto state_dir_opt = resolve_state_dir();
+    if (!state_dir_opt) {
+      return IO<void>::fail(monad::Error{
+          .code = my_errors::GENERAL::UNEXPECTED_RESULT,
+          .what = "unable to resolve runtime state directory"});
+    }
+
+    const auto refresh_url =
+        std::format("{}/auth/refresh", certctrl_config_provider_.get().base_url);
+
+    auto payload_obj = std::make_shared<boost::json::object>(
+        boost::json::object{{"refresh_token", *refresh_token_opt}});
+
+    output_hub_.logger().info()
+        << "Refreshing device session via " << refresh_url << std::endl;
+
+    return http_io<PostJsonTag>(refresh_url)
+        .map([payload_obj](auto ex) {
+          ex->setRequestJsonBody(*payload_obj);
+          return ex;
+        })
+        .then(http_request_io<PostJsonTag>(http_client_))
+        .then([this, refresh_url, state_dir = *state_dir_opt](auto ex)
+                  -> monad::IO<void> {
+          if (!ex->is_2xx()) {
+            std::string error_msg = "Refresh token request failed";
+            if (ex->response) {
+              error_msg += " (HTTP " +
+                           std::to_string(ex->response->result_int()) + ")";
+              if (!ex->response->body().empty()) {
+                error_msg += ": " + std::string(ex->response->body());
+              }
+            }
+            return monad::IO<void>::fail(monad::Error{
+                .code = my_errors::GENERAL::UNEXPECTED_RESULT,
+                .what = std::move(error_msg)});
+          }
+
+          auto payload_result =
+              ex->template parseJsonDataResponse<boost::json::object>();
+          if (payload_result.is_err()) {
+            return monad::IO<void>::fail(payload_result.error());
+          }
+
+          auto payload_obj = payload_result.value();
+          const boost::json::object *data_ptr = &payload_obj;
+          if (auto *data = payload_obj.if_contains("data");
+              data && data->is_object()) {
+            data_ptr = &data->as_object();
+          }
+
+          auto get_string = [](const boost::json::object &obj,
+                               std::string_view key)
+              -> std::optional<std::string> {
+            if (auto *p = obj.if_contains(key); p && p->is_string()) {
+              return boost::json::value_to<std::string>(*p);
+            }
+            return std::nullopt;
+          };
+
+          std::optional<std::string> new_access_token;
+          std::optional<std::string> new_refresh_token;
+          std::optional<int> new_expires_in;
+
+          // Newer responses return tokens directly under the data object.
+          new_access_token = get_string(*data_ptr, "access_token");
+          new_refresh_token = get_string(*data_ptr, "refresh_token");
+          if (auto *p = data_ptr->if_contains("expires_in");
+              p && p->is_number()) {
+            new_expires_in = boost::json::value_to<int>(*p);
+          }
+
+          // Older responses wrap the tokens within a nested "session" object.
+          if ((!new_access_token || !new_refresh_token) &&
+              data_ptr->if_contains("session")) {
+            if (auto *session_ptr = data_ptr->if_contains("session");
+                session_ptr && session_ptr->is_object()) {
+              const auto &session_obj = session_ptr->as_object();
+              if (!new_access_token) {
+                new_access_token = get_string(session_obj, "access_token");
+              }
+              if (!new_refresh_token) {
+                new_refresh_token = get_string(session_obj, "refresh_token");
+              }
+              if (!new_expires_in) {
+                if (auto *p = session_obj.if_contains("expires_in");
+                    p && p->is_number()) {
+                  new_expires_in = boost::json::value_to<int>(*p);
+                }
+              }
+            }
+          }
+
+          if (!new_access_token || new_access_token->empty() ||
+              !new_refresh_token || new_refresh_token->empty()) {
+            return monad::IO<void>::fail(monad::Error{
+                .code = my_errors::GENERAL::UNEXPECTED_RESULT,
+                .what = "refresh response missing tokens"});
+          }
+
+          auto access_path = state_dir / "access_token.txt";
+          auto refresh_path = state_dir / "refresh_token.txt";
+
+          if (auto err = write_text_0600(access_path, *new_access_token)) {
+            output_hub_.logger().warning() << *err << std::endl;
+          }
+          if (auto err = write_text_0600(refresh_path, *new_refresh_token)) {
+            output_hub_.logger().warning() << *err << std::endl;
+          }
+
+          cached_access_token_ = *new_access_token;
+          cached_access_token_mtime_.reset();
+
+          output_hub_.printer().yellow()
+              << "Device session refreshed; new access token expires in "
+              << new_expires_in.value_or(0) << "s" << std::endl;
+
+          return monad::IO<void>::pure();
+        });
+  }
   // Helper methods - must be defined before poll_once() because they're templates
   
   template<typename ExchangePtr>
@@ -346,23 +599,30 @@ private:
     }
   }
   
-  monad::IO<void> poll_once() {
+  monad::IO<void> poll_once(bool allow_refresh_retry = true) {
     using namespace monad;
     namespace http = boost::beast::http;
     using monad::GetStringTag;
     using monad::http_io;
     using monad::http_request_io;
     
-    // Obtain device token from env for prototype
-  const char *tok = std::getenv("DEVICE_ACCESS_TOKEN");
-  if (!tok || !*tok) {
-    output_hub_.printer().yellow()
-      << "No device access token found; please run `cert_ctrl login` first."
-      << std::endl;
-    return IO<void>::fail(
-      monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-             .what = "DEVICE_ACCESS_TOKEN env not set; run cert_ctrl login"});
-  }
+    auto access_token_opt = load_access_token_from_state();
+    if ((!access_token_opt || access_token_opt->empty()) && allow_refresh_retry) {
+      return refresh_access_token()
+          .then([self = this->shared_from_this()]() {
+            return self->poll_once(false);
+          });
+    }
+
+    if (!access_token_opt || access_token_opt->empty()) {
+      output_hub_.printer().yellow()
+          << "No device access token found; please run `cert_ctrl login` first."
+          << std::endl;
+      return IO<void>::fail(monad::Error{
+          .code = my_errors::GENERAL::INVALID_ARGUMENT,
+          .what = "device access token not available in state; run cert_ctrl login"});
+    }
+    const std::string access_token = *access_token_opt;
     
     // Build URL with query parameters
     std::string url = endpoint_base_;
@@ -385,9 +645,9 @@ private:
   parse_error_.clear();
 
   return http_io<GetStringTag>(url)
-        .map([tok, this](auto ex) {
+        .map([access_token, this](auto ex) {
           ex->request.set(http::field::authorization,
-                          std::string("Bearer ") + tok);
+                          std::string("Bearer ") + access_token);
           if (!cursor_.empty()) {
             ex->request.set(http::field::if_none_match,
                             std::format("\"{}\"", cursor_));
@@ -395,7 +655,7 @@ private:
           return ex;
         })
         .then(http_request_io<GetStringTag>(http_client_))
-        .then([this](auto ex) -> monad::IO<void> {
+        .then([this, allow_refresh_retry](auto ex) -> monad::IO<void> {
           if (!ex->response.has_value()) {
             return monad::IO<void>::fail(
                 monad::Error{.code = my_errors::NETWORK::READ_ERROR,
@@ -411,6 +671,19 @@ private:
           } else if (status == 200) {
             // Has updates - parse JSON and dispatch signals
             return handle_ok_with_signals(ex);
+          } else if ((status == 401 || status == 403) && allow_refresh_retry) {
+            output_hub_.logger().info()
+                << "Received HTTP " << status
+                << " while polling; attempting token refresh." << std::endl;
+            return refresh_access_token()
+                .then([self = this->shared_from_this()]() {
+                  return self->poll_once(false);
+                })
+                .catch_then([this, ex, status](const monad::Error &err) {
+                  output_hub_.logger().error()
+                      << "Token refresh failed: " << err.what << std::endl;
+                  return handle_error_status(ex, status);
+                });
           } else {
             // Error response
             return handle_error_status(ex, status);

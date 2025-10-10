@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "certctrl_common.hpp"
+#include "data/device_auth_types.hpp"
 #include "conf/certctrl_config.hpp"
 #include "handlers/login_handler.hpp"
 #include "http_client_config_provider.hpp"
@@ -150,13 +151,9 @@ protected:
     ASSERT_GT(user_id_, 0) << "login returned invalid user_id";
 
 #ifdef _WIN32
-  _putenv_s("CERT_CTRL_SESSION_COOKIE", session_cookie_.c_str());
-  _putenv_s("CERT_CTRL_USER_ID", std::to_string(user_id_).c_str());
   _putenv_s("DEVICE_ACCESS_TOKEN", "");
   _putenv_s("DEVICE_REFRESH_TOKEN", "");
 #else
-  ::setenv("CERT_CTRL_SESSION_COOKIE", session_cookie_.c_str(), 1);
-  ::setenv("CERT_CTRL_USER_ID", std::to_string(user_id_).c_str(), 1);
   ::unsetenv("DEVICE_ACCESS_TOKEN");
   ::unsetenv("DEVICE_REFRESH_TOKEN");
 #endif
@@ -166,6 +163,16 @@ protected:
 };
 
 } // namespace
+
+TEST(DeviceAuthTypes, PollRespParsesNumericUserId) {
+  const std::string payload =
+      R"({"status":"ready","user_id":1,"registration_code":"code"})";
+  auto value = json::parse(payload);
+  auto resp = json::value_to<data::deviceauth::PollResp>(value);
+  ASSERT_TRUE(resp.user_id.has_value());
+  EXPECT_EQ(*resp.user_id, "1");
+  EXPECT_EQ(resp.status, "ready");
+}
 
 TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
   using StartRespResult = monad::MyResult<data::deviceauth::StartResp>;
@@ -250,6 +257,10 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
     last_status = poll_resp.status;
 
     if (last_status == "approved" || last_status == "ready") {
+      ASSERT_TRUE(poll_resp.user_id.has_value())
+          << "ready poll response missing user_id";
+      ASSERT_FALSE(poll_resp.user_id->empty())
+          << "ready poll response contained empty user_id";
       if (poll_resp.registration_code &&
           !poll_resp.registration_code->empty()) {
         successful_poll = poll_resp;
@@ -279,6 +290,10 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
     EXPECT_FALSE(successful_poll->registration_code->empty())
         << "registration_code should not be empty";
   }
+  ASSERT_TRUE(successful_poll->user_id.has_value())
+    << "ready poll response missing user_id";
+  EXPECT_FALSE(successful_poll->user_id->empty())
+    << "ready poll response contained empty user_id";
 
   misc::ThreadNotifier register_notifier(60000);
   std::optional<monad::MyVoidResult> register_result;

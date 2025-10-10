@@ -92,6 +92,9 @@ private:
 
   std::shared_ptr<dto::DeviceInstallConfigDto> cached_config_;
   std::optional<std::int64_t> local_version_;
+  mutable std::optional<std::string> cached_access_token_;
+  mutable std::optional<std::filesystem::file_time_type>
+      cached_access_token_mtime_;
 };
 
 } // namespace certctrl
