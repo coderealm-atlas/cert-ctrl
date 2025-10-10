@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <fstream>
 #include <format>
 #include <future>
@@ -598,19 +597,45 @@ InstallConfigManager::persist_config(const dto::DeviceInstallConfigDto &config) 
 }
 
 std::optional<std::string> InstallConfigManager::load_access_token() const {
-  if (const char *env_tok = std::getenv("DEVICE_ACCESS_TOKEN"); env_tok &&
-      *env_tok) {
-    return std::string(env_tok);
+  const auto token_file = state_dir() / "access_token.txt";
+
+  std::error_code ec;
+  const auto mtime = std::filesystem::last_write_time(token_file, ec);
+  if (!ec && cached_access_token_ && cached_access_token_mtime_ &&
+      mtime == *cached_access_token_mtime_) {
+    return cached_access_token_;
   }
 
-  auto token_file = state_dir() / "access_token.txt";
-  std::ifstream ifs(token_file);
+  std::ifstream ifs(token_file, std::ios::binary);
   if (!ifs.is_open()) {
+    cached_access_token_.reset();
+    cached_access_token_mtime_.reset();
     return std::nullopt;
   }
+
   std::string token((std::istreambuf_iterator<char>(ifs)),
                     std::istreambuf_iterator<char>());
-  return token;
+  auto first = token.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    cached_access_token_.reset();
+    cached_access_token_mtime_.reset();
+    return std::nullopt;
+  }
+  auto last = token.find_last_not_of(" \t\r\n");
+  if (last == std::string::npos || last < first) {
+    cached_access_token_.reset();
+    cached_access_token_mtime_.reset();
+    return std::nullopt;
+  }
+
+  token = token.substr(first, last - first + 1);
+  cached_access_token_ = token;
+  if (!ec) {
+    cached_access_token_mtime_ = mtime;
+  } else {
+    cached_access_token_mtime_.reset();
+  }
+  return cached_access_token_;
 }
 
 std::filesystem::path InstallConfigManager::state_dir() const {

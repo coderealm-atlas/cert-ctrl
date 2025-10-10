@@ -262,15 +262,11 @@ protected:
     ASSERT_GT(user_id_, 0) << "login returned invalid user_id";
 
 #ifdef _WIN32
-    _putenv_s("CERT_CTRL_SESSION_COOKIE", session_cookie_.c_str());
-    _putenv_s("CERT_CTRL_USER_ID", std::to_string(user_id_).c_str());
-    _putenv_s("DEVICE_ACCESS_TOKEN", "");
-    _putenv_s("DEVICE_REFRESH_TOKEN", "");
+  _putenv_s("DEVICE_ACCESS_TOKEN", "");
+  _putenv_s("DEVICE_REFRESH_TOKEN", "");
 #else
-    ::setenv("CERT_CTRL_SESSION_COOKIE", session_cookie_.c_str(), 1);
-    ::setenv("CERT_CTRL_USER_ID", std::to_string(user_id_).c_str(), 1);
-    ::unsetenv("DEVICE_ACCESS_TOKEN");
-    ::unsetenv("DEVICE_REFRESH_TOKEN");
+  ::unsetenv("DEVICE_ACCESS_TOKEN");
+  ::unsetenv("DEVICE_REFRESH_TOKEN");
 #endif
   }
 
@@ -302,23 +298,30 @@ protected:
     }
   }
 
-  void set_device_tokens_env(const std::string &access_token,
+  void persist_device_tokens(const std::string &access_token,
                              const std::optional<std::string> &refresh_token) {
-#ifdef _WIN32
-    _putenv_s("DEVICE_ACCESS_TOKEN", access_token.c_str());
-    if (refresh_token && !refresh_token->empty()) {
-      _putenv_s("DEVICE_REFRESH_TOKEN", refresh_token->c_str());
-    } else {
-      _putenv_s("DEVICE_REFRESH_TOKEN", "");
+    auto state_dir = tmp_root_ / "state";
+    std::error_code ec;
+    fs::create_directories(state_dir, ec);
+    if (ec) {
+      ADD_FAILURE() << "Failed to create state dir: " << ec.message();
+      return;
     }
-#else
-    ::setenv("DEVICE_ACCESS_TOKEN", access_token.c_str(), 1);
-    if (refresh_token && !refresh_token->empty()) {
-      ::setenv("DEVICE_REFRESH_TOKEN", refresh_token->c_str(), 1);
-    } else {
-      ::unsetenv("DEVICE_REFRESH_TOKEN");
+
+    {
+      std::ofstream ofs(state_dir / "access_token.txt",
+                        std::ios::binary | std::ios::trunc);
+      ofs << access_token;
     }
-#endif
+
+    auto refresh_path = state_dir / "refresh_token.txt";
+    if (refresh_token && !refresh_token->empty()) {
+      std::ofstream ofs(refresh_path, std::ios::binary | std::ios::trunc);
+      ofs << *refresh_token;
+    } else {
+      std::error_code remove_ec;
+      fs::remove(refresh_path, remove_ec);
+    }
   }
 
   json::array fetch_user_devices() {
@@ -582,6 +585,14 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     last_status = poll_resp.status;
     if (poll_resp.registration_code &&
         !poll_resp.registration_code->empty()) {
+      ASSERT_TRUE(poll_resp.user_id.has_value())
+          << "ready poll response missing user_id";
+      ASSERT_FALSE(poll_resp.user_id->empty())
+          << "ready poll response contained empty user_id";
+      ASSERT_TRUE(poll_resp.user_id.has_value())
+          << "ready poll response missing user_id";
+      ASSERT_FALSE(poll_resp.user_id->empty())
+          << "ready poll response contained empty user_id";
       registration_code = *poll_resp.registration_code;
       break;
     }
@@ -610,7 +621,7 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
       << "register_device_with_code returned no session";
   auto device_session = std::move(device_session_opt.value());
   newly_registered_device_id_ = device_session.device_id;
-  set_device_tokens_env(device_session.access_token,
+  persist_device_tokens(device_session.access_token,
                         device_session.refresh_token);
 
   auto key_dir = tmp_root_ / "keys";
@@ -1204,7 +1215,7 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
       << "register_device_with_code returned no session";
   ctx.device_session = std::move(*device_session_opt);
   newly_registered_device_id_ = ctx.device_session->device_id;
-  set_device_tokens_env(ctx.device_session->access_token,
+  persist_device_tokens(ctx.device_session->access_token,
                         ctx.device_session->refresh_token);
 
   ctx.device_inventory = fetch_user_devices();
