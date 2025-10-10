@@ -15,6 +15,8 @@
 #include <boost/program_options.hpp>
 #include <iostream>
 #include <string>
+#include <filesystem>
+#include <chrono>
 
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
@@ -23,9 +25,7 @@
 #include "io_monad.hpp"
 #include "my_error_codes.hpp"
 #include "simple_data.hpp"
-#include "util/device_fingerprint.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
-#include "data/data_shape.hpp"
 
 namespace po = boost::program_options;
 
@@ -100,5 +100,15 @@ public:
 
   monad::IO<::data::deviceauth::StartResp> start_device_authorization();
   monad::IO<::data::deviceauth::PollResp> poll_device_once();
+
+private:
+  monad::IO<bool> reuse_existing_session_if_possible();
+  monad::IO<bool> refresh_session_with_token(const std::string &refresh_token,
+                                             const std::filesystem::path &out_dir);
+  std::optional<std::filesystem::path> resolve_runtime_dir() const;
+  static std::optional<std::string>
+  read_text_file_trimmed(const std::filesystem::path &path);
+  static bool is_access_token_valid(const std::string &token,
+                                    std::chrono::seconds skew);
 };
 } // namespace certctrl

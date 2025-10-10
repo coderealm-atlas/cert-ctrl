@@ -47,6 +47,7 @@ struct CliParams {
   bool silent = false;
   size_t offset = 0;
   size_t limit = 10;
+  bool allow_non_root = false;
 };
 
 struct CliCtx {

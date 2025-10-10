@@ -3,12 +3,15 @@
 #include "cert_ctrl_entry.hpp"
 #include "certctrl_common.hpp"
 #include "util/my_logging.hpp"
-#include <boost/program_options.hpp>
 #include "version.h"
+#include <boost/program_options.hpp>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
-#include <algorithm>
 #include <optional>
 
 namespace po = boost::program_options;
@@ -49,9 +52,8 @@ void ensure_directory_exists(const fs::path &dir) {
   std::error_code ec;
   fs::create_directories(dir, ec);
   if (ec && !fs::exists(dir)) {
-    throw std::runtime_error(
-        std::string("Failed to create directory '") + dir.string() +
-        "': " + ec.message());
+    throw std::runtime_error(std::string("Failed to create directory '") +
+                             dir.string() + "': " + ec.message());
   }
 }
 
@@ -80,12 +82,12 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
   }
 
   try {
-  js::object application{{"auto_apply_config", false},
-                           {"verbose", "info"},
-                           {"url_base", "https://api.cjj365.cc"},
-                           {"update_check_url",
-                            "https://install.cert-ctrl.com/api/version/check"},
-                           {"runtime_dir", runtime_dir.string()}};
+    js::object application{
+        {"auto_apply_config", false},
+        {"verbose", "info"},
+        {"url_base", "https://api.cjj365.cc"},
+        {"update_check_url", "https://install.cert-ctrl.com/api/version/check"},
+        {"runtime_dir", runtime_dir.string()}};
     write_json_if_missing(config_dir / "application.json", application);
 
     js::object httpclient{{"threads_num", 2},
@@ -128,8 +130,8 @@ find_runtime_dir_override(const std::vector<fs::path> &config_dirs,
     }
     std::string content((std::istreambuf_iterator<char>(ifs)),
                         std::istreambuf_iterator<char>());
-  boost::system::error_code ec;
-  auto value = js::parse(content, ec);
+    boost::system::error_code ec;
+    auto value = js::parse(content, ec);
     if (ec || !value.is_object()) {
       return;
     }
@@ -157,6 +159,14 @@ void add_unique_path(std::vector<fs::path> &paths, const fs::path &candidate) {
   if (std::find(paths.begin(), paths.end(), candidate) == paths.end()) {
     paths.push_back(candidate);
   }
+}
+
+bool is_running_as_root() {
+#if defined(_WIN32)
+  return true;
+#else
+  return ::geteuid() == 0;
+#endif
 }
 
 } // namespace
@@ -201,6 +211,9 @@ int main(int argc, char *argv[]) {
         ("keep-running",
          po::bool_switch(&cli_params.keep_running)->default_value(false),
          "keep running after processing the command.") //
+        ("no-root",
+         po::bool_switch(&cli_params.allow_non_root)->default_value(false),
+         "suppress warning when running without root privileges.") //
         ("help,h", "Print help");
 
     po::options_description hidden_desc("Hidden options");
@@ -223,6 +236,14 @@ int main(int argc, char *argv[]) {
     po::store(parsed, vm);
     po::notify(vm);
 
+    if (!cli_params.allow_non_root && !is_running_as_root()) {
+      std::cerr
+          << "Warning: cert-ctrl is not running with root privileges. "
+          << "For full functionality, re-run as root or pass --no-root to "
+          << "acknowledge running without elevated privileges." << std::endl;
+      return EXIT_FAILURE;
+    }
+
     std::vector<std::string> positionals =
         vm["positionals"].as<std::vector<std::string>>();
     if (positionals.size() > 0) {
@@ -239,7 +260,9 @@ int main(int argc, char *argv[]) {
       std::cerr << "  conf           Configure the device." << std::endl
                 << std::endl;
       std::cerr << "Default behavior:" << std::endl;
-      std::cerr << "  No subcommand -> agent update check followed by a device updates poll." << std::endl
+      std::cerr << "  No subcommand -> agent update check followed by a device "
+                   "updates poll."
+                << std::endl
                 << std::endl;
     };
 
@@ -283,8 +306,7 @@ int main(int argc, char *argv[]) {
       ensure_directory_exists(resolved_runtime_dir / "logs");
     } catch (const std::exception &ex) {
       std::cerr << "Failed to prepare runtime directory '"
-                << resolved_runtime_dir << "': " << ex.what()
-                << std::endl;
+                << resolved_runtime_dir << "': " << ex.what() << std::endl;
       return EXIT_FAILURE;
     }
 
