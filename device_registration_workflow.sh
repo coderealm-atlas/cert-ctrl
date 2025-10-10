@@ -9,7 +9,7 @@
 # 2. Device authorization start (get device code)
 # 3. Device verification (user approves)
 # 4. Device polling (get access token)
-# 5. Device registration (register device with user, capture device_id)
+# 5. Device registration (register device with user, capture device_id) /apiv1/device/registration
 # 6. Device management (list, view registered devices)
 # 7. Error scenario checks (negative coverage)
 # 8. Device updates poll (/apiv1/devices/self/updates)
@@ -27,8 +27,12 @@ else
 fi
 DEVICE_AUTH_ENDPOINT="${BASE_URL}/auth/device"
 LOGIN_ENDPOINT="${BASE_URL}/auth/general"
+DEVICE_REGISTRATION_ENDPOINT="${BASE_URL}/apiv1/device/registration"
 DEVICES_ENDPOINT_TEMPLATE="${BASE_URL}/apiv1/users/{user_id}/devices"
 DEVICE_UPDATES_ENDPOINT="${BASE_URL}/apiv1/devices/self/updates"
+
+HEALTH_CHECK_PATH="${HEALTH_CHECK_PATH:-/health}"
+HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-5}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -610,23 +614,34 @@ device_register() {
     print_info "  IP: $DEVICE_IP"
     print_info "  X25519 Public Key: ${X25519_PUBLIC_KEY:0:32}..."
     
-    # Create device registration payload with X25519 public key and refresh token
-    local register_body=$(cat <<EOF
-{
-    "device_public_id": "$DEVICE_PUBLIC_ID",
-    "platform": "$DEVICE_PLATFORM",
-    "model": "$DEVICE_MODEL",
-    "app_version": "$DEVICE_APP_VERSION",
-    "name": "$DEVICE_NAME",
-    "ip": "$DEVICE_IP",
-    "user_agent": "$DEVICE_USER_AGENT",
-    "dev_pk": "$X25519_PUBLIC_KEY",
-    "registration_code": "$REGISTRATION_CODE"
-}
-EOF
-)
-    
-    local devices_endpoint="${DEVICES_ENDPOINT_TEMPLATE/\{user_id\}/$USER_ID}"
+    # Create device registration payload with X25519 public key and registration code
+    local register_body
+    register_body=$(jq -cn \
+        --arg device_public_id "$DEVICE_PUBLIC_ID" \
+        --arg platform "$DEVICE_PLATFORM" \
+        --arg model "$DEVICE_MODEL" \
+        --arg app_version "$DEVICE_APP_VERSION" \
+        --arg name "$DEVICE_NAME" \
+        --arg ip "$DEVICE_IP" \
+        --arg user_agent "$DEVICE_USER_AGENT" \
+        --arg dev_pk "$X25519_PUBLIC_KEY" \
+        --arg registration_code "$REGISTRATION_CODE" \
+        --arg user_id "$USER_ID" \
+        '($user_id | tonumber? // $user_id) as $uid
+         | {
+             device_public_id: $device_public_id,
+             platform: $platform,
+             model: $model,
+             app_version: $app_version,
+             name: $name,
+             ip: $ip,
+             user_agent: $user_agent,
+             dev_pk: $dev_pk,
+             registration_code: $registration_code,
+             user_id: $uid
+           }')
+
+    local devices_endpoint="$DEVICE_REGISTRATION_ENDPOINT"
     print_info "Request: POST $devices_endpoint"
     
     local response=$(make_request "POST" "$devices_endpoint" "$register_body" "session")
@@ -688,22 +703,33 @@ device_register_retry() {
         return 1
     fi
 
-    local retry_body=$(cat <<EOF
-{
-    "device_public_id": "$DEVICE_PUBLIC_ID",
-    "platform": "$DEVICE_PLATFORM",
-    "model": "$DEVICE_MODEL",
-    "app_version": "$DEVICE_APP_VERSION",
-    "name": "$DEVICE_NAME",
-    "ip": "$DEVICE_IP",
-    "user_agent": "$DEVICE_USER_AGENT",
-    "dev_pk": "$X25519_PUBLIC_KEY",
-    "refresh_token": "$previous_refresh"
-}
-EOF
-)
+    local retry_body
+    retry_body=$(jq -cn \
+        --arg device_public_id "$DEVICE_PUBLIC_ID" \
+        --arg platform "$DEVICE_PLATFORM" \
+        --arg model "$DEVICE_MODEL" \
+        --arg app_version "$DEVICE_APP_VERSION" \
+        --arg name "$DEVICE_NAME" \
+        --arg ip "$DEVICE_IP" \
+        --arg user_agent "$DEVICE_USER_AGENT" \
+        --arg dev_pk "$X25519_PUBLIC_KEY" \
+        --arg refresh_token "$previous_refresh" \
+        --arg user_id "$USER_ID" \
+        '($user_id | tonumber? // $user_id) as $uid
+         | {
+             device_public_id: $device_public_id,
+             platform: $platform,
+             model: $model,
+             app_version: $app_version,
+             name: $name,
+             ip: $ip,
+             user_agent: $user_agent,
+             dev_pk: $dev_pk,
+             user_id: $uid
+           }
+           + (if $refresh_token != "" then {refresh_token: $refresh_token} else {} end)')
 
-    local devices_endpoint="${DEVICES_ENDPOINT_TEMPLATE/\{user_id\}/$USER_ID}"
+    local devices_endpoint="$DEVICE_REGISTRATION_ENDPOINT"
     print_info "Request (retry): POST $devices_endpoint"
 
     local response=$(make_request "POST" "$devices_endpoint" "$retry_body" "session")
@@ -839,6 +865,7 @@ main() {
     echo -e "${PURPLE}===================================${NC}"
     echo "Server: $BASE_URL"
     echo "Device Auth Endpoint: $DEVICE_AUTH_ENDPOINT"
+    echo "Device Registration Endpoint: $DEVICE_REGISTRATION_ENDPOINT"
     echo "Devices Endpoint Template: $DEVICES_ENDPOINT_TEMPLATE"
     echo ""
     
@@ -847,7 +874,7 @@ main() {
     
     # Check server connectivity
     print_info "Checking server connectivity..."
-    if ! curl -s --connect-timeout 5 "$BASE_URL/health" > /dev/null; then
+    if ! curl -sS --connect-timeout "$HEALTH_CHECK_TIMEOUT" "$BASE_URL$HEALTH_CHECK_PATH" > /dev/null; then
         print_error "Cannot connect to server at $BASE_URL"
         print_info "Please ensure the server is running and accessible"
         exit 1

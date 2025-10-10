@@ -201,7 +201,7 @@ private:
     if (req.method() == http::verb::post && req.target() == "/auth/device") {
       handle_device_auth(std::move(req), res);
     } else if (req.method() == http::verb::post &&
-               req.target().starts_with("/apiv1/users/")) {
+               req.target() == "/apiv1/device/registration") {
       handle_registration(std::move(req), res);
     } else {
       res.result(http::status::not_found);

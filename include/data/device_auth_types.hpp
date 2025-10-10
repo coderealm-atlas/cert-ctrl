@@ -280,6 +280,7 @@ struct PollResp {
   std::optional<int> expires_in;
   std::optional<std::string> registration_code;
   std::optional<int> registration_code_ttl;
+  std::optional<std::string> user_id;
 
   friend void tag_invoke(boost::json::value_from_tag, boost::json::value &jv,
                          const deviceauth::PollResp &r) {
@@ -298,6 +299,9 @@ struct PollResp {
     }
     if (r.registration_code_ttl) {
       obj["registration_code_ttl"] = *r.registration_code_ttl;
+    }
+    if (r.user_id && !r.user_id->empty()) {
+      obj["user_id"] = *r.user_id;
     }
     jv = std::move(obj);
   }
@@ -326,6 +330,20 @@ struct PollResp {
       if (auto *p = jo_p->if_contains("registration_code_ttl");
           p && p->is_number()) {
         r.registration_code_ttl = json::value_to<int>(*p);
+      }
+      if (auto *p = jo_p->if_contains("user_id")) {
+        if (p->is_string()) {
+          r.user_id = json::value_to<std::string>(*p);
+        } else if (p->is_number()) {
+          try {
+            r.user_id = std::to_string(json::value_to<int64_t>(*p));
+          } catch (...) {
+            r.user_id = boost::json::serialize(*p);
+          }
+        } else if (p->is_bool()) {
+          r.user_id = p->as_bool() ? std::string{"true"}
+                                   : std::string{"false"};
+        }
       }
     }
     return r;
@@ -367,6 +385,11 @@ struct PollResp {
         return monad::MyResult<void>::Err(monad::Error{
             .code = my_errors::GENERAL::UNEXPECTED_RESULT,
             .what = "ready response requires tokens or registration_code"});
+      }
+      if (!user_id || user_id->empty()) {
+        return monad::MyResult<void>::Err(monad::Error{
+            .code = my_errors::GENERAL::UNEXPECTED_RESULT,
+            .what = "ready response missing user_id"});
       }
     }
     return monad::MyResult<void>::Ok();
