@@ -179,6 +179,8 @@ gtest_discover_tests(test_device_registration DISCOVERY_TIMEOUT 60)
 add_executable(test_install_config_manager
   test_install_config_manager.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_config_manager.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/copy_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${HTTP_CLIENT_SRCS}
@@ -224,6 +226,8 @@ gtest_discover_tests(test_install_config_manager DISCOVERY_TIMEOUT 30)
 add_executable(test_updates_polling_handler
   test_updates_polling_handler.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_config_manager.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/copy_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${HTTP_CLIENT_SRCS}

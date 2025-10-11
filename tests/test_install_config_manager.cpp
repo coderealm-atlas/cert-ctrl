@@ -1,12 +1,15 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <format>
 #include <random>
+#include <string>
 
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
+#include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "io_monad.hpp"
 #include "log_stream.hpp"
@@ -49,6 +52,28 @@ std::string read_file(const std::filesystem::path &path) {
   std::ifstream ifs(path, std::ios::binary);
   return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
 }
+
+class ScopedEnvVar {
+ public:
+  ScopedEnvVar(const char *name, const std::string &value) : name_(name) {
+#ifdef _WIN32
+    _putenv_s(name, value.c_str());
+#else
+    ::setenv(name, value.c_str(), 1);
+#endif
+  }
+
+  ~ScopedEnvVar() {
+#ifdef _WIN32
+    _putenv_s(name_.c_str(), "");
+#else
+    ::unsetenv(name_.c_str());
+#endif
+  }
+
+ private:
+  std::string name_;
+};
 
 } // namespace
 
@@ -194,6 +219,53 @@ TEST(InstallConfigManagerTest, SkipsCopyActionsWithEmptyDestinations) {
       .run([&](auto result) { ASSERT_TRUE(result.is_ok()); });
 
   EXPECT_FALSE(std::filesystem::exists(dest_path));
+
+  std::filesystem::remove_all(runtime_dir);
+}
+
+TEST(ImportCaActionTest, CopiesCaIntoOverrideDirectory) {
+  auto runtime_dir = make_temp_runtime_dir();
+  auto resource_dir = runtime_dir / "resources" / "cas" / "55" / "current";
+  write_file(resource_dir / "ca.pem", "CA-PEM-DATA\n");
+
+  dto::DeviceInstallConfigDto config{};
+  dto::InstallItem import_item{};
+  import_item.id = "import-root";
+  import_item.type = "import_ca";
+  import_item.ob_type = std::string{"ca"};
+  import_item.ob_id = static_cast<std::int64_t>(55);
+  import_item.ob_name = std::string{"Example Root CA"};
+  config.installs.push_back(import_item);
+
+  customio::ConsoleOutputWithColor sink(5);
+  customio::ConsoleOutput output(sink);
+
+  certctrl::install_actions::InstallActionContext context{
+      .runtime_dir = runtime_dir,
+      .output = output,
+      .ensure_resource_materialized =
+          [](const dto::InstallItem &) -> std::optional<monad::Error> {
+        return std::nullopt;
+      },
+  };
+
+  auto trust_dir = runtime_dir / "trust-anchors";
+  ScopedEnvVar dir_env("CERTCTRL_CA_IMPORT_DIR", trust_dir.string());
+  ScopedEnvVar cmd_env("CERTCTRL_CA_UPDATE_COMMAND", "true");
+
+  certctrl::install_actions::apply_import_ca_actions(context, config,
+                                                     std::nullopt,
+                                                     std::nullopt)
+      .run([&](auto result) {
+        if (!result.is_ok()) {
+          auto err = result.error();
+          FAIL() << "apply_import_ca_actions failed: " << err.what;
+        }
+      });
+
+  std::filesystem::path expected = trust_dir / "example-root-ca.crt";
+  ASSERT_TRUE(std::filesystem::exists(expected));
+  EXPECT_EQ(read_file(expected), "CA-PEM-DATA\n");
 
   std::filesystem::remove_all(runtime_dir);
 }

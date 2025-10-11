@@ -18,6 +18,23 @@ VERBOSE={{VERBOSE}}
 FORCE={{FORCE}}
 DRY_RUN={{DRY_RUN}}
 
+# Advanced configuration (overridable via environment or flags)
+CONFIG_DIR="\${CONFIG_DIR:-}"
+INSTALL_SERVICE="\${INSTALL_SERVICE:-}"
+ENABLE_SERVICE="\${ENABLE_SERVICE:-}"
+SERVICE_NAME="\${SERVICE_NAME:-certctrl.service}"
+SERVICE_ACCOUNT="\${SERVICE_ACCOUNT:-certctrl}"
+SERVICE_DESCRIPTION="cert-ctrl certificate management agent"
+NONINTERACTIVE="\${NONINTERACTIVE:-false}"
+CHANNEL="\${CHANNEL:-stable}"
+
+LAST_DOWNLOAD_URL=""
+LAST_CHECKSUM_URL=""
+CONFIG_DIR_PLACEHOLDER="{{CONFIG_DIR}}"
+if [ -z "$CONFIG_DIR" ] && [ -n "$CONFIG_DIR_PLACEHOLDER" ]; then
+    CONFIG_DIR="$CONFIG_DIR_PLACEHOLDER"
+fi
+
 # Override with environment or parameters
 INSTALL_DIR="\${INSTALL_DIR:-{{INSTALL_DIR}}}"
 if [ -z "$INSTALL_DIR" ]; then
@@ -29,11 +46,11 @@ if [ -z "$INSTALL_DIR" ]; then
 fi
 
 # Colors
-RED='\\033[0;31m'
-GREEN='\\033[0;32m'
-YELLOW='\\033[1;33m'
-BLUE='\\033[0;34m'
-NC='\\033[0m'
+RED='\x1b[0;31m'
+GREEN='\x1b[0;32m'
+YELLOW='\x1b[1;33m'
+BLUE='\x1b[0;34m'
+NC='\x1b[0m'
 
 # Logging functions
 log_info() { echo -e "\${BLUE}[INFO]\${NC} $1"; }
@@ -70,8 +87,12 @@ detect_platform() {
 
 # Check dependencies
 check_dependencies() {
-    local deps=("curl" "tar")
-    
+    local deps=("curl" "tar" "gzip" "sha256sum")
+
+    if [ "$INSTALL_SERVICE" = "true" ] && [ "$USER_INSTALL" = "false" ]; then
+        deps+=("systemctl")
+    fi
+
     for dep in "\${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
             log_error "Required dependency '$dep' is not installed."
@@ -91,7 +112,7 @@ resolve_version() {
         if command -v jq &> /dev/null; then
             VERSION=$(curl -fsSL "$latest_url" | jq -r '.version')
         else
-            VERSION=$(curl -fsSL "$latest_url" | grep '"version":' | sed -E 's/.*"version": "([^"]+)".*/\\1/')
+            VERSION=$(curl -fsSL "$latest_url" | grep '"version":' | sed -E 's/.*"version": "([^\"]+)".*/\\1/')
         fi
         
         if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
@@ -114,7 +135,15 @@ download_binary() {
     else
         download_url="$MIRROR_URL/{{GITHUB_REPO_OWNER}}/{{GITHUB_REPO_NAME}}/releases/download/$VERSION/cert-ctrl-$platform_arch.tar.gz"
     fi
+
+    LAST_DOWNLOAD_URL="$download_url"
     
+    if [ "$DRY_RUN" = "true" ]; then
+        log_info "DRY RUN: Would download cert-ctrl from $download_url"
+        echo ""
+        return 0
+    fi
+
     local temp_file=$(mktemp)
     
     log_info "Downloading cert-ctrl $VERSION for $platform_arch..."
@@ -129,6 +158,203 @@ download_binary() {
     echo "$temp_file"
 }
 
+download_checksum() {
+    local platform_arch="$1"
+
+    if [ "$DRY_RUN" = "true" ]; then
+        LAST_CHECKSUM_URL=""
+        return 0
+    fi
+
+    local checksum_url
+    if [ "$MIRROR_URL" = "$BASE_URL/releases/proxy" ]; then
+        checksum_url="$MIRROR_URL/$VERSION/cert-ctrl-$platform_arch.tar.gz.sha256"
+    else
+        checksum_url="$MIRROR_URL/{{GITHUB_REPO_OWNER}}/{{GITHUB_REPO_NAME}}/releases/download/$VERSION/cert-ctrl-$platform_arch.tar.gz.sha256"
+    fi
+
+    LAST_CHECKSUM_URL="$checksum_url"
+
+    local checksum_file=$(mktemp)
+    log_verbose "Fetching checksum from $checksum_url"
+
+    if curl -fsSL "$checksum_url" -o "$checksum_file"; then
+        echo "$checksum_file"
+        return 0
+    fi
+
+    log_warning "Checksum file not available; skipping verification"
+    rm -f "$checksum_file"
+    echo ""
+}
+
+verify_checksum() {
+    local archive_file="$1"
+    local checksum_file="$2"
+
+    if [ -z "$checksum_file" ]; then
+        return 0
+    fi
+
+    if [ ! -f "$checksum_file" ]; then
+        log_warning "Checksum file missing; skipping verification"
+        return 0
+    fi
+
+    log_info "Verifying archive integrity..."
+
+    local expected=$(awk 'NF>=1 {print $1; exit}' "$checksum_file")
+    local actual=$(sha256sum "$archive_file" | awk '{print $1}')
+
+    if [ -z "$expected" ]; then
+        log_warning "Checksum file empty; skipping verification"
+        return 0
+    fi
+
+    if [ "$expected" != "$actual" ]; then
+        log_error "Checksum verification failed"
+        log_verbose "Expected: $expected"
+        log_verbose "Actual:   $actual"
+        exit 1
+    fi
+
+    log_success "Checksum verified"
+}
+
+prompt_yes_no() {
+    local message="$1"
+
+    if [ "$NONINTERACTIVE" = "true" ]; then
+        return 0
+    fi
+
+    read -p "$message [y/N]: " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        return 0
+    fi
+    return 1
+}
+
+install_config_files() {
+    local extract_dir="$1"
+
+    if [ "$DRY_RUN" = "true" ]; then
+        log_info "DRY RUN: Would place configuration into $CONFIG_DIR"
+        return 0
+    fi
+
+    local config_source=""
+    if [ -d "$extract_dir/config" ]; then
+        config_source="$extract_dir/config"
+    elif [ -d "$extract_dir/etc/certctrl" ]; then
+        config_source="$extract_dir/etc/certctrl"
+    fi
+
+    if [ -z "$config_source" ]; then
+        log_verbose "No configuration directory found in archive"
+        return 0
+    fi
+
+    log_info "Installing configuration to $CONFIG_DIR"
+    if [ -d "$CONFIG_DIR" ] && [ "$FORCE" = "false" ]; then
+        if ! prompt_yes_no "Configuration exists in $CONFIG_DIR. Overwrite?"; then
+            log_info "Skipping configuration install"
+            return 0
+        fi
+    fi
+    mkdir -p "$CONFIG_DIR"
+    cp -R "$config_source/." "$CONFIG_DIR/"
+    log_success "Configuration installed"
+}
+
+ensure_service_account() {
+    local account="$SERVICE_ACCOUNT"
+
+    if [ "$account" = "" ] || [ "$account" = "root" ]; then
+        return 0
+    fi
+
+    if id "$account" &> /dev/null; then
+        return 0
+    fi
+
+    if command -v useradd &> /dev/null; then
+        log_info "Creating service account $account"
+        useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
+    else
+        log_warning "useradd not available; please ensure account $account exists"
+    fi
+}
+
+install_service_unit() {
+    local extract_dir="$1"
+
+    if [ "$INSTALL_SERVICE" != "true" ]; then
+        log_verbose "Service installation disabled"
+        return 0
+    fi
+
+    if [ "$USER_INSTALL" = "true" ]; then
+        log_warning "Service installation skipped for user-level installs"
+        return 0
+    fi
+
+    if [ "$DRY_RUN" = "true" ]; then
+        log_info "DRY RUN: Would install systemd unit $SERVICE_NAME"
+        return 0
+    fi
+
+    if [ "$EUID" -ne 0 ]; then
+        log_error "Service installation requires root privileges"
+        exit 1
+    fi
+
+    if ! command -v systemctl &> /dev/null; then
+        log_warning "systemctl not available; skipping service installation"
+        return 0
+    fi
+
+    local service_source=""
+    if [ -f "$extract_dir/systemd/certctrl.service" ]; then
+        service_source="$extract_dir/systemd/certctrl.service"
+    elif [ -f "$extract_dir/certctrl.service" ]; then
+        service_source="$extract_dir/certctrl.service"
+    fi
+
+    if [ -z "$service_source" ]; then
+        log_warning "No systemd unit found in archive"
+        return 0
+    fi
+
+    ensure_service_account
+
+    log_info "Installing systemd unit at /etc/systemd/system/$SERVICE_NAME"
+    if [ -f "/etc/systemd/system/$SERVICE_NAME" ] && [ "$FORCE" = "false" ]; then
+        if ! prompt_yes_no "Service $SERVICE_NAME exists. Overwrite?"; then
+            log_info "Skipping service installation"
+            return 0
+        fi
+    fi
+    cp "$service_source" "/etc/systemd/system/$SERVICE_NAME"
+
+    sed -i "s|@@BINARY_PATH@@|$INSTALL_DIR/cert-ctrl|g" "/etc/systemd/system/$SERVICE_NAME"
+    sed -i "s|__CERT_CTRL_BIN__|$INSTALL_DIR/cert-ctrl|g" "/etc/systemd/system/$SERVICE_NAME"
+    sed -i "s|@@CONFIG_DIR@@|$CONFIG_DIR|g" "/etc/systemd/system/$SERVICE_NAME"
+    sed -i "s|__CERT_CTRL_CONFIG__|$CONFIG_DIR|g" "/etc/systemd/system/$SERVICE_NAME"
+    sed -i "s|@@SERVICE_USER@@|$SERVICE_ACCOUNT|g" "/etc/systemd/system/$SERVICE_NAME"
+    sed -i "s|@@DESCRIPTION@@|$SERVICE_DESCRIPTION|g" "/etc/systemd/system/$SERVICE_NAME"
+
+    systemctl daemon-reload
+
+    if [ "$ENABLE_SERVICE" = "true" ]; then
+        log_info "Enabling and starting $SERVICE_NAME"
+        systemctl enable --now "$SERVICE_NAME"
+    else
+        log_info "Service installed. Enable manually with: systemctl enable --now $SERVICE_NAME"
+    fi
+}
+
 # Install binary
 install_binary() {
     local temp_file="$1"
@@ -136,6 +362,9 @@ install_binary() {
     
     if [ "$DRY_RUN" = "true" ]; then
         log_info "DRY RUN: Would install to $INSTALL_DIR"
+        if [ "$INSTALL_SERVICE" = "true" ] && [ "$USER_INSTALL" = "false" ]; then
+            log_info "DRY RUN: Would install systemd unit $SERVICE_NAME"
+        fi
         return 0
     fi
     
@@ -165,10 +394,7 @@ install_binary() {
     
     # Check existing installation
     if [ -f "$INSTALL_DIR/cert-ctrl" ] && [ "$FORCE" = "false" ]; then
-        log_warning "cert-ctrl already exists at $INSTALL_DIR/cert-ctrl"
-        read -p "Overwrite? [y/N]: " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        if ! prompt_yes_no "cert-ctrl already exists at $INSTALL_DIR/cert-ctrl. Overwrite?"; then
             log_info "Installation cancelled"
             rm -rf "$extract_dir"
             exit 0
@@ -178,9 +404,13 @@ install_binary() {
     # Install
     chmod +x "$binary_path"
     cp "$binary_path" "$INSTALL_DIR/cert-ctrl"
-    
+    log_success "Binary installed"
+
+    install_config_files "$extract_dir"
+    install_service_unit "$extract_dir"
+
     rm -rf "$extract_dir"
-    
+
     log_success "cert-ctrl installed successfully!"
 }
 
@@ -200,9 +430,9 @@ setup_path() {
             log_info "Adding $INSTALL_DIR to PATH"
             
             if [[ "$shell_rc" == *"fish"* ]]; then
-                echo "set -gx PATH $INSTALL_DIR \\$PATH" >> "$shell_rc"
+                echo "set -gx PATH $INSTALL_DIR \$PATH" >> "$shell_rc"
             else
-                echo "export PATH=\\"$INSTALL_DIR:\\$PATH\\"" >> "$shell_rc"
+                echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$shell_rc"
             fi
             
             log_warning "Please restart your shell or run: source $shell_rc"
@@ -232,6 +462,9 @@ main() {
     log_info "Starting cert-ctrl installation..."
     log_verbose "Service URL: $BASE_URL"
     log_verbose "Mirror: $MIRROR_URL"
+    log_verbose "Install directory: $INSTALL_DIR"
+    log_verbose "Config directory: $CONFIG_DIR"
+    log_verbose "Service install: $INSTALL_SERVICE (enable=$ENABLE_SERVICE)"
     
     check_dependencies
     
@@ -246,10 +479,26 @@ main() {
     fi
     
     local temp_file=$(download_binary "$platform_arch")
+
+    if [ "$DRY_RUN" = "true" ]; then
+        log_info "DRY RUN: No changes were made"
+        return 0
+    fi
+
+    if [ -z "$temp_file" ]; then
+        log_error "Download failed"
+        exit 1
+    fi
+
+    local checksum_file=$(download_checksum "$platform_arch")
+    verify_checksum "$temp_file" "$checksum_file"
     
     install_binary "$temp_file" "$platform_arch"
     
     rm -f "$temp_file"
+    if [ -n "$checksum_file" ]; then
+        rm -f "$checksum_file"
+    fi
     
     setup_path
     verify_installation
@@ -259,10 +508,17 @@ main() {
     echo
     echo "Next steps:"
     if [ "$USER_INSTALL" = "true" ] && [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        echo "  1. Restart your shell or source your shell config"
-        echo "  2. Run: cert-ctrl --help"
+        echo "  - Restart your shell or source your shell config"
+        echo "  - Run: cert-ctrl --help"
     else
-        echo "  1. Run: cert-ctrl --help"
+        echo "  - Run: cert-ctrl --help"
+    fi
+    if [ "$INSTALL_SERVICE" = "true" ] && [ "$USER_INSTALL" = "false" ]; then
+        if [ "$ENABLE_SERVICE" = "true" ]; then
+            echo "  - Check service status: systemctl status $SERVICE_NAME"
+        else
+            echo "  - Enable service when ready: sudo systemctl enable --now $SERVICE_NAME"
+        fi
     fi
     echo
 }
@@ -280,6 +536,37 @@ while [[ $# -gt 0 ]]; do
             ;;
         --install-dir|--dir)
             INSTALL_DIR="$2"
+            shift 2
+            ;;
+        --config-dir)
+            CONFIG_DIR="$2"
+            shift 2
+            ;;
+        --service)
+            INSTALL_SERVICE="true"
+            ENABLE_SERVICE="true"
+            shift
+            ;;
+        --no-service)
+            INSTALL_SERVICE="false"
+            ENABLE_SERVICE="false"
+            shift
+            ;;
+        --enable-service)
+            ENABLE_SERVICE="true"
+            shift
+            ;;
+        --no-enable)
+            ENABLE_SERVICE="false"
+            shift
+            ;;
+        --non-interactive|--yes|-y)
+            NONINTERACTIVE="true"
+            FORCE=true
+            shift
+            ;;
+        --channel)
+            CHANNEL="$2"
             shift 2
             ;;
         --force)
@@ -302,7 +589,13 @@ while [[ $# -gt 0 ]]; do
             echo "  --user-install    Install to user directory"
             echo "  --version VER     Install specific version"
             echo "  --install-dir DIR Custom install directory"
+            echo "  --config-dir DIR  Override configuration directory"
             echo "  --force           Overwrite existing installation"
+            echo "  --service         Install and enable systemd service"
+            echo "  --no-service      Skip systemd service installation"
+            echo "  --enable-service  Enable service after install"
+            echo "  --no-enable       Install service but do not enable"
+            echo "  --non-interactive Run without prompts (assumes yes)"
             echo "  --verbose         Enable verbose output"
             echo "  --dry-run         Show what would be done"
             echo "  --help            Show this help"
@@ -314,6 +607,26 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -z "$CONFIG_DIR" ]; then
+    if [ "$USER_INSTALL" = "true" ]; then
+        CONFIG_DIR="$HOME/.config/certctrl"
+    else
+        CONFIG_DIR="/etc/certctrl"
+    fi
+fi
+
+if [ -z "$INSTALL_SERVICE" ]; then
+    if [ "$USER_INSTALL" = "true" ]; then
+        INSTALL_SERVICE="false"
+    else
+        INSTALL_SERVICE="true"
+    fi
+fi
+
+if [ -z "$ENABLE_SERVICE" ]; then
+    ENABLE_SERVICE="$INSTALL_SERVICE"
+fi
 
 # Run installation
 main

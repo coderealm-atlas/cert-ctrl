@@ -49,6 +49,11 @@ public:
       const std::optional<std::string> &target_ob_type,
       std::optional<std::int64_t> target_ob_id);
 
+  monad::IO<void> apply_import_ca_actions(
+    const dto::DeviceInstallConfigDto &config,
+    const std::optional<std::string> &target_ob_type,
+    std::optional<std::int64_t> target_ob_id);
+
   monad::IO<void> apply_copy_actions_for_signal(
     const ::data::DeviceUpdateSignal &signal);
 
@@ -73,14 +78,6 @@ private:
 
   std::optional<monad::Error>
   ensure_resource_materialized_sync(const dto::InstallItem &item);
-
-  std::optional<std::string>
-  perform_copy_operation(const std::filesystem::path &source,
-                         const std::filesystem::path &destination,
-                         bool private_material) const;
-
-  static bool is_private_material_name(const std::string &name);
-  static std::filesystem::perms desired_permissions(bool private_material);
 
 private:
   std::filesystem::path runtime_dir_;
