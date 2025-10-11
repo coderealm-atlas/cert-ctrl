@@ -18,10 +18,10 @@ on:
           - github-hosted
           - self-hosted
         default: github-hosted
-      self_host_label:
-        description: Label for the self-hosted runner (only used when runner_type=self-hosted)
+      self_host_labels:
+        description: Space-separated labels for the self-hosted runner (e.g. "self-hosted Linux X64")
         type: string
-        default: self-hosted
+        default: self-hosted Linux X64
       clean_build:
         description: Remove existing build directory on self-hosted runner before configuring
         type: choice
@@ -31,6 +31,13 @@ on:
         default: 'false'
       skip_tests:
         description: Skip running ctest after the build
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+        default: 'false'
+      upload_artifacts:
+        description: Upload compiled build directory as a workflow artifact
         type: choice
         options:
           - 'false'
@@ -60,9 +67,27 @@ jobs:
     steps:
       - id: set
         shell: bash
+        env:
+          SELF_HOST_LABELS: ${{ github.event.inputs.self_host_labels || 'self-hosted Linux X64' }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.runner_type || 'github-hosted' }}" = "self-hosted" ]; then
-            echo "os-list=[\"${{ github.event.inputs.self_host_label || 'self-hosted' }}\"]" >> "$GITHUB_OUTPUT"
+            labels="$SELF_HOST_LABELS"
+            labels="${labels//,/ }"
+            json_labels=""
+            for token in $labels; do
+              trimmed=$(printf '%s' "$token" | xargs)
+              if [ -n "$trimmed" ]; then
+                if [ -n "$json_labels" ]; then
+                  json_labels="$json_labels,\"$trimmed\""
+                else
+                  json_labels="\"$trimmed\""
+                fi
+              fi
+            done
+            if [ -z "$json_labels" ]; then
+              json_labels="\"self-hosted\""
+            fi
+            echo "os-list=[[${json_labels}]]" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.os }}" ] && [ "${{ github.event.inputs.os }}" != "all" ]; then
             echo "os-list=[\"${{ github.event.inputs.os }}\"]" >> "$GITHUB_OUTPUT"
           else
@@ -171,6 +196,49 @@ jobs:
         if: github.event.inputs.skip_tests != 'true'
         working-directory: ${{ github.workspace }}/build
         run: ctest --build-config ${{ matrix.build_type }}
+
+      - name: Install build outputs
+        if: github.event.inputs.upload_artifacts == 'true'
+        run: >
+          cmake --install "${{ github.workspace }}/build"
+          --config ${{ matrix.build_type }}
+          --prefix "${{ github.workspace }}/install"
+
+      - name: Package installer payload (Unix)
+        if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          DEST_DIR="${{ github.workspace }}/dist"
+          mkdir -p "$DEST_DIR"
+          ARCHIVE_NAME="cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.tar.gz"
+          tar -C "${{ github.workspace }}/install" -czf "$DEST_DIR/$ARCHIVE_NAME" .
+
+      - name: Package installer payload (Windows)
+        if: github.event.inputs.upload_artifacts == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          New-Item -Path $dest -ItemType Directory -Force | Out-Null
+          $archive = "cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.zip"
+          $archivePath = Join-Path $dest $archive
+          if (Test-Path $archivePath) { Remove-Item $archivePath }
+          Compress-Archive -Path (Join-Path $env:GITHUB_WORKSPACE 'install\*') -DestinationPath $archivePath
+
+      - name: Upload installer artifact (Unix)
+        if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}-${{ matrix.build_type }}
+          path: ${{ github.workspace }}/dist/cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.tar.gz
+          if-no-files-found: error
+
+      - name: Upload installer artifact (Windows)
+        if: github.event.inputs.upload_artifacts == 'true' && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}-${{ matrix.build_type }}
+          path: ${{ github.workspace }}\dist\cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.zip
+          if-no-files-found: error
 
       - name: Upload vcpkg logs (on failure)
         if: failure()
