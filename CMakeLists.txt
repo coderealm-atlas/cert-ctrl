@@ -43,6 +43,26 @@ else()
     set(OpenMP_CXX_FOUND OFF)
 endif()
 
+if(APPLE)
+    # Target macOS 13.6 so we can link against the LLVM libc++ runtimes shipped with
+    # the Homebrew Clang 18 toolchain without version skew warnings.
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.6" CACHE STRING "Minimum macOS version" FORCE)
+    message(STATUS "macOS deployment target: ${CMAKE_OSX_DEPLOYMENT_TARGET}")
+
+    add_library(atomic_stub STATIC cmake/osx/atomic_stub.cpp)
+    set_target_properties(atomic_stub PROPERTIES OUTPUT_NAME atomic)
+    # Ensure the build tree is searched when downstream dependencies request -latomic
+    link_directories(${CMAKE_BINARY_DIR})
+
+    # Prefer matching libc++ runtime from the active Clang toolchain when available
+    get_filename_component(_llvm_toolchain_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    get_filename_component(_llvm_toolchain_prefix "${_llvm_toolchain_bin}" DIRECTORY)
+    set(_llvm_cxx_runtime_dir "${_llvm_toolchain_prefix}/lib/c++")
+    if(EXISTS "${_llvm_cxx_runtime_dir}")
+        link_directories(${_llvm_cxx_runtime_dir})
+    endif()
+endif()
+
 set(BUILD_SHARED_LIBS OFF)  # Only build static libraries
 
 if(MSVC)
@@ -324,6 +344,10 @@ add_executable(${CERT_CTRL_APP_NAME}
     ${PROTO_SRCS}
     )
 
+if(APPLE)
+    add_dependencies(${CERT_CTRL_APP_NAME} atomic_stub)
+endif()
+
 # Name the produced binary by configuration to keep Release/Debug outputs distinct
 set_target_properties(${CERT_CTRL_APP_NAME} PROPERTIES
     OUTPUT_NAME_DEBUG "cert_ctrl_debug"
@@ -355,6 +379,10 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE unofficial-sodium::sodium
     PRIVATE fmt::fmt
     )
+
+if(APPLE)
+    target_link_libraries(${CERT_CTRL_APP_NAME} PRIVATE c++abi)
+endif()
 
 if(OpenMP_CXX_FOUND)
     target_link_libraries(${CERT_CTRL_APP_NAME} PRIVATE OpenMP::OpenMP_CXX)

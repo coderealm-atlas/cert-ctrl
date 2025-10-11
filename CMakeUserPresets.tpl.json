@@ -2,14 +2,126 @@
   "version": 4,
   "configurePresets": [
     {
-      "name": "debug-local",
-      "inherits": "debug",
-      "environment": {
-        "VCPKG_DEFAULT_BINARY_CACHE": "/home/jianglibo/vcpkg-dir/vcpkg_binary_cache"
-      },
+      "name": "windows-debug",
+      "inherits": "w64",
+      "description": "Windows Debug build with Visual Studio 2022",
+      "binaryDir": "${sourceDir}/build/windows-debug",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "/home/jianglibo/vcpkg-dir/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      },
+      "environment": {
+        "VCPKG_DEFAULT_BINARY_CACHE": "${sourceDir}/.vcpkg-cache"
       }
+    },
+    {
+      "name": "windows-release",
+      "inherits": "w64", 
+      "description": "Windows Release build with Visual Studio 2022",
+      "binaryDir": "${sourceDir}/build/windows-release",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      },
+      "environment": {
+        "VCPKG_DEFAULT_BINARY_CACHE": "${sourceDir}/.vcpkg-cache"
+      }
+    },
+    {
+      "name": "windows-ninja-debug",
+      "inherits": "w64",
+      "description": "Windows Debug build with Ninja",
+      "binaryDir": "${sourceDir}/build/windows-ninja-debug",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "cl.exe",
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      },
+      "environment": {
+        "VCPKG_DEFAULT_BINARY_CACHE": "${sourceDir}/.vcpkg-cache"
+      }
+    },
+    {
+      "name": "macos-debug",
+      "inherits": "debug",
+      "description": "macOS Debug build with Clang 18",
+      "binaryDir": "${sourceDir}/build/macos-debug",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "/usr/local/opt/llvm@18/bin/clang",
+        "CMAKE_CXX_COMPILER": "/usr/local/opt/llvm@18/bin/clang++",
+        "CMAKE_MAKE_PROGRAM": "/usr/local/bin/ninja",
+        "VCPKG_TARGET_TRIPLET": "x64-osx-cpp20",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      },
+      "environment": {
+        "VCPKG_DEFAULT_BINARY_CACHE": "${sourceDir}/.vcpkg-cache",
+        "CMAKE_BUILD_PARALLEL_LEVEL": "8",
+        "CC": "/usr/local/opt/llvm@18/bin/clang",
+        "CXX": "/usr/local/opt/llvm@18/bin/clang++"
+      }
+    },
+    {
+      "name": "macos-release",
+      "inherits": "release",
+      "description": "macOS Release build with Clang 18",
+      "binaryDir": "${sourceDir}/build/macos-release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "/usr/local/opt/llvm@18/bin/clang",
+        "CMAKE_CXX_COMPILER": "/usr/local/opt/llvm@18/bin/clang++",
+        "CMAKE_MAKE_PROGRAM": "/usr/local/bin/ninja",
+        "VCPKG_TARGET_TRIPLET": "x64-osx-cpp20",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+      },
+      "environment": {
+        "VCPKG_DEFAULT_BINARY_CACHE": "${sourceDir}/.vcpkg-cache",
+        "CMAKE_BUILD_PARALLEL_LEVEL": "8",
+        "CC": "/usr/local/opt/llvm@18/bin/clang",
+        "CXX": "/usr/local/opt/llvm@18/bin/clang++"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "jobs": 32,
+      "targets": ["ALL_BUILD"],
+      "nativeToolOptions": ["/maxcpucount:32"]
+    },
+    {
+      "name": "windows-release", 
+      "configurePreset": "windows-release",
+      "jobs": 32,
+      "targets": ["ALL_BUILD"],
+      "nativeToolOptions": ["/maxcpucount:32"]
+    },
+    {
+      "name": "windows-ninja-debug",
+      "configurePreset": "windows-ninja-debug",
+      "jobs": 32
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos-debug",
+      "jobs": 8
+    },
+    {
+      "name": "macos-release",
+      "configurePreset": "macos-release",
+      "jobs": 8
     }
   ]
 }
