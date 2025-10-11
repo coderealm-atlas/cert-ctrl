@@ -275,6 +275,8 @@ set(HTTP_CLIENT_SRCS
 
 list(APPEND APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_actions/copy_action.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
 )
 
 # Always use a stable target name; vary only the output file name per config
