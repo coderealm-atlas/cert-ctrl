@@ -26,6 +26,9 @@ target_link_libraries(test_program_options PRIVATE
   fmt::fmt
   protobuf::libprotobuf
 )
+if(APPLE)
+  target_link_libraries(test_program_options PRIVATE c++abi)
+endif()
 
 # Ensure Boost.JSON actually links (vcpkg/Boost provides Boost::json;
 # some environments expose boost_json or require an explicit find_library)
@@ -38,6 +41,10 @@ else()
   if(BOOST_JSON_LIB)
     target_link_libraries(test_program_options PRIVATE ${BOOST_JSON_LIB})
   endif()
+endif()
+
+if(APPLE)
+  add_dependencies(test_program_options atomic_stub)
 endif()
 
 include(GoogleTest)
@@ -76,6 +83,13 @@ target_link_libraries(test_login_handler_workflow PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
 )
+if(APPLE)
+  target_link_libraries(test_login_handler_workflow PRIVATE c++abi)
+endif()
+
+if(APPLE)
+  add_dependencies(test_login_handler_workflow atomic_stub)
+endif()
 
 gtest_discover_tests(test_login_handler_workflow)
 
@@ -109,6 +123,13 @@ target_link_libraries(test_login_real_server PRIVATE
   Boost::log_setup
   unofficial-sodium::sodium
 )
+if(APPLE)
+  target_link_libraries(test_login_real_server PRIVATE c++abi)
+endif()
+
+if(APPLE)
+  add_dependencies(test_login_real_server atomic_stub)
+endif()
 
 gtest_discover_tests(test_login_real_server DISCOVERY_TIMEOUT 60)
 
@@ -144,6 +165,13 @@ target_link_libraries(test_device_registration PRIVATE
   OpenSSL::Crypto
   unofficial-sodium::sodium
 )
+if(APPLE)
+  target_link_libraries(test_device_registration PRIVATE c++abi)
+endif()
+
+if(APPLE)
+  add_dependencies(test_device_registration atomic_stub)
+endif()
 
 gtest_discover_tests(test_device_registration DISCOVERY_TIMEOUT 60)
 
@@ -183,6 +211,13 @@ target_link_libraries(test_install_config_manager PRIVATE
   OpenSSL::Crypto
   unofficial-sodium::sodium
 )
+if(APPLE)
+  target_link_libraries(test_install_config_manager PRIVATE c++abi)
+endif()
+
+if(APPLE)
+  add_dependencies(test_install_config_manager atomic_stub)
+endif()
 
 gtest_discover_tests(test_install_config_manager DISCOVERY_TIMEOUT 30)
 
@@ -222,4 +257,10 @@ target_link_libraries(test_updates_polling_handler PRIVATE
   OpenSSL::Crypto
   unofficial-sodium::sodium
 )
+if(APPLE)
+  target_link_libraries(test_updates_polling_handler PRIVATE c++abi)
+endif()
+if(APPLE)
+  add_dependencies(test_updates_polling_handler atomic_stub)
+endif()
 gtest_discover_tests(test_updates_polling_handler DISCOVERY_TIMEOUT 30)
