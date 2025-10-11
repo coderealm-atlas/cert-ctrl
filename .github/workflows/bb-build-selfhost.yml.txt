@@ -1,0 +1,454 @@
+name: Build requested CMake target
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: 'Runner type: self-hosted or github-hosted'
+        required: false
+        default: 'self-hosted'
+        type: choice
+        options:
+          - 'self-hosted'
+          - 'github-hosted'
+      targets:
+        description: "Space-separated CMake targets to build (e.g., 'bbserver certtool')"
+        required: false
+        default: ''
+      deploy:
+        description: 'Deploy after build'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      clean_build:
+        description: 'Clean build directory before building'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: write
+
+# (build a b c) (deploy!)
+jobs:
+  build-target:
+    runs-on: ${{ fromJSON(github.event.inputs.runner_type == 'github-hosted' && '"ubuntu-latest"' || '["self-hosted","Linux","X64"]') }}
+    outputs:
+      targets: ${{ steps.extract.outputs.targets }}
+      deploy: ${{ steps.extract.outputs.deploy }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+          clean: false
+
+      - name: Extract build targets from message
+        id: extract
+        shell: bash
+        env:
+          MANUAL_TARGETS: ${{ github.event.inputs.targets }}
+          MANUAL_DEPLOY: ${{ github.event.inputs.deploy }}
+        run: |
+          set -euo pipefail
+          MSG=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            MSG="${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}"
+          else
+            MSG="${{ github.event.head_commit.message }}"
+          fi
+          echo "Message to scan:"; printf '%s\n' "$MSG"
+          # Only accept format: (build a b c)
+          TARGETS=""
+          # Prefer manual inputs when triggered via workflow_dispatch
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${MANUAL_TARGETS:-}" ]; then
+            TARGETS=$(printf '%s' "${MANUAL_TARGETS}" | xargs -n1 2>/dev/null | sort -u | xargs 2>/dev/null || true)
+          else
+            LIST=$(printf '%s' "$MSG" | perl -ne 'while(/\(\s*build\s+([^)]*?)\s*\)/ig){print "$1\n"}')
+            if [ -n "$LIST" ]; then
+              for word in $LIST; do
+                TARGETS+="$word "
+              done
+              # Normalize: dedupe and trim
+              TARGETS=$(printf '%s' "$TARGETS" | xargs -n1 2>/dev/null | sort -u | xargs 2>/dev/null || true)
+            fi
+          fi
+
+          # Detect deploy trigger token: (deploy!)
+          DEPLOY=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${MANUAL_DEPLOY:-false}" = "true" ]; then
+              DEPLOY="true"
+            fi
+          else
+            if printf '%s' "$MSG" | grep -qiE '\(\s*deploy\s*!\s*\)'; then
+              DEPLOY="true"
+            fi
+          fi
+
+          # Publish outputs for downstream steps
+          # Ensure TARGETS is normalized to a single whitespace-delimited line
+          TARGETS=$(printf '%s' "$TARGETS" | xargs -n1 2>/dev/null | sort -u | xargs 2>/dev/null || true)
+
+          echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
+          echo "deploy=$DEPLOY" >> "$GITHUB_OUTPUT"
+          if [ -n "${TARGETS:-}" ]; then
+            {
+              printf 'TARGETS<<EOF\n'
+              printf '%s\n' "$TARGETS"
+              printf 'EOF\n'
+            } >> "$GITHUB_ENV"
+            echo "Detected targets: $TARGETS"
+          else
+            echo "No build target requested; skipping gated steps"
+          fi
+          if [ -n "${DEPLOY:-}" ]; then
+            echo "Deploy trigger detected."
+          else
+            echo "No deploy trigger detected."
+          fi
+
+      - name: Init private submodules
+        if: ${{ steps.extract.outputs.targets != '' }}
+        shell: bash
+        env:
+          SUBMODULES_SSH_KEY: ${{ secrets.SUBMODULES_SSH_KEY }}
+          SUBMODULES_TOKEN: ${{ secrets.SUBMODULES_TOKEN }}
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git config -f .gitmodules --get-regexp 'submodule\..*\.url' || true
+          if [ -n "${SUBMODULES_SSH_KEY:-}" ]; then
+            echo "Using SSH key for submodules (scoped to this command)."
+            umask 077
+            mkdir -p "$HOME/.ssh"
+            printf '%s\n' "${SUBMODULES_SSH_KEY}" > "$HOME/.ssh/submodules_key"
+            chmod 600 "$HOME/.ssh/submodules_key"
+            ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+            export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/submodules_key -o StrictHostKeyChecking=yes"
+            git -c url.git@github.com:jianglibo/.insteadof=https://github.com/jianglibo/ \
+              submodule update --init --recursive
+          elif [ -n "${SUBMODULES_TOKEN:-}" ]; then
+            echo "Using SUBMODULES_TOKEN for HTTPS submodules (scoped to this command)."
+            git -c url.https://x-access-token:${SUBMODULES_TOKEN}@github.com/jianglibo/.insteadof=https://github.com/jianglibo/ \
+              submodule update --init --recursive
+          else
+            echo "Warning: no SUBMODULES_SSH_KEY or SUBMODULES_TOKEN provided. Private submodules will fail to clone." >&2
+            git submodule update --init --recursive || true
+          fi
+
+      - name: Clean build directory
+        if: ${{ steps.extract.outputs.targets != '' && github.event.inputs.clean_build == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Cleaning build directory..."
+          rm -rf build/
+          rm -rf compile_commands.json
+          echo "Build directory cleaned."
+
+      - name: Setup toolchain
+        if: ${{ steps.extract.outputs.targets != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v ninja >/dev/null 2>&1 && command -v clang >/dev/null 2>&1 && command -v ld.lld >/dev/null 2>&1 && command -v ccache >/dev/null 2>&1; then
+            echo "Toolchain already installed; skipping."
+            exit 0
+          fi
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ninja-build clang lld ccache
+          else
+            echo "Missing toolchain and no apt-get available. Please preinstall: ninja-build, clang, lld, ccache on the self-hosted runner." >&2
+            exit 1
+          fi
+
+      - name: Configure vcpkg cache paths
+        if: ${{ steps.extract.outputs.targets != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "VCPKG_ASSET_SOURCES=clear" >> "$GITHUB_ENV"
+          if [ "${{ github.event.inputs.runner_type }}" = "github-hosted" ]; then
+            # Use ephemeral runner temp folder; no sudo required
+            echo "VCPKG_DEFAULT_BINARY_CACHE=${RUNNER_TEMP}/vcpkg_binary_cache" >> "$GITHUB_ENV"
+            echo "VCPKG_DOWNLOADS=${RUNNER_TEMP}/vcpkg-downloads" >> "$GITHUB_ENV"
+            mkdir -p "${RUNNER_TEMP}/vcpkg_binary_cache" "${RUNNER_TEMP}/vcpkg-downloads"
+          else
+            # Self-hosted runner paths; requires sudo to create once
+            echo "VCPKG_DEFAULT_BINARY_CACHE=/opt/action-runner/vcpkg_binary_cache" >> "$GITHUB_ENV"
+            echo "VCPKG_DOWNLOADS=/opt/action-runner/vcpkg-downloads" >> "$GITHUB_ENV"
+            sudo mkdir -p /opt/action-runner/vcpkg_binary_cache /opt/action-runner/vcpkg-downloads
+            sudo chown -R "$(id -u)":"$(id -g)" /opt/action-runner/vcpkg_binary_cache /opt/action-runner/vcpkg-downloads
+          fi
+
+      - name: Bootstrap vcpkg (submodule)
+        if: ${{ steps.extract.outputs.targets != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./external/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=$PWD/external/vcpkg" >> "$GITHUB_ENV"
+          # VCPKG cache/download paths and asset sources were configured in the previous step
+
+      - name: Pre-fetch vcpkg dependencies (manifest install)
+        if: ${{ steps.extract.outputs.targets != '' }}
+        env:
+          VCPKG_ASSET_SOURCES: clear
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+        shell: bash
+        run: |
+          set -euo pipefail
+          external/vcpkg/vcpkg --x-asset-sources=clear install --x-manifest-root . --triplet x64-linux-cpp20 --x-feature-flags=manifests,binarycaching
+
+      - name: "Configure (CMake preset: release-ci)"
+        if: ${{ steps.extract.outputs.targets != '' }}
+        env:
+          CC: clang
+          CXX: clang++
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_ASSET_SOURCES: clear
+        shell: bash
+        run: |
+          cmake --preset release-ci
+
+      - name: Build targets
+        if: ${{ steps.extract.outputs.targets != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in ${TARGETS}; do
+            echo "Building target: ${t}"
+            cmake --build --preset release-ci --target "${t}" -j"$(nproc)"
+          done
+
+      - name: Collect executables
+        if: ${{ steps.extract.outputs.targets != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          found_any=0
+          for t in ${TARGETS}; do
+            echo "Locating executable for target: $t"
+            # Common candidate locations
+            candidates=(
+              "build/${t}"
+              "build/${t}.exe"
+              "build/apps/${t}/${t}"
+              "build/apps/${t}/${t}.exe"
+            )
+            # Fallback: search the build tree (limit results) using exact filename matches
+            mapfile -t found < <(find build -type f \( -name "${t}" -o -name "${t}.exe" \) -perm -111 2>/dev/null | head -n 10)
+            candidates+=("${found[@]}")
+            # Copy the first executable match
+            copied=0
+            for p in "${candidates[@]}"; do
+              if [ -n "${p}" ] && [ -f "$p" ] && [ -x "$p" ]; then
+                base="$(basename "$p")"
+                if [ "$base" = "${t}" ] || [ "$base" = "${t}.exe" ]; then
+                  cp "$p" "dist/${t}"
+                  echo "Copied: $p -> dist/${t}"
+                  copied=1
+                  found_any=1
+                  break
+                fi
+              fi
+            done
+            if [ $copied -eq 0 ]; then
+              echo "Warning: could not find executable for target '$t'" >&2
+            fi
+          done
+          if [ $found_any -eq 0 ]; then
+            echo "No executables found to package." >&2
+          fi
+
+      - name: Upload build artifacts
+        if: ${{ steps.extract.outputs.targets != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: warn
+
+  deploy-linux:
+    name: Deploy (Linux)
+    needs: build-target
+    if: ${{ needs.build-target.outputs.targets != '' && needs.build-target.outputs.deploy == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ vars.DEPLOY_ENVIRONMENT || 'production' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: certtool
+            filename: certtool
+            servers: ${{ vars.CERTTOOL_SERVERS }}
+            dest: ${{ vars.CERTTOOL_DEST }}
+            configdir_in_repo: ${{ vars.CERTTOOL_CONFIGDIR_IN_REPO }}
+          - app: bbserver
+            filename: bbserver
+            servers: ${{ vars.BBSERVER_SERVERS }}
+            dest: ${{ vars.BBSERVER_DEST }}
+            configdir_in_repo: ${{ vars.BBSERVER_CONFIGDIR_IN_REPO }}
+    steps:
+      - name: Checkout repo (for deploy scripts and configs)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+          clean: false
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ github.sha }}
+          path: dist
+      - name: Prepare SSH
+        id: prep_ssh
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_SSH_KEY:-}" ]; then
+            echo "have_deploy_key=false" >> "$GITHUB_OUTPUT"
+            echo "DEPLOY_SSH_KEY not set; will skip deploy steps." >&2
+            exit 0
+          fi
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          # Support both raw private key and base64-encoded key in the secret
+          if printf '%s' "$DEPLOY_SSH_KEY" | grep -q "BEGIN .* PRIVATE KEY"; then
+            printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          else
+            echo "Secret does not look like a PEM key; trying base64 decode into deploy_key" >&2
+            printf '%s' "$DEPLOY_SSH_KEY" | base64 -d > "$HOME/.ssh/deploy_key" || {
+              echo "Failed to base64-decode DEPLOY_SSH_KEY; key may be invalid." >&2
+              echo "have_deploy_key=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          fi
+          chmod 600 "$HOME/.ssh/deploy_key"
+          # Ensure known_hosts exists with proper perms
+          touch "$HOME/.ssh/known_hosts"
+          chmod 644 "$HOME/.ssh/known_hosts"
+          echo "OpenSSH version:"; ssh -V || true
+          # Validate the key format
+          if ! ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null 2>&1; then
+            echo "The provided DEPLOY_SSH_KEY appears invalid or unsupported; skipping deploy." >&2
+            echo "have_deploy_key=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "have_deploy_key=true" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy ${{ matrix.app }}
+        if: ${{ steps.prep_ssh.outputs.have_deploy_key == 'true' && contains(needs.build-target.outputs.targets, matrix.filename) }}
+        shell: bash
+        env:
+          APP: ${{ matrix.app }}
+          FILENAME: ${{ matrix.filename }}
+          SERVERS: ${{ matrix.servers }}
+          DEST: ${{ matrix.dest }}
+          CONFIGDIR_IN_REPO: ${{ matrix.configdir_in_repo }}
+          CERTTOOL_APPLICATION_PROD_PROPERTIES: ${{ secrets.CERTTOOL_APPLICATION_PROD_PROPERTIES }}
+          CERTTOOL_MYSQL_CONFIG_PROD_PROPERTIES: ${{ secrets.CERTTOOL_MYSQL_CONFIG_PROD_PROPERTIES }}
+          BBSERVER_APPLICATION_PROD_PROPERTIES: ${{ secrets.BBSERVER_APPLICATION_PROD_PROPERTIES }}
+          BBSERVER_MYSQL_CONFIG_PROD_PROPERTIES: ${{ secrets.BBSERVER_MYSQL_CONFIG_PROD_PROPERTIES }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVERS:-}" ] || [ -z "${DEST:-}" ]; then
+            echo "No servers or dest configured for $FILENAME; skipping."; exit 0; fi
+          if [ ! -f "dist/${FILENAME}" ]; then
+            echo "dist/${FILENAME} not found; available files:"; ls -l dist || true; exit 0; fi
+
+          # Prepare config directory staging if provided
+          CONFIG_STAGE=""
+          CONFIG_BASE=""
+          if [ -n "${CONFIGDIR_IN_REPO:-}" ] && [ -d "$CONFIGDIR_IN_REPO" ]; then
+            CONFIG_STAGE="$(mktemp -d)"
+            CONFIG_BASE="$(basename "$CONFIGDIR_IN_REPO")"
+            echo "Staging config directory '$CONFIGDIR_IN_REPO' -> '$CONFIG_STAGE' (will deploy as '${DEST}/${CONFIG_BASE}')"
+            cp -a "$CONFIGDIR_IN_REPO"/. "$CONFIG_STAGE"/
+            # Substitute *.prod.properties contents from matching secrets
+            shopt -s nullglob
+            while IFS= read -r -d '' f; do
+              base="$(basename "$f")"
+              if [[ "$base" =~ ^(.+)\.prod\.properties$ ]]; then
+                xx="${BASH_REMATCH[1]}"
+                secret_env_name="$(printf '%s_%s_prod_properties' "$APP" "$xx" | tr '[:lower:]' '[:upper:]')"
+                val=${!secret_env_name-}
+                if [ -n "${val:-}" ]; then
+                  echo "Injecting secret into $f (key=$secret_env_name)"
+                  printf '%s' "$val" > "$f"
+                else
+                  echo "Warning: secret env '$secret_env_name' not provided; leaving $f unchanged" >&2
+                fi
+              fi
+            done < <(find "$CONFIG_STAGE" -type f -name '*.prod.properties' -print0)
+            shopt -u nullglob
+          fi
+
+          # Package binary + config (if any) into a tarball for remote deploy script
+          PKG_STAGE="$(mktemp -d)"
+          echo "Create package stage at $PKG_STAGE"
+          cp "dist/${FILENAME}" "$PKG_STAGE/${FILENAME}"
+          chmod +x "$PKG_STAGE/${FILENAME}"
+          if [ -n "${CONFIG_STAGE:-}" ] && [ -d "$CONFIG_STAGE" ]; then
+            echo "Include config dir ($CONFIG_BASE) into package"
+            mkdir -p "$PKG_STAGE/${CONFIG_BASE}"
+            if command -v rsync >/dev/null 2>&1; then
+              rsync -a --delete "$CONFIG_STAGE"/ "$PKG_STAGE/${CONFIG_BASE}/"
+            else
+              cp -a "$CONFIG_STAGE"/. "$PKG_STAGE/${CONFIG_BASE}/"
+            fi
+          fi
+          TS="$(date -u +%Y%m%d%H%M%S)"
+          SHORT_SHA="${GITHUB_SHA:-unknown}"; SHORT_SHA="${SHORT_SHA:0:7}"
+          ARCHIVE_NAME="${APP}-${SHORT_SHA}-${TS}.tar.gz"
+          ARCHIVE_PATH="$PWD/${ARCHIVE_NAME}"
+          echo "Create archive: ${ARCHIVE_PATH}"
+          tar -C "$PKG_STAGE" -czf "$ARCHIVE_PATH" .
+
+          servers_expanded="$(printf '%s' "$SERVERS" | tr ',' ' ')"
+          for srv in $servers_expanded; do
+            endpoint="${srv%:*}"
+            port="${srv##*:}"
+            if [ "$endpoint" = "$port" ]; then port=22; fi
+            host_no_user="${endpoint#*@}"
+            echo "Adding host key for $host_no_user:$port"
+            ssh-keyscan -p "$port" -t rsa,ecdsa,ed25519 "$host_no_user" >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+
+            # Ensure inbox directory exists on remote
+            ssh -p "$port" -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i "$HOME/.ssh/deploy_key" "$endpoint" "mkdir -p '${DEST}/.inbox'"
+
+            # Upload archive to inbox and trigger remote deploy
+            echo "SCP archive ${ARCHIVE_NAME} -> ${endpoint}:${DEST}/.inbox/${ARCHIVE_NAME}"
+            scp -O -P "$port" -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i "$HOME/.ssh/deploy_key" "$ARCHIVE_PATH" "${endpoint}:${DEST}/.inbox/${ARCHIVE_NAME}"
+
+            # Upload deploy script if present, then invoke it to deploy the archive
+            script_path="action-sh/deploy-${APP}.sh"
+            if [ -f "$script_path" ]; then
+              echo "SCP $script_path -> ${endpoint}:${DEST}/deploy-${APP}.sh"
+              scp -O -P "$port" -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i "$HOME/.ssh/deploy_key" "$script_path" "${endpoint}:${DEST}/deploy-${APP}.sh"
+              ssh -p "$port" -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i "$HOME/.ssh/deploy_key" "$endpoint" "chmod +x '${DEST}/deploy-${APP}.sh'" || true
+              echo "Invoke remote deploy script for ${APP}"
+              ssh -p "$port" -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i "$HOME/.ssh/deploy_key" "$endpoint" "'${DEST}/deploy-${APP}.sh' deploy '${DEST}/.inbox/${ARCHIVE_NAME}'"
+              # Optional cleanup of inbox file
+              ssh -p "$port" -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i "$HOME/.ssh/deploy_key" "$endpoint" "rm -f '${DEST}/.inbox/${ARCHIVE_NAME}'" || true
+            else
+              echo "Note: deploy script $script_path not found; skipping script upload for ${APP}."
+            fi
+          done

@@ -11,6 +11,31 @@ on:
           - Release
           - Debug
         default: Release
+      runner_type:
+        description: Choose GitHub-hosted or self-hosted runners
+        type: choice
+        options:
+          - github-hosted
+          - self-hosted
+        default: github-hosted
+      self_host_label:
+        description: Label for the self-hosted runner (only used when runner_type=self-hosted)
+        type: string
+        default: self-hosted
+      clean_build:
+        description: Remove existing build directory on self-hosted runner before configuring
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+        default: 'false'
+      skip_tests:
+        description: Skip running ctest after the build
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+        default: 'false'
       os:
         description: "Platform to run (use 'all' to run all)"
         type: choice
@@ -20,32 +45,6 @@ on:
           - windows-latest
           - macos-latest
         default: all
-  # Only run on pushes that touch build-relevant files
-  push:
-    branches: [ "main" ]
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - 'proto/**'
-      - 'cmake/**'
-      - 'CMakeLists.txt'
-      - 'CMakePresets.json'
-      - 'vcpkg.json'
-      - 'vcpkg-configuration.json'
-      - '.github/workflows/cmake-multi-platform.yml'
-  # Only run PRs that touch build-relevant files
-  pull_request:
-    branches: [ "main" ]
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - 'proto/**'
-      - 'cmake/**'
-      - 'CMakeLists.txt'
-      - 'CMakePresets.json'
-      - 'vcpkg.json'
-      - 'vcpkg-configuration.json'
-      - '.github/workflows/cmake-multi-platform.yml'
 
 # Cancel previous in-flight runs for the same ref to save time
 concurrency:
@@ -62,7 +61,9 @@ jobs:
       - id: set
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.os }}" ] && [ "${{ github.event.inputs.os }}" != "all" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.runner_type || 'github-hosted' }}" = "self-hosted" ]; then
+            echo "os-list=[\"${{ github.event.inputs.self_host_label || 'self-hosted' }}\"]" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.os }}" ] && [ "${{ github.event.inputs.os }}" != "all" ]; then
             echo "os-list=[\"${{ github.event.inputs.os }}\"]" >> "$GITHUB_OUTPUT"
           else
             echo 'os-list=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
@@ -70,10 +71,6 @@ jobs:
 
   build:
     needs: set-matrix
-    # Allow skipping builds by commit message on push
-    if: >
-      !(github.event_name == 'push' && (contains(github.event.head_commit.message, '[skip ci]') || contains(github.event.head_commit.message, '[ci skip]'))) &&
-      (github.event_name != 'workflow_dispatch' || github.event.inputs.os == 'all' || contains(needs.set-matrix.outputs.os-list, github.event.inputs.os))
     runs-on: ${{ matrix.os }}
     env:
       # Enable vcpkg's GitHub Actions cache provider for fast binary caching
@@ -87,7 +84,8 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.set-matrix.outputs.os-list) }}
-        build_type: [Release]
+        build_type:
+          - ${{ github.event.inputs.build_type || 'Release' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -95,6 +93,13 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Clean build directory (self-hosted)
+        if: github.event.inputs.runner_type == 'self-hosted' && github.event.inputs.clean_build == 'true'
+        run: |
+          echo "Removing existing build artifacts from self-hosted runner"
+          rm -rf "${{ github.workspace }}/build"
+          rm -f "${{ github.workspace }}/compile_commands.json"
 
       - name: Cache vcpkg downloads
         uses: actions/cache@v4
@@ -163,6 +168,7 @@ jobs:
         run: cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }}
 
       - name: Test
+        if: github.event.inputs.skip_tests != 'true'
         working-directory: ${{ github.workspace }}/build
         run: ctest --build-config ${{ matrix.build_type }}
 
