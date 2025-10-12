@@ -22,6 +22,7 @@ on:
           - self-host-linux
           - self-host-windows
           - self-host-macos
+          - self-host-all
           - self-host-custom
         default: github-all
       self_host_labels:
@@ -78,6 +79,9 @@ jobs:
                 ;;
               self-host-macos)
                 echo 'os-list=[["self-hosted","macOS","X64"]]' >> "$GITHUB_OUTPUT"
+                ;;
+              self-host-all)
+                echo 'os-list=[["self-hosted","Linux","X64"],["self-hosted","Windows","X64"],["self-hosted","macOS","X64"]]' >> "$GITHUB_OUTPUT"
                 ;;
               self-host-custom)
                 labels="$SELF_HOST_LABELS"
