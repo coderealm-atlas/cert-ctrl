@@ -57,7 +57,11 @@ log_info() { echo -e "\${BLUE}[INFO]\${NC} $1"; }
 log_success() { echo -e "\${GREEN}[SUCCESS]\${NC} $1"; }
 log_warning() { echo -e "\${YELLOW}[WARNING]\${NC} $1"; }
 log_error() { echo -e "\${RED}[ERROR]\${NC} $1" >&2; }
-log_verbose() { [ "$VERBOSE" = "true" ] && echo -e "\${BLUE}[VERBOSE]\${NC} $1"; }
+log_verbose() {
+    if [ "$VERBOSE" = "true" ]; then
+        echo -e "\${BLUE}[VERBOSE]\${NC} $1"
+    fi
+}
 
 # Detect platform if not provided
 detect_platform() {
@@ -454,6 +458,31 @@ verify_installation() {
         log_success "Installation verified! Version: $version"
     else
         log_warning "Binary installed but version check failed"
+    fi
+
+    check_runtime_dependencies "$binary_path"
+}
+
+check_runtime_dependencies() {
+    local binary_path="$1"
+
+    if [ -z "$binary_path" ] || [ ! -x "$binary_path" ]; then
+        return 0
+    fi
+
+    if ! command -v ldd &>/dev/null; then
+        log_verbose "Skipping runtime dependency check (ldd not available)"
+        return 0
+    fi
+
+    local missing
+    missing=$(ldd "$binary_path" 2>&1 | awk '/not found/ {print $0}')
+    if [ -n "$missing" ]; then
+        log_warning "Detected missing runtime dependencies:";
+        printf '%s\n' "$missing"
+        log_warning "Please install the packages that provide the libraries listed above and rerun cert-ctrl if it fails to start."
+    else
+        log_verbose "All required shared libraries are available"
     fi
 }
 

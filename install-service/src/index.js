@@ -7,6 +7,7 @@ import { healthHandler } from './handlers/health.js';
 import { rateLimiter } from './utils/rateLimit.js';
 import { corsHeaders, handleCORS } from './utils/cors.js';
 import { trackRequest } from './utils/analytics.js';
+import { buildGithubHeaders, describeGithubFailure } from './utils/github.js';
 
 const router = Router();
 
@@ -116,8 +117,12 @@ async function warmCache(env) {
   try {
     // Pre-fetch latest release info to warm the cache
     const latestUrl = `https://api.github.com/repos/${env.GITHUB_REPO_OWNER}/${env.GITHUB_REPO_NAME}/releases/latest`;
-    const response = await fetch(latestUrl);
-    
+    const headers = buildGithubHeaders(env, {
+      Accept: 'application/vnd.github.v3+json'
+    });
+
+    const response = await fetch(latestUrl, { headers });
+
     if (response.ok) {
       const data = await response.json();
       const cacheKey = 'latest_release';
@@ -125,6 +130,10 @@ async function warmCache(env) {
         expirationTtl: 3600 // 1 hour
       });
       console.log('Cache warmed for latest release');
+    } else {
+      const bodyText = await response.text();
+      const details = describeGithubFailure(response, bodyText, env);
+      console.warn('Cache warm GitHub lookup failed:', details);
     }
   } catch (error) {
     console.error('Cache warming failed:', error);

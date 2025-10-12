@@ -1,4 +1,5 @@
 import { corsHeaders } from '../utils/cors.js';
+import { buildGithubHeaders, describeGithubFailure } from '../utils/github.js';
 
 export async function proxyHandler(request, env) {
   try {
@@ -51,15 +52,25 @@ export async function proxyHandler(request, env) {
 
     // Fetch from GitHub
     const githubResponse = await fetch(githubUrl, {
-      headers: {
-        'User-Agent': 'cert-ctrl-install-service/1.0.0'
-      }
+      headers: buildGithubHeaders(env)
     });
 
     if (!githubResponse.ok) {
-      return new Response(`Release file not found: ${filename}`, {
+      const bodyText = await githubResponse.text();
+      const details = describeGithubFailure(githubResponse, bodyText, env);
+      console.error('GitHub proxy asset error:', {
+        url: githubUrl,
+        details
+      });
+      return new Response(JSON.stringify({
+        error: `Release file not found: ${filename}`,
+        details
+      }, null, 2), {
         status: githubResponse.status,
-        headers: corsHeaders
+        headers: {
+          'Content-Type': 'application/json',
+          ...corsHeaders
+        }
       });
     }
 
@@ -111,13 +122,21 @@ async function getLatestVersion(env) {
 
     if (!releaseData) {
       const apiUrl = `https://api.github.com/repos/${env.GITHUB_REPO_OWNER}/${env.GITHUB_REPO_NAME}/releases/latest`;
-      const response = await fetch(apiUrl);
-      
+      const headers = buildGithubHeaders(env, {
+        Accept: 'application/vnd.github.v3+json'
+      });
+
+      const response = await fetch(apiUrl, { headers });
+
       if (response.ok) {
         releaseData = await response.json();
         await env.RELEASE_CACHE.put(cacheKey, JSON.stringify(releaseData), {
           expirationTtl: 600 // 10 minutes
         });
+      } else {
+        const bodyText = await response.text();
+        const details = describeGithubFailure(response, bodyText, env);
+        console.error('GitHub latest version lookup failed in proxy handler:', details);
       }
     }
 
