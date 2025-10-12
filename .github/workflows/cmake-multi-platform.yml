@@ -50,13 +50,14 @@ on:
           - 'false'
           - 'true'
         default: 'true'
+      # Builds still run from the workflow's checked-out ref; when true, Publish GitHub release uses the latest v* tag if present.
       do_release:
-        description: Publish a GitHub release using the latest v* tag
-        type: choice
-        options:
-          - 'false'
-          - 'true'
-        default: 'false'
+            description: Publish a GitHub release using the latest v* tag
+            type: choice
+            options:
+              - 'false'
+              - 'true'
+            default: 'false'
   # push:
   #   tags:
   #     - 'v*'
@@ -544,7 +545,9 @@ jobs:
           name: cert-ctrl ${{ steps.release.outputs.tag }}
           files: release-assets/*
           draft: false
-          prerelease: ${{ contains(steps.release.outputs.tag, '-') }}
+          # Our git-describe style tags include hyphenated build metadata, but we still
+          # want GitHub to treat them as full releases so the /releases/latest endpoint works.
+          prerelease: false
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
