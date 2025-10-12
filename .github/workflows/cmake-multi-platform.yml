@@ -52,8 +52,8 @@ on:
 
 # Cancel previous in-flight runs for the same ref to save time
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-manual-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   set-matrix:
@@ -192,27 +192,45 @@ jobs:
 
       - name: Configure CMake (Unix)
         if: runner.os != 'Windows'
-        run: >
-          cmake -G "Ninja" -B "${{ github.workspace }}/build"
-          -S "${{ github.workspace }}"
-          -DCMAKE_C_COMPILER=clang
-          -DCMAKE_CXX_COMPILER=clang++
-          -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        run: |
+          set -euo pipefail
+          cmake_args=(
+            -G "Ninja"
+            -B "${{ github.workspace }}/build"
+            -S "${{ github.workspace }}"
+            -DCMAKE_C_COMPILER=clang
+            -DCMAKE_CXX_COMPILER=clang++
+            -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          )
+          if [ "${{ env.IS_SELF_HOSTED }}" != "true" ]; then
+            cmake_args+=(
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            )
+          fi
+          cmake "${cmake_args[@]}"
 
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
-        run: >
-          cmake -G "Ninja" -B "${{ github.workspace }}/build"
-          -S "${{ github.workspace }}"
-          -DCMAKE_C_COMPILER=cl.exe
-          -DCMAKE_CXX_COMPILER=cl.exe
-          -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        shell: pwsh
+        run: |
+          $cmakeArgs = @(
+            '-G', 'Ninja',
+            '-B', "${{ github.workspace }}/build",
+            '-S', "${{ github.workspace }}",
+            '-DCMAKE_C_COMPILER=cl.exe',
+            '-DCMAKE_CXX_COMPILER=cl.exe',
+            "-DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}",
+            "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          )
+          if ("${{ env.IS_SELF_HOSTED }}" -ne "true") {
+            $cmakeArgs += @(
+              '-DCMAKE_C_COMPILER_LAUNCHER=sccache',
+              '-DCMAKE_CXX_COMPILER_LAUNCHER=sccache'
+            )
+          }
+          cmake @cmakeArgs
 
       - name: Build
         run: cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }}
