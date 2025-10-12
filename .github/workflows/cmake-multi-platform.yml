@@ -208,21 +208,36 @@ jobs:
         if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
         run: |
           set -euo pipefail
+          INSTALL_DIR="${{ github.workspace }}/install"
+          BUILD_DIR="${{ github.workspace }}/build"
+          if [ ! -d "$INSTALL_DIR" ] || [ -z "$(find "$INSTALL_DIR" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+            echo "Install directory is empty; copying build outputs as fallback" >&2
+            mkdir -p "$INSTALL_DIR"
+            cp -a "$BUILD_DIR"/. "$INSTALL_DIR"/
+          fi
           DEST_DIR="${{ github.workspace }}/dist"
           mkdir -p "$DEST_DIR"
           ARCHIVE_NAME="cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.tar.gz"
-          tar -C "${{ github.workspace }}/install" -czf "$DEST_DIR/$ARCHIVE_NAME" .
+          tar -C "$INSTALL_DIR" -czf "$DEST_DIR/$ARCHIVE_NAME" .
 
       - name: Package installer payload (Windows)
         if: github.event.inputs.upload_artifacts == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
+          $install = Join-Path $env:GITHUB_WORKSPACE 'install'
+          $build    = Join-Path $env:GITHUB_WORKSPACE 'build'
+          if (!(Test-Path $install) -or -not (Get-ChildItem -Path $install -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            Write-Warning 'Install directory is empty; copying build outputs as fallback'
+            New-Item -Path $install -ItemType Directory -Force | Out-Null
+            robocopy $build $install /MIR | Out-Null
+            if ($LASTEXITCODE -gt 3) { exit $LASTEXITCODE }
+          }
           $dest = Join-Path $env:GITHUB_WORKSPACE 'dist'
           New-Item -Path $dest -ItemType Directory -Force | Out-Null
           $archive = "cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.zip"
           $archivePath = Join-Path $dest $archive
           if (Test-Path $archivePath) { Remove-Item $archivePath }
-          Compress-Archive -Path (Join-Path $env:GITHUB_WORKSPACE 'install\*') -DestinationPath $archivePath
+          Compress-Archive -Path (Join-Path $install '*') -DestinationPath $archivePath
 
       - name: Upload installer artifact (Unix)
         if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
