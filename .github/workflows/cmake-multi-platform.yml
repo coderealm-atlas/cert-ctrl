@@ -35,14 +35,14 @@ on:
         options:
           - 'false'
           - 'true'
-        default: 'false'
+        default: 'true'
       upload_artifacts:
         description: Upload compiled build directory as a workflow artifact
         type: choice
         options:
           - 'false'
           - 'true'
-        default: 'false'
+        default: 'true'
       os:
         description: "Platform to run (use 'all' to run all)"
         type: choice
