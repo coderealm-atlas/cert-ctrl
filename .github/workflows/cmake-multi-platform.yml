@@ -235,26 +235,47 @@ jobs:
           set -euo pipefail
           INSTALL_DIR="${{ github.workspace }}/install"
           BUILD_DIR="${{ github.workspace }}/build"
-          if [ ! -d "$INSTALL_DIR" ] || [ -z "$(find "$INSTALL_DIR" -mindepth 1 -print -quit 2>/dev/null)" ]; then
-            echo "Install directory is empty; copying build outputs as fallback" >&2
-            mkdir -p "$INSTALL_DIR"
-            cp -a "$BUILD_DIR"/. "$INSTALL_DIR"/
+          PAYLOAD_DIR="${{ github.workspace }}/package"
+          rm -rf "$PAYLOAD_DIR"
+          mkdir -p "$PAYLOAD_DIR"
+          if [ -d "$INSTALL_DIR" ] && [ -n "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -type d -name bin -o -name lib)" ]; then
+            for sub in bin lib; do
+              if [ -d "$INSTALL_DIR/$sub" ]; then
+                mkdir -p "$PAYLOAD_DIR/$sub"
+                cp -a "$INSTALL_DIR/$sub"/. "$PAYLOAD_DIR/$sub"/
+              fi
+            done
+          else
+            echo "Install directory missing bin/lib; falling back to build outputs" >&2
+            mkdir -p "$PAYLOAD_DIR"
+            rsync -a --prune-empty-dirs --include='*/' --include='*.so*' --include='*.dylib' --include='*.a' --include='*.dll' --include='*.exe' --include='*/bin/**' --include='*/lib/**' --exclude='*' "$BUILD_DIR"/ "$PAYLOAD_DIR"/ || true
           fi
           DEST_DIR="${{ github.workspace }}/dist"
           mkdir -p "$DEST_DIR"
           ARCHIVE_NAME="cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.tar.gz"
-          tar -C "$INSTALL_DIR" -czf "$DEST_DIR/$ARCHIVE_NAME" .
+          tar -C "$PAYLOAD_DIR" -czf "$DEST_DIR/$ARCHIVE_NAME" .
 
       - name: Package installer payload (Windows)
         if: github.event.inputs.upload_artifacts == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           $install = Join-Path $env:GITHUB_WORKSPACE 'install'
-          $build    = Join-Path $env:GITHUB_WORKSPACE 'build'
-          if (!(Test-Path $install) -or -not (Get-ChildItem -Path $install -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-            Write-Warning 'Install directory is empty; copying build outputs as fallback'
-            New-Item -Path $install -ItemType Directory -Force | Out-Null
-            robocopy $build $install /MIR | Out-Null
+          $build   = Join-Path $env:GITHUB_WORKSPACE 'build'
+          $payload = Join-Path $env:GITHUB_WORKSPACE 'package'
+          if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
+          New-Item -Path $payload -ItemType Directory -Force | Out-Null
+          $copied = $false
+          foreach ($sub in @('bin','lib')) {
+            $src = Join-Path $install $sub
+            if (Test-Path $src) {
+              robocopy $src (Join-Path $payload $sub) /E /NFL /NDL /NP /NJH /NJS | Out-Null
+              if ($LASTEXITCODE -gt 3) { exit $LASTEXITCODE }
+              $copied = $true
+            }
+          }
+          if (-not $copied) {
+            Write-Warning 'Install directory missing bin/lib; falling back to build outputs'
+            robocopy $build $payload *.exe *.dll /S /XF *.pdb /XD obj tmp CMakeFiles /R:1 /W:1 | Out-Null
             if ($LASTEXITCODE -gt 3) { exit $LASTEXITCODE }
           }
           $dest = Join-Path $env:GITHUB_WORKSPACE 'dist'
@@ -262,7 +283,7 @@ jobs:
           $archive = "cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.zip"
           $archivePath = Join-Path $dest $archive
           if (Test-Path $archivePath) { Remove-Item $archivePath }
-          Compress-Archive -Path (Join-Path $install '*') -DestinationPath $archivePath
+          Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archivePath
 
       - name: Upload installer artifact (Unix)
         if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
