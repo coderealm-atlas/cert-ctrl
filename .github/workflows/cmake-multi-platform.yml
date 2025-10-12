@@ -276,7 +276,7 @@ jobs:
 
       # Prepare MSVC environment on Windows runners
       - name: Setup MSVC (Windows)
-        if: runner.os == 'Windows' && env.IS_SELF_HOSTED != 'true'
+        if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Setup Ninja
@@ -362,6 +362,39 @@ jobs:
           cmake --install "${{ github.workspace }}/build"
           --config ${{ matrix.build_type }}
           --prefix "${{ github.workspace }}/install"
+
+      - name: Normalize executable name (Unix)
+        if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="${{ github.workspace }}/install/bin"
+          if [ ! -d "$INSTALL_DIR" ]; then
+            exit 0
+          fi
+          if [ -f "$INSTALL_DIR/cert-ctrl" ]; then
+            exit 0
+          fi
+          if [ -f "$INSTALL_DIR/cert_ctrl" ]; then
+            mv "$INSTALL_DIR/cert_ctrl" "$INSTALL_DIR/cert-ctrl"
+          elif [ -f "$INSTALL_DIR/certctrl" ]; then
+            mv "$INSTALL_DIR/certctrl" "$INSTALL_DIR/cert-ctrl"
+          fi
+
+      - name: Normalize executable name (Windows)
+        if: github.event.inputs.upload_artifacts == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installBin = Join-Path "${{ github.workspace }}" 'install\bin'
+          if (-not (Test-Path $installBin)) { return }
+          $target = Join-Path $installBin 'cert-ctrl.exe'
+          if (Test-Path $target) { return }
+          foreach ($candidate in @('cert_ctrl.exe','certctrl.exe')) {
+            $source = Join-Path $installBin $candidate
+            if (Test-Path $source) {
+              Move-Item -Path $source -Destination $target -Force
+              break
+            }
+          }
 
       - name: Package installer payload (Unix)
         if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
