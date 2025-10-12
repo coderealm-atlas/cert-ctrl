@@ -11,13 +11,19 @@ on:
           - Release
           - Debug
         default: Release
-      runner_type:
-        description: Choose GitHub-hosted or self-hosted runners
+      target_runner:
+        description: Select where to run the workflow
         type: choice
         options:
-          - github-hosted
-          - self-hosted
-        default: github-hosted
+          - github-all
+          - github-ubuntu-latest
+          - github-windows-latest
+          - github-macos-latest
+          - self-host-linux
+          - self-host-windows
+          - self-host-macos
+          - self-host-custom
+        default: github-all
       self_host_labels:
         description: Space-separated labels for the self-hosted runner (e.g. "self-hosted Linux X64")
         type: string
@@ -43,15 +49,6 @@ on:
           - 'false'
           - 'true'
         default: 'true'
-      os:
-        description: "Platform to run (use 'all' to run all)"
-        type: choice
-        options:
-          - all
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
-        default: all
 
 # Cancel previous in-flight runs for the same ref to save time
 concurrency:
@@ -70,26 +67,50 @@ jobs:
         env:
           SELF_HOST_LABELS: ${{ github.event.inputs.self_host_labels || 'self-hosted Linux X64' }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.runner_type || 'github-hosted' }}" = "self-hosted" ]; then
-            labels="$SELF_HOST_LABELS"
-            labels="${labels//,/ }"
-            json_labels=""
-            for token in $labels; do
-              trimmed=$(printf '%s' "$token" | xargs)
-              if [ -n "$trimmed" ]; then
-                if [ -n "$json_labels" ]; then
-                  json_labels="$json_labels,\"$trimmed\""
-                else
-                  json_labels="\"$trimmed\""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            target="${{ github.event.inputs.target_runner || 'github-all' }}"
+            case "$target" in
+              self-host-linux)
+                echo 'os-list=[["self-hosted","Linux","X64"]]' >> "$GITHUB_OUTPUT"
+                ;;
+              self-host-windows)
+                echo 'os-list=[["self-hosted","Windows","X64"]]' >> "$GITHUB_OUTPUT"
+                ;;
+              self-host-macos)
+                echo 'os-list=[["self-hosted","macOS","X64"]]' >> "$GITHUB_OUTPUT"
+                ;;
+              self-host-custom)
+                labels="$SELF_HOST_LABELS"
+                labels="${labels//,/ }"
+                json_labels=""
+                for token in $labels; do
+                  trimmed=$(printf '%s' "$token" | xargs)
+                  if [ -n "$trimmed" ]; then
+                    if [ -n "$json_labels" ]; then
+                      json_labels="$json_labels,\"$trimmed\""
+                    else
+                      json_labels="\"$trimmed\""
+                    fi
+                  fi
+                done
+                if [ -z "$json_labels" ]; then
+                  json_labels="\"self-hosted\""
                 fi
-              fi
-            done
-            if [ -z "$json_labels" ]; then
-              json_labels="\"self-hosted\""
-            fi
-            echo "os-list=[[${json_labels}]]" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.os }}" ] && [ "${{ github.event.inputs.os }}" != "all" ]; then
-            echo "os-list=[\"${{ github.event.inputs.os }}\"]" >> "$GITHUB_OUTPUT"
+                echo "os-list=[[${json_labels}]]" >> "$GITHUB_OUTPUT"
+                ;;
+              github-ubuntu-latest)
+                echo 'os-list=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+                ;;
+              github-windows-latest)
+                echo 'os-list=["windows-latest"]' >> "$GITHUB_OUTPUT"
+                ;;
+              github-macos-latest)
+                echo 'os-list=["macos-latest"]' >> "$GITHUB_OUTPUT"
+                ;;
+              github-all|*)
+                echo 'os-list=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+                ;;
+            esac
           else
             echo 'os-list=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
           fi
@@ -104,6 +125,7 @@ jobs:
       # Ensure Ninja is used everywhere
       CMAKE_GENERATOR: Ninja
       VCPKG_USE_NINJA: 1
+      IS_SELF_HOSTED: ${{ startsWith(github.event.inputs.target_runner || 'github-all', 'self-host-') }}
 
     strategy:
       fail-fast: false
@@ -120,13 +142,14 @@ jobs:
           fetch-tags: true
 
       - name: Clean build directory (self-hosted)
-        if: github.event.inputs.runner_type == 'self-hosted' && github.event.inputs.clean_build == 'true'
+        if: env.IS_SELF_HOSTED == 'true' && github.event.inputs.clean_build == 'true'
         run: |
           echo "Removing existing build artifacts from self-hosted runner"
           rm -rf "${{ github.workspace }}/build"
           rm -f "${{ github.workspace }}/compile_commands.json"
 
       - name: Cache vcpkg downloads
+        if: env.IS_SELF_HOSTED != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -137,32 +160,34 @@ jobs:
 
       # Prepare MSVC environment on Windows runners
       - name: Setup MSVC (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.IS_SELF_HOSTED != 'true'
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Setup Ninja
+        if: env.IS_SELF_HOSTED != 'true'
         uses: seanmiddleditch/gha-setup-ninja@v4
 
       # Extra guard: ensure Ninja is installed per-OS (fallback if action fails)
       - name: Ensure Ninja on macOS
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.IS_SELF_HOSTED != 'true'
         run: |
           brew update
           # Install Ninja and required autotools for libsodium
           brew install ninja autoconf automake libtool pkg-config libomp
 
       - name: Ensure Ninja on Ubuntu
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && env.IS_SELF_HOSTED != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libomp-dev
 
       - name: Ensure Ninja on Windows
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.IS_SELF_HOSTED != 'true'
         run: choco install ninja --no-progress -y
 
       # Use vcpkg manifest mode via the repository submodule on all platforms
       - name: Setup sccache
+        if: env.IS_SELF_HOSTED != 'true'
         uses: mozilla-actions/sccache-action@v0.0.3
 
       - name: Configure CMake (Unix)
