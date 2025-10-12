@@ -50,11 +50,18 @@ on:
           - 'false'
           - 'true'
         default: 'true'
+      release_tag:
+        description: Optional tag to publish a GitHub release (requires artifacts)
+        type: string
+        default: ''
 
 # Cancel previous in-flight runs for the same ref to save time
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-manual-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: write
 
 jobs:
   set-matrix:
@@ -130,6 +137,12 @@ jobs:
       CMAKE_GENERATOR: Ninja
       VCPKG_USE_NINJA: 1
       IS_SELF_HOSTED: ${{ startsWith(github.event.inputs.target_runner || 'github-all', 'self-host-') }}
+      SKIP_CONFIGURE: 'false'
+      ARTIFACT_PLATFORM: ''
+      ARTIFACT_ARCH: ''
+      ARTIFACT_SLUG: unknown
+      ARTIFACT_BASE: cert-ctrl-unknown
+      ARCHIVE_EXT: tar.gz
 
     strategy:
       fail-fast: false
@@ -144,6 +157,105 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Determine artifact metadata (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          os_slug=$(printf '%s' "${RUNNER_OS:-linux}" | tr '[:upper:]' '[:lower:]')
+          case "$os_slug" in
+            macos|darwin)
+              os_slug="macos"
+              ;;
+            linux)
+              os_slug="linux"
+              ;;
+            *)
+              os_slug="linux"
+              ;;
+          esac
+
+          arch=$(uname -m)
+          case "$arch" in
+            x86_64|amd64)
+              arch_slug="x64"
+              ;;
+            arm64|aarch64)
+              arch_slug="arm64"
+              ;;
+            armv7*|armhf)
+              arch_slug="arm"
+              ;;
+            *)
+              arch_slug="x64"
+              ;;
+          esac
+
+          artifact_slug="${os_slug}-${arch_slug}"
+          {
+            echo "ARTIFACT_PLATFORM=$os_slug"
+            echo "ARTIFACT_ARCH=$arch_slug"
+            echo "ARTIFACT_SLUG=$artifact_slug"
+            echo "ARTIFACT_BASE=cert-ctrl-$artifact_slug"
+            echo "ARCHIVE_EXT=tar.gz"
+          } >> "$GITHUB_ENV"
+
+      - name: Determine artifact metadata (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $osSlug = 'windows'
+          switch -regex ($env:PROCESSOR_ARCHITECTURE) {
+            'ARM64' { $archSlug = 'arm64'; break }
+            'ARM' { $archSlug = 'arm'; break }
+            default { $archSlug = 'x64' }
+          }
+          $artifactSlug = "$osSlug-$archSlug"
+          "ARTIFACT_PLATFORM=$osSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ARTIFACT_ARCH=$archSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ARTIFACT_SLUG=$artifactSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ARTIFACT_BASE=cert-ctrl-$artifactSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ARCHIVE_EXT=zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Detect reusable configure (self-hosted Unix)
+        if: env.IS_SELF_HOSTED == 'true' && runner.os != 'Windows' && github.event.inputs.clean_build != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_file="${{ github.workspace }}/build/CMakeCache.txt"
+          requested="${{ github.event.inputs.build_type || matrix.build_type }}"
+          if [ -f "$cache_file" ]; then
+            cached=$(awk -F= '/^CMAKE_BUILD_TYPE:STRING=/{print $2}' "$cache_file" || true)
+            if [ "$cached" = "$requested" ]; then
+              echo "Reusing existing CMake configuration for $requested"
+              echo "SKIP_CONFIGURE=true" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          fi
+          echo "SKIP_CONFIGURE=false" >> "$GITHUB_ENV"
+
+      - name: Detect reusable configure (self-hosted Windows)
+        if: env.IS_SELF_HOSTED == 'true' && runner.os == 'Windows' && github.event.inputs.clean_build != 'true'
+        shell: pwsh
+        run: |
+          $cache = Join-Path "${{ github.workspace }}" 'build/CMakeCache.txt'
+          $requested = "${{ github.event.inputs.build_type || matrix.build_type }}"
+          if (Test-Path $cache) {
+            $match = Select-String -Path $cache -Pattern '^CMAKE_BUILD_TYPE:STRING=(.*)$'
+            if ($match) {
+              $cached = $match.Matches[0].Groups[1].Value
+              if ($cached -eq $requested) {
+                Write-Host "Reusing existing CMake configuration for $requested"
+                "SKIP_CONFIGURE=true" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+                exit 0
+              }
+            }
+          }
+          "SKIP_CONFIGURE=false" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Reusing CMake configure cache
+        if: env.SKIP_CONFIGURE == 'true'
+        run: echo "Skipping CMake configure step; existing cache is compatible with requested build type."
 
       - name: Clean build directory (self-hosted)
         if: env.IS_SELF_HOSTED == 'true' && github.event.inputs.clean_build == 'true'
@@ -195,7 +307,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.3
 
       - name: Configure CMake (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && env.SKIP_CONFIGURE != 'true'
         run: |
           set -euo pipefail
           cmake_args=(
@@ -216,7 +328,7 @@ jobs:
           cmake "${cmake_args[@]}"
 
       - name: Configure CMake (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.SKIP_CONFIGURE != 'true'
         shell: pwsh
         run: |
           $cmakeArgs = @(
@@ -264,15 +376,15 @@ jobs:
             echo "ERROR: Expected executable directory '$INSTALL_DIR/bin' missing" >&2
             exit 1
           fi
-          if [ -z "$(find "$INSTALL_DIR/bin" -type f -perm -111 -print -quit 2>/dev/null)" ]; then
-            echo "ERROR: No executables found in '$INSTALL_DIR/bin'" >&2
+          if [ ! -f "$INSTALL_DIR/bin/cert-ctrl" ] && [ ! -f "$INSTALL_DIR/bin/cert-ctrl.exe" ]; then
+            echo "ERROR: cert-ctrl executable not found in '$INSTALL_DIR/bin'" >&2
             exit 1
           fi
           mkdir -p "$PAYLOAD_DIR/bin"
           cp -a "$INSTALL_DIR/bin"/. "$PAYLOAD_DIR/bin"/
           DEST_DIR="${{ github.workspace }}/dist"
           mkdir -p "$DEST_DIR"
-          ARCHIVE_NAME="cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.tar.gz"
+          ARCHIVE_NAME="${ARTIFACT_BASE:-cert-ctrl-unknown}.${ARCHIVE_EXT:-tar.gz}"
           tar -C "$PAYLOAD_DIR" -czf "$DEST_DIR/$ARCHIVE_NAME" .
 
       - name: Package installer payload (Windows)
@@ -297,9 +409,18 @@ jobs:
           }
           robocopy $binSrc $binDst *.exe /E /XF *.pdb /NFL /NDL /NP /NJH /NJS | Out-Null
           if ($LASTEXITCODE -gt 3) { exit $LASTEXITCODE }
+          if (-not (Test-Path $binDst)) {
+            Write-Error "Failed to stage executables into '$binDst'"
+            exit 1
+          }
+          $stagedExecutables = Get-ChildItem -Path $binDst -Filter *.exe -File -Recurse
+          if (-not $stagedExecutables) {
+            Write-Error "No executables were copied into '$binDst'"
+            exit 1
+          }
           $dest = Join-Path $env:GITHUB_WORKSPACE 'dist'
           New-Item -Path $dest -ItemType Directory -Force | Out-Null
-          $archive = "cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.zip"
+          $archive = "${env:ARTIFACT_BASE:-cert-ctrl-unknown}.${env:ARCHIVE_EXT:-zip}"
           $archivePath = Join-Path $dest $archive
           if (Test-Path $archivePath) { Remove-Item $archivePath }
           Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archivePath
@@ -308,16 +429,16 @@ jobs:
         if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: installer-${{ matrix.os }}-${{ matrix.build_type }}
-          path: ${{ github.workspace }}/dist/cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.tar.gz
+          name: installer-${{ env.ARTIFACT_SLUG }}
+          path: ${{ github.workspace }}/dist/${{ env.ARTIFACT_BASE }}.${{ env.ARCHIVE_EXT }}
           if-no-files-found: error
 
       - name: Upload installer artifact (Windows)
         if: github.event.inputs.upload_artifacts == 'true' && runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: installer-${{ matrix.os }}-${{ matrix.build_type }}
-          path: ${{ github.workspace }}\dist\cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.zip
+          name: installer-${{ env.ARTIFACT_SLUG }}
+          path: ${{ github.workspace }}/dist/${{ env.ARTIFACT_BASE }}.${{ env.ARCHIVE_EXT }}
           if-no-files-found: error
 
       - name: Upload vcpkg logs (on failure)
@@ -330,3 +451,51 @@ jobs:
             ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.log
             ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.txt
           if-no-files-found: ignore
+
+  publish-release:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag
+        id: release
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$REQUESTED_TAG" ]; then
+            tag="$REQUESTED_TAG"
+          else
+            tag=$(git describe --tags --long --dirty --match "v*" 2>/dev/null || true)
+            if [ -z "$tag" ]; then
+              short_sha=$(git rev-parse --short HEAD)
+              tag="build-${GITHUB_RUN_ID}-${short_sha}"
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: |
+          ls -al release-assets
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: cert-ctrl ${{ steps.release.outputs.tag }}
+          files: release-assets/*
+          draft: false
+          prerelease: ${{ contains(steps.release.outputs.tag, '-') }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
