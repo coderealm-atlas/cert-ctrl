@@ -16,6 +16,8 @@ endif()
 
 project(bbserver LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 # Interface target to unify Boost.DI constructor parameter limit across all targets
 add_library(di_config INTERFACE)
 target_compile_definitions(di_config INTERFACE BOOST_DI_CFG_CTOR_LIMIT_SIZE=16)
@@ -392,6 +394,13 @@ if(OpenMP_CXX_FOUND)
 else()
     message(STATUS "OpenMP not found or disabled; proceeding without OpenMP")
 endif()
+
+install(TARGETS ${CERT_CTRL_APP_NAME}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    BUNDLE DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 
 # Add tests subdirectory
 add_subdirectory(tests)
