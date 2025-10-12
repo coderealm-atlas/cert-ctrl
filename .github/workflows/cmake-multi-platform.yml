@@ -260,18 +260,16 @@ jobs:
           PAYLOAD_DIR="${{ github.workspace }}/package"
           rm -rf "$PAYLOAD_DIR"
           mkdir -p "$PAYLOAD_DIR"
-          if [ -d "$INSTALL_DIR" ] && [ -n "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -type d -name bin -o -name lib)" ]; then
-            for sub in bin lib; do
-              if [ -d "$INSTALL_DIR/$sub" ]; then
-                mkdir -p "$PAYLOAD_DIR/$sub"
-                cp -a "$INSTALL_DIR/$sub"/. "$PAYLOAD_DIR/$sub"/
-              fi
-            done
-          else
-            echo "Install directory missing bin/lib; falling back to build outputs" >&2
-            mkdir -p "$PAYLOAD_DIR"
-            rsync -a --prune-empty-dirs --include='*/' --include='*.so*' --include='*.dylib' --include='*.a' --include='*.dll' --include='*.exe' --include='*/bin/**' --include='*/lib/**' --exclude='*' "$BUILD_DIR"/ "$PAYLOAD_DIR"/ || true
+          if [ ! -d "$INSTALL_DIR/bin" ]; then
+            echo "ERROR: Expected executable directory '$INSTALL_DIR/bin' missing" >&2
+            exit 1
           fi
+          if [ -z "$(find "$INSTALL_DIR/bin" -type f -perm -111 -print -quit 2>/dev/null)" ]; then
+            echo "ERROR: No executables found in '$INSTALL_DIR/bin'" >&2
+            exit 1
+          fi
+          mkdir -p "$PAYLOAD_DIR/bin"
+          cp -a "$INSTALL_DIR/bin"/. "$PAYLOAD_DIR/bin"/
           DEST_DIR="${{ github.workspace }}/dist"
           mkdir -p "$DEST_DIR"
           ARCHIVE_NAME="cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.tar.gz"
@@ -286,20 +284,19 @@ jobs:
           $payload = Join-Path $env:GITHUB_WORKSPACE 'package'
           if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
           New-Item -Path $payload -ItemType Directory -Force | Out-Null
-          $copied = $false
-          foreach ($sub in @('bin','lib')) {
-            $src = Join-Path $install $sub
-            if (Test-Path $src) {
-              robocopy $src (Join-Path $payload $sub) /E /NFL /NDL /NP /NJH /NJS | Out-Null
-              if ($LASTEXITCODE -gt 3) { exit $LASTEXITCODE }
-              $copied = $true
-            }
+          $binSrc = Join-Path $install 'bin'
+          $binDst = Join-Path $payload 'bin'
+          if (-not (Test-Path $binSrc)) {
+            Write-Error "Expected executable directory '$binSrc' missing"
+            exit 1
           }
-          if (-not $copied) {
-            Write-Warning 'Install directory missing bin/lib; falling back to build outputs'
-            robocopy $build $payload *.exe *.dll /S /XF *.pdb /XD obj tmp CMakeFiles /R:1 /W:1 | Out-Null
-            if ($LASTEXITCODE -gt 3) { exit $LASTEXITCODE }
+          $executables = Get-ChildItem -Path $binSrc -Filter *.exe -File -Recurse
+          if (-not $executables) {
+            Write-Error "No executables found in '$binSrc'"
+            exit 1
           }
+          robocopy $binSrc $binDst *.exe /E /XF *.pdb /NFL /NDL /NP /NJH /NJS | Out-Null
+          if ($LASTEXITCODE -gt 3) { exit $LASTEXITCODE }
           $dest = Join-Path $env:GITHUB_WORKSPACE 'dist'
           New-Item -Path $dest -ItemType Directory -Force | Out-Null
           $archive = "cert-ctrl-${{ matrix.os }}-${{ matrix.build_type }}.zip"
