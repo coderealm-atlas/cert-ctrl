@@ -278,6 +278,8 @@ verify_installation() {
         log_warning "Binary installed but version check failed"
         log_warning "This might be normal if this is the first run"
     fi
+
+    check_runtime_dependencies "$binary_path"
 }
 
 # Show completion message
@@ -370,6 +372,29 @@ main() {
     
     # Show completion
     show_completion
+}
+
+check_runtime_dependencies() {
+    local binary_path="$1"
+
+    if [ -z "$binary_path" ] || [ ! -x "$binary_path" ]; then
+        return 0
+    fi
+
+    if ! command -v ldd &>/dev/null; then
+        log_verbose "Skipping runtime dependency check (ldd not available)"
+        return 0
+    fi
+
+    local missing
+    missing=$(ldd "$binary_path" 2>&1 | awk '/not found/ {print $0}')
+    if [ -n "$missing" ]; then
+        log_warning "Detected missing runtime dependencies:"
+        printf '%s\n' "$missing"
+        log_warning "Please install the packages that supply the libraries above before running cert-ctrl."
+    else
+        log_verbose "All required shared libraries are available"
+    fi
 }
 
 # Parse arguments

@@ -1,4 +1,5 @@
 import { corsHeaders } from '../utils/cors.js';
+import { buildGithubHeaders, describeGithubFailure } from '../utils/github.js';
 
 export async function versionHandler(request, env) {
   try {
@@ -38,15 +39,19 @@ async function handleLatestVersion(request, env) {
     if (!releaseData) {
       // Fetch from GitHub API
       const apiUrl = `https://api.github.com/repos/${env.GITHUB_REPO_OWNER}/${env.GITHUB_REPO_NAME}/releases/latest`;
-      const response = await fetch(apiUrl, {
-        headers: {
-          'User-Agent': 'cert-ctrl-install-service/1.0.0',
-          'Accept': 'application/vnd.github.v3+json'
-        }
+      const headers = buildGithubHeaders(env, {
+        Accept: 'application/vnd.github.v3+json'
       });
 
+      const response = await fetch(apiUrl, { headers });
+
       if (!response.ok) {
-        throw new Error(`GitHub API error: ${response.status}`);
+        const bodyText = await response.text();
+        const details = describeGithubFailure(response, bodyText, env);
+        console.error('GitHub latest release error:', details);
+        const error = new Error(`GitHub API error: ${response.status}`);
+        error.details = details;
+        throw error;
       }
 
       releaseData = await response.json();
@@ -77,10 +82,11 @@ async function handleLatestVersion(request, env) {
 
   } catch (error) {
     console.error('Latest version error:', error);
-    
+
     return new Response(JSON.stringify({
       error: 'Failed to fetch latest version',
-      message: error.message
+      message: error.message,
+      details: error.details || null
     }), {
       status: 500,
       headers: {

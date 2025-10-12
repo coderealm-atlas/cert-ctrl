@@ -50,10 +50,16 @@ on:
           - 'false'
           - 'true'
         default: 'true'
-      release_tag:
-        description: Optional tag to publish a GitHub release (requires artifacts)
-        type: string
-        default: ''
+      do_release:
+        description: Publish a GitHub release using the latest v* tag
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+        default: 'false'
+  # push:
+  #   tags:
+  #     - 'v*'
 
 # Cancel previous in-flight runs for the same ref to save time
 concurrency:
@@ -73,7 +79,7 @@ jobs:
       - id: set
         shell: bash
         env:
-          SELF_HOST_LABELS: ${{ github.event.inputs.self_host_labels || 'self-hosted Linux X64' }}
+          SELF_HOST_LABELS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.self_host_labels || 'self-hosted Linux X64' }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             target="${{ github.event.inputs.target_runner || 'github-all' }}"
@@ -136,7 +142,11 @@ jobs:
       # Ensure Ninja is used everywhere
       CMAKE_GENERATOR: Ninja
       VCPKG_USE_NINJA: 1
-      IS_SELF_HOSTED: ${{ startsWith(github.event.inputs.target_runner || 'github-all', 'self-host-') }}
+      REQUESTED_BUILD_TYPE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.build_type || 'Release' }}
+      REQUESTED_SKIP_TESTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_tests || 'false' }}
+      REQUESTED_UPLOAD_ARTIFACTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts || 'true' }}
+      REQUESTED_CLEAN_BUILD: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.clean_build || 'false' }}
+      IS_SELF_HOSTED: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.target_runner || 'github-all', 'self-host-') }}
       SKIP_CONFIGURE: 'false'
       ARTIFACT_PLATFORM: ''
       ARTIFACT_ARCH: ''
@@ -149,7 +159,7 @@ jobs:
       matrix:
         os: ${{ fromJSON(needs.set-matrix.outputs.os-list) }}
         build_type:
-          - ${{ github.event.inputs.build_type || 'Release' }}
+          - ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.build_type || 'Release' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -218,12 +228,12 @@ jobs:
           "ARCHIVE_EXT=zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Detect reusable configure (self-hosted Unix)
-        if: env.IS_SELF_HOSTED == 'true' && runner.os != 'Windows' && github.event.inputs.clean_build != 'true'
+        if: env.IS_SELF_HOSTED == 'true' && runner.os != 'Windows' && env.REQUESTED_CLEAN_BUILD != 'true'
         shell: bash
         run: |
           set -euo pipefail
           cache_file="${{ github.workspace }}/build/CMakeCache.txt"
-          requested="${{ github.event.inputs.build_type || matrix.build_type }}"
+          requested="${{ matrix.build_type }}"
           if [ -f "$cache_file" ]; then
             cached=$(awk -F= '/^CMAKE_BUILD_TYPE:STRING=/{print $2}' "$cache_file" || true)
             if [ "$cached" = "$requested" ]; then
@@ -235,11 +245,11 @@ jobs:
           echo "SKIP_CONFIGURE=false" >> "$GITHUB_ENV"
 
       - name: Detect reusable configure (self-hosted Windows)
-        if: env.IS_SELF_HOSTED == 'true' && runner.os == 'Windows' && github.event.inputs.clean_build != 'true'
+        if: env.IS_SELF_HOSTED == 'true' && runner.os == 'Windows' && env.REQUESTED_CLEAN_BUILD != 'true'
         shell: pwsh
         run: |
           $cache = Join-Path "${{ github.workspace }}" 'build/CMakeCache.txt'
-          $requested = "${{ github.event.inputs.build_type || matrix.build_type }}"
+          $requested = "${{ matrix.build_type }}"
           if (Test-Path $cache) {
             $match = Select-String -Path $cache -Pattern '^CMAKE_BUILD_TYPE:STRING=(.*)$'
             if ($match) {
@@ -258,7 +268,7 @@ jobs:
         run: echo "Skipping CMake configure step; existing cache is compatible with requested build type."
 
       - name: Clean build directory (self-hosted)
-        if: env.IS_SELF_HOSTED == 'true' && github.event.inputs.clean_build == 'true'
+        if: env.IS_SELF_HOSTED == 'true' && env.REQUESTED_CLEAN_BUILD == 'true'
         run: |
           echo "Removing existing build artifacts from self-hosted runner"
           rm -rf "${{ github.workspace }}/build"
@@ -352,19 +362,19 @@ jobs:
         run: cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }}
 
       - name: Test
-        if: github.event.inputs.skip_tests != 'true'
+        if: env.REQUESTED_SKIP_TESTS != 'true'
         working-directory: ${{ github.workspace }}/build
         run: ctest --build-config ${{ matrix.build_type }}
 
       - name: Install build outputs
-        if: github.event.inputs.upload_artifacts == 'true'
+        if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true'
         run: >
           cmake --install "${{ github.workspace }}/build"
           --config ${{ matrix.build_type }}
           --prefix "${{ github.workspace }}/install"
 
       - name: Normalize executable name (Unix)
-        if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
+        if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os != 'Windows'
         run: |
           set -euo pipefail
           INSTALL_DIR="${{ github.workspace }}/install/bin"
@@ -381,7 +391,7 @@ jobs:
           fi
 
       - name: Normalize executable name (Windows)
-        if: github.event.inputs.upload_artifacts == 'true' && runner.os == 'Windows'
+        if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           $installBin = Join-Path "${{ github.workspace }}" 'install\bin'
@@ -397,7 +407,7 @@ jobs:
           }
 
       - name: Package installer payload (Unix)
-        if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
+        if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os != 'Windows'
         run: |
           set -euo pipefail
           INSTALL_DIR="${{ github.workspace }}/install"
@@ -421,7 +431,7 @@ jobs:
           tar -C "$PAYLOAD_DIR" -czf "$DEST_DIR/$ARCHIVE_NAME" .
 
       - name: Package installer payload (Windows)
-        if: github.event.inputs.upload_artifacts == 'true' && runner.os == 'Windows'
+        if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           $install = Join-Path $env:GITHUB_WORKSPACE 'install'
@@ -459,7 +469,7 @@ jobs:
           Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archivePath
 
       - name: Upload installer artifact (Unix)
-        if: github.event.inputs.upload_artifacts == 'true' && runner.os != 'Windows'
+        if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ env.ARTIFACT_SLUG }}
@@ -467,7 +477,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload installer artifact (Windows)
-        if: github.event.inputs.upload_artifacts == 'true' && runner.os == 'Windows'
+        if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ env.ARTIFACT_SLUG }}
@@ -487,7 +497,15 @@ jobs:
 
   publish-release:
     needs: build
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true'
+    if: >-
+      (
+        github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.upload_artifacts == 'true' &&
+        github.event.inputs.do_release == 'true'
+      ) || (
+        github.event_name == 'push' &&
+        startsWith(github.ref, 'refs/tags/v')
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -496,14 +514,12 @@ jobs:
 
       - name: Determine release tag
         id: release
-        env:
-          REQUESTED_TAG: ${{ github.event.inputs.release_tag }}
         run: |
           set -euo pipefail
-          if [ -n "$REQUESTED_TAG" ]; then
-            tag="$REQUESTED_TAG"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
           else
-            tag=$(git describe --tags --long --dirty --match "v*" 2>/dev/null || true)
+            tag=$(git describe --tags --abbrev=0 --match "v*" 2>/dev/null || true)
             if [ -z "$tag" ]; then
               short_sha=$(git rev-parse --short HEAD)
               tag="build-${GITHUB_RUN_ID}-${short_sha}"
