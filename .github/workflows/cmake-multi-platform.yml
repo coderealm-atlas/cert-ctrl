@@ -269,10 +269,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          os_slug=${RUNNER_OS:-self-hosted}
-          os_slug=${os_slug,,}
-          arch_slug=${RUNNER_ARCH:-x64}
-          arch_slug=${arch_slug,,}
+          os_slug=$(printf '%s' "${RUNNER_OS:-self-hosted}" | tr '[:upper:]' '[:lower:]')
+          arch_slug=$(printf '%s' "${RUNNER_ARCH:-x64}" | tr '[:upper:]' '[:lower:]')
           slug="${os_slug}-${arch_slug}"
           cache_root="$(cd "${GITHUB_WORKSPACE}" && cd .. && pwd)/_vcpkg-cache/${slug}"
           mkdir -p "$cache_root/downloads"
