@@ -226,7 +226,7 @@ else()
 endif()
 
 if(WIN32)
-    add_subdirectory(apps/tray)
+    # add_subdirectory(apps/tray)
 endif()
 
 message(STATUS "Current debug flags: ${CMAKE_CXX_FLAGS_DEBUG}")
