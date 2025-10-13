@@ -272,7 +272,8 @@ jobs:
           os_slug=$(printf '%s' "${RUNNER_OS:-self-hosted}" | tr '[:upper:]' '[:lower:]')
           arch_slug=$(printf '%s' "${RUNNER_ARCH:-x64}" | tr '[:upper:]' '[:lower:]')
           slug="${os_slug}-${arch_slug}"
-          cache_root="$(cd "${GITHUB_WORKSPACE}" && cd .. && pwd)/_vcpkg-cache/${slug}"
+          base_root="$(cd "${RUNNER_WORKSPACE}" && cd .. && pwd)"
+          cache_root="${base_root}/_vcpkg-cache/${slug}"
           mkdir -p "$cache_root/downloads"
           echo "Using vcpkg cache directory: $cache_root"
           {
@@ -285,9 +286,9 @@ jobs:
         if: env.IS_SELF_HOSTED == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
-          $workspace = [System.IO.Path]::GetFullPath("${{ github.workspace }}")
-          $parent = [System.IO.Directory]::GetParent($workspace).FullName
-          $cacheRootBase = Join-Path $parent '_vcpkg-cache'
+          $workspaceRoot = [System.IO.Path]::GetFullPath($env:RUNNER_WORKSPACE)
+          $parent = [System.IO.Directory]::GetParent($workspaceRoot)
+          $cacheRootBase = Join-Path $parent.FullName '_vcpkg-cache'
           $osSlug = $env:RUNNER_OS
           if ([string]::IsNullOrWhiteSpace($osSlug)) { $osSlug = 'self-hosted' }
           $archSlug = $env:RUNNER_ARCH
