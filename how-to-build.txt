@@ -1,0 +1,19 @@
+Get-ChildItem "build\windows-debug\.cmake\api\v1\reply\target-*-Debug-*.json" |
+	ForEach-Object { ($_.BaseName -split '-')[1] } |
+	Sort-Object -Unique
+
+cmake --build --preset windows-debug --target cert_ctrl
+
+ALL_BUILD
+cert_ctrl
+Continuous
+Experimental
+Nightly
+NightlyMemoryCheck
+test_device_registration
+test_install_config_manager
+test_login_handler_workflow
+test_login_real_server
+test_program_options
+test_updates_polling_handler
+ZERO_CHECK
