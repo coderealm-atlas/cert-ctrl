@@ -541,6 +541,7 @@ jobs:
           Write-Host "Staging executables from '$binSrc': $($executables.Name -join ', ')"
 
           $binDst = Join-Path $payload 'bin'
+          Write-Host "Staging destination (binDst): $binDst"
           foreach ($exe in $executables) {
             $relative = $exe.FullName.Substring($binSrc.Length)
             while ($relative.StartsWith('\') -or $relative.StartsWith('/')) {
@@ -561,18 +562,39 @@ jobs:
           }
 
           $dest = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          Write-Host "Archive output directory (dest): $dest"
           New-Item -Path $dest -ItemType Directory -Force | Out-Null
-          $archive = "${env:ARTIFACT_BASE:-cert-ctrl-unknown}.${env:ARCHIVE_EXT:-zip}"
+
+          $archiveBase = $env:ARTIFACT_BASE
+          if ([string]::IsNullOrWhiteSpace($archiveBase)) { $archiveBase = 'cert-ctrl-unknown' }
+          $archiveExt = $env:ARCHIVE_EXT
+          if ([string]::IsNullOrWhiteSpace($archiveExt)) { $archiveExt = 'zip' }
+
+          $archive = "{0}.{1}" -f $archiveBase, $archiveExt
+          Write-Host "Archive filename (archive): $archive"
           $archivePath = Join-Path $dest $archive
           if (Test-Path $archivePath) { Remove-Item $archivePath -Force }
 
           $itemsToArchive = Get-ChildItem -Path $payload -Recurse -File
           if (-not $itemsToArchive) {
             Write-Error "No files staged in '$payload'; cannot create archive."
+            Get-ChildItem -Path $payload -Recurse | Select-Object FullName
             exit 1
           }
 
-          Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archivePath -Force
+          $payloadWildcard = Join-Path $payload '*'
+          Write-Host "Creating archive '$archive' from:"
+          $itemsToArchive | ForEach-Object { Write-Host "  - $($_.FullName)" }
+
+          Compress-Archive -Path $payloadWildcard -DestinationPath $archivePath -Force -CompressionLevel Optimal
+
+          if (-not (Test-Path $archivePath)) {
+            Write-Error "Archive was not created at '$archivePath'."
+            Get-ChildItem -Path $dest -Force | Select-Object FullName, Length
+            exit 1
+          }
+
+          Write-Host "Created archive '$archivePath' (size: $((Get-Item $archivePath).Length) bytes)"
 
       - name: Upload installer artifact (Unix)
         if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os != 'Windows'
