@@ -497,6 +497,15 @@ jobs:
           ARCHIVE_NAME="${ARTIFACT_BASE:-cert-ctrl-unknown}.${ARCHIVE_EXT:-tar.gz}"
           tar -C "$PAYLOAD_DIR" -czf "$DEST_DIR/$ARCHIVE_NAME" .
 
+      - name: Generate checksum (Unix)
+        if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          DEST_DIR="${{ github.workspace }}/dist"
+          ARCHIVE_NAME="${ARTIFACT_BASE:-cert-ctrl-unknown}.${ARCHIVE_EXT:-tar.gz}"
+          cd "$DEST_DIR"
+          sha256sum "$ARCHIVE_NAME" | tee "$ARCHIVE_NAME.sha256"
+
       - name: Package installer payload (Windows)
         if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os == 'Windows'
         shell: pwsh
@@ -596,12 +605,34 @@ jobs:
 
           Write-Host "Created archive '$archivePath' (size: $((Get-Item $archivePath).Length) bytes)"
 
+      - name: Generate checksum (Windows)
+        if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          $archiveBase = $env:ARTIFACT_BASE
+          if ([string]::IsNullOrWhiteSpace($archiveBase)) { $archiveBase = 'cert-ctrl-unknown' }
+          $archiveExt = $env:ARCHIVE_EXT
+          if ([string]::IsNullOrWhiteSpace($archiveExt)) { $archiveExt = 'zip' }
+          $archive = "{0}.{1}" -f $archiveBase, $archiveExt
+          $archivePath = Join-Path $dest $archive
+          if (-not (Test-Path $archivePath)) {
+            Write-Error "Archive not found at '$archivePath'"
+            exit 1
+          }
+          $hash = Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
+          $checksumFile = "{0}.sha256" -f $archivePath
+          $line = "{0}  {1}" -f $hash.Hash.ToLowerInvariant(), $archive
+          Set-Content -Path $checksumFile -Value $line
+
       - name: Upload installer artifact (Unix)
         if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ env.ARTIFACT_SLUG }}
-          path: ${{ github.workspace }}/dist/${{ env.ARTIFACT_BASE }}.${{ env.ARCHIVE_EXT }}
+          path: |
+            ${{ github.workspace }}/dist/${{ env.ARTIFACT_BASE }}.${{ env.ARCHIVE_EXT }}
+            ${{ github.workspace }}/dist/${{ env.ARTIFACT_BASE }}.${{ env.ARCHIVE_EXT }}.sha256
           if-no-files-found: error
 
       - name: Upload installer artifact (Windows)
@@ -609,7 +640,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installer-${{ env.ARTIFACT_SLUG }}
-          path: ${{ github.workspace }}/dist/${{ env.ARTIFACT_BASE }}.${{ env.ARCHIVE_EXT }}
+          path: |
+            ${{ github.workspace }}/dist/${{ env.ARTIFACT_BASE }}.${{ env.ARCHIVE_EXT }}
+            ${{ github.workspace }}/dist/${{ env.ARTIFACT_BASE }}.${{ env.ARCHIVE_EXT }}.sha256
           if-no-files-found: error
 
       - name: Upload vcpkg logs (on failure)
@@ -642,18 +675,46 @@ jobs:
 
       - name: Determine release tag
         id: release
+        shell: bash
         run: |
           set -euo pipefail
+
+          tag=""
+          title=""
+
           if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             tag="${GITHUB_REF#refs/tags/}"
+            title="$tag"
           else
-            tag=$(git describe --tags --abbrev=0 --match "v*" 2>/dev/null || true)
-            if [ -z "$tag" ]; then
+            if tag=$(git describe --tags --abbrev=0 --match "v*" 2>/dev/null); then
+              title="$tag"
+            else
+              title=""
+            fi
+
+            if [ -n "$title" ]; then
+              tag="$title"
+            else
               short_sha=$(git rev-parse --short HEAD)
               tag="build-${GITHUB_RUN_ID}-${short_sha}"
+              title="$tag"
             fi
           fi
+
+          if [ -z "$title" ]; then
+            if describe=$(git describe --tags --long --dirty --match "v*" 2>/dev/null); then
+              title="$describe"
+            else
+              title="$tag"
+            fi
+          fi
+
+          # Trim redundant "-0-g<sha>" suffix that appears when describe lands exactly on a tag.
+          tag=$(printf '%s' "$tag" | sed -E 's/-0-g[0-9a-f]+$//')
+          title=$(printf '%s' "$title" | sed -E 's/-0-g[0-9a-f]+$//')
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
 
       - name: Download installer artifacts
         uses: actions/download-artifact@v4
@@ -669,7 +730,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.release.outputs.tag }}
-          name: cert-ctrl ${{ steps.release.outputs.tag }}
+          name: cert-ctrl ${{ steps.release.outputs.title }}
           files: release-assets/*
           draft: false
           # Our git-describe style tags include hyphenated build metadata, but we still

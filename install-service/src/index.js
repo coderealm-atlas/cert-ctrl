@@ -28,6 +28,8 @@ router.get('/api/version/latest', rateLimiter, versionHandler);
 // GitHub proxy endpoints for releases
 router.get('/releases/proxy/:version/:filename', rateLimiter, proxyHandler);
 router.get('/releases/proxy/latest/:filename', rateLimiter, proxyHandler);
+router.head('/releases/proxy/:version/:filename', rateLimiter, proxyHandler);
+router.head('/releases/proxy/latest/:filename', rateLimiter, proxyHandler);
 
 // Analytics and statistics (optional, for monitoring)
 router.get('/api/stats/:type', analyticsHandler);
