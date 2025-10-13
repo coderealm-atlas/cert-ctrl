@@ -541,8 +541,15 @@ jobs:
           Write-Host "Staging executables from '$binSrc': $($executables.Name -join ', ')"
 
           $binDst = Join-Path $payload 'bin'
-          robocopy $binSrc $binDst *.exe /E /XF *.pdb /NFL /NDL /NP /NJH /NJS | Out-Null
-          if ($LASTEXITCODE -gt 3) { exit $LASTEXITCODE }
+          foreach ($exe in $executables) {
+            $relative = $exe.FullName.Substring($binSrc.Length).TrimStart('\\','/')
+            $destPath = Join-Path $binDst $relative
+            $destDir = Split-Path -Path $destPath -Parent
+            if ($destDir -and -not (Test-Path $destDir)) {
+              New-Item -Path $destDir -ItemType Directory -Force | Out-Null
+            }
+            Copy-Item -Path $exe.FullName -Destination $destPath -Force
+          }
 
           $stagedExecutables = Get-ChildItem -Path $binDst -Filter *.exe -File -Recurse -ErrorAction SilentlyContinue
           if (-not $stagedExecutables) {
