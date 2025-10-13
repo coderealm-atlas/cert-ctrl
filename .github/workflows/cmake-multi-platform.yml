@@ -426,7 +426,7 @@ jobs:
           cmake @cmakeArgs
 
       - name: Build
-        run: cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }}
+        run: cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --parallel
 
       - name: Test
         if: env.REQUESTED_SKIP_TESTS != 'true'
@@ -564,8 +564,15 @@ jobs:
           New-Item -Path $dest -ItemType Directory -Force | Out-Null
           $archive = "${env:ARTIFACT_BASE:-cert-ctrl-unknown}.${env:ARCHIVE_EXT:-zip}"
           $archivePath = Join-Path $dest $archive
-          if (Test-Path $archivePath) { Remove-Item $archivePath }
-          Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archivePath
+          if (Test-Path $archivePath) { Remove-Item $archivePath -Force }
+
+          $itemsToArchive = Get-ChildItem -Path $payload -Recurse -File
+          if (-not $itemsToArchive) {
+            Write-Error "No files staged in '$payload'; cannot create archive."
+            exit 1
+          }
+
+          Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $archivePath -Force
 
       - name: Upload installer artifact (Unix)
         if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true' && runner.os != 'Windows'
