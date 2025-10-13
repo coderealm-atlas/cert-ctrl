@@ -225,6 +225,10 @@ else()
     endif()
 endif()
 
+if(WIN32)
+    add_subdirectory(apps/tray)
+endif()
+
 message(STATUS "Current debug flags: ${CMAKE_CXX_FLAGS_DEBUG}")
 message(STATUS "-------------------------env CORES value is: $ENV{CORES}-------------------------")
 message(STATUS "-------------------------CMAKE_BUILD_PARALLEL_LEVEL: $ENV{CMAKE_BUILD_PARALLEL_LEVEL}-------------------------")

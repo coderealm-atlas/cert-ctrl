@@ -138,7 +138,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       # Enable vcpkg's GitHub Actions cache provider for fast binary caching
-      VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+      VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
       VCPKG_FEATURE_FLAGS: manifests,binarycaching,registries
       # Ensure Ninja is used everywhere
       CMAKE_GENERATOR: Ninja
@@ -263,6 +263,36 @@ jobs:
             }
           }
           "SKIP_CONFIGURE=false" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prepare vcpkg binary cache (self-hosted Unix)
+        if: env.IS_SELF_HOSTED == 'true' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_root="${{ github.workspace }}/../_vcpkg-cache/${{ matrix.os }}"
+          mkdir -p "$cache_root/downloads"
+          echo "Using vcpkg cache directory: $cache_root"
+          {
+            echo "VCPKG_BINARY_SOURCES=clear;files,$cache_root,readwrite"
+            echo "VCPKG_DEFAULT_BINARY_CACHE=$cache_root"
+            echo "VCPKG_DOWNLOADS=$cache_root/downloads"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare vcpkg binary cache (self-hosted Windows)
+        if: env.IS_SELF_HOSTED == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $workspace = [System.IO.Path]::GetFullPath("${{ github.workspace }}")
+          $parent = [System.IO.Directory]::GetParent($workspace).FullName
+          $cacheRootBase = Join-Path $parent '_vcpkg-cache'
+          $cacheRoot = Join-Path $cacheRootBase '${{ matrix.os }}'
+          $downloads = Join-Path $cacheRoot 'downloads'
+          New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+          New-Item -ItemType Directory -Force -Path $downloads | Out-Null
+          Write-Host "Using vcpkg cache directory: $cacheRoot"
+          "VCPKG_BINARY_SOURCES=clear;files,$cacheRoot,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_DEFAULT_BINARY_CACHE=$cacheRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_DOWNLOADS=$downloads" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Reusing CMake configure cache
         if: env.SKIP_CONFIGURE == 'true'
