@@ -269,7 +269,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cache_root="${{ github.workspace }}/../_vcpkg-cache/${{ matrix.os }}"
+          os_slug=${RUNNER_OS:-self-hosted}
+          os_slug=${os_slug,,}
+          arch_slug=${RUNNER_ARCH:-x64}
+          arch_slug=${arch_slug,,}
+          slug="${os_slug}-${arch_slug}"
+          cache_root="$(cd "${GITHUB_WORKSPACE}" && cd .. && pwd)/_vcpkg-cache/${slug}"
           mkdir -p "$cache_root/downloads"
           echo "Using vcpkg cache directory: $cache_root"
           {
@@ -285,7 +290,12 @@ jobs:
           $workspace = [System.IO.Path]::GetFullPath("${{ github.workspace }}")
           $parent = [System.IO.Directory]::GetParent($workspace).FullName
           $cacheRootBase = Join-Path $parent '_vcpkg-cache'
-          $cacheRoot = Join-Path $cacheRootBase '${{ matrix.os }}'
+          $osSlug = $env:RUNNER_OS
+          if ([string]::IsNullOrWhiteSpace($osSlug)) { $osSlug = 'self-hosted' }
+          $archSlug = $env:RUNNER_ARCH
+          if ([string]::IsNullOrWhiteSpace($archSlug)) { $archSlug = 'x64' }
+          $slug = "{0}-{1}" -f $osSlug.ToLowerInvariant(), $archSlug.ToLowerInvariant()
+          $cacheRoot = Join-Path $cacheRootBase $slug
           $downloads = Join-Path $cacheRoot 'downloads'
           New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
           New-Item -ItemType Directory -Force -Path $downloads | Out-Null
