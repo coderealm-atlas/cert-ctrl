@@ -29,6 +29,68 @@ function Write-ErrorMessage($Message) {
     Write-Error $Message
 }
 
+function Test-Administrator {
+    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+$serviceName = "CertCtrlAgent"
+$serviceDisplayName = "Cert Ctrl Agent"
+$serviceDescription = "Maintains device certificates and polls the cert-ctrl control plane."
+$serviceArgs = "--keep-running"
+
+function Register-CertCtrlService {
+    param(
+        [string]$BinaryPath,
+        [bool]$IsUserInstall,
+        [bool]$ForceInstall
+    )
+
+    if ($IsUserInstall) {
+        Write-Info "User install selected; skipping Windows service registration."
+        return $false
+    }
+
+    if (-not (Test-Administrator)) {
+        Write-WarningMessage "Administrator privileges are required to register the Windows service. Skipping."
+        return $false
+    }
+
+    $imagePath = '"' + $BinaryPath + '" ' + $serviceArgs
+
+    try {
+        $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($existing) {
+            if (-not $ForceInstall) {
+                Write-Info "Windows service '$serviceName' already exists. Use -Force to recreate it."
+                if ($existing.Status -ne 'Running') {
+                    Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+                }
+                return $true
+            }
+
+            if ($existing.Status -eq 'Running') {
+                Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+            }
+            sc.exe delete $serviceName | Out-Null
+            Start-Sleep -Seconds 2
+            while (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+                Start-Sleep -Milliseconds 200
+            }
+        }
+
+        New-Service -Name $serviceName -BinaryPathName $imagePath -DisplayName $serviceDisplayName -Description $serviceDescription -StartupType Automatic -ErrorAction Stop
+        Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+        Write-Success "Windows service '$serviceName' registered."
+        return $true
+    }
+    catch {
+        Write-WarningMessage "Failed to configure Windows service '$serviceName': $($_.Exception.Message)"
+        return $false
+    }
+}
+
 $archSlug = "{{ARCHITECTURE}}"
 if (-not $archSlug -or $archSlug -eq "") {
     $archSlug = "x64"
@@ -47,6 +109,9 @@ $installPath = if ($InstallDir) {
 } else {
     "C:\\Program Files\\cert-ctrl"
 }
+
+$paramUserInstall = ([bool]$UserInstall) -or ("{{USER_INSTALL}}" -eq "true")
+$paramForceInstall = ([bool]$Force) -or ("{{FORCE}}" -eq "true")
 
 $mirrorUrl = "{{MIRROR_URL}}"
 if ($mirrorUrl -eq "{{BASE_URL}}/releases/proxy") {
@@ -80,8 +145,16 @@ if (-not (Test-Path $binaryPath)) {
     exit 1
 }
 
-Copy-Item -Path $binaryPath -Destination (Join-Path $installPath 'cert-ctrl.exe') -Force
+$destinationBinary = Join-Path $installPath 'cert-ctrl.exe'
+Copy-Item -Path $binaryPath -Destination $destinationBinary -Force
+$serviceInstalled = Register-CertCtrlService -BinaryPath $destinationBinary -IsUserInstall:$paramUserInstall -ForceInstall:$paramForceInstall
 
 Write-Success "cert-ctrl installed at $installPath"
 Write-Info "Add $installPath to your PATH if not already present."
+if ($serviceInstalled) {
+    Write-Info "Windows service '$serviceName' is running. Manage it with: Get-Service $serviceName"
+} elseif (-not $paramUserInstall) {
+    $manualCommand = "sc create $serviceName binPath=\"" + $destinationBinary + "\" " + $serviceArgs
+    Write-Info "Register later as a service with: $manualCommand"
+}
 `;

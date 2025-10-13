@@ -60,6 +60,12 @@ function Write-Verbose {
     }
 }
 
+# Windows service configuration
+$script:CertCtrlServiceName = "CertCtrlAgent"
+$script:CertCtrlServiceDisplayName = "Cert Ctrl Agent"
+$script:CertCtrlServiceDescription = "Maintains device certificates and polls the cert-ctrl control plane."
+$script:CertCtrlServiceArgs = "--keep-running"
+
 # Platform detection
 function Get-Platform {
     $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
@@ -316,9 +322,106 @@ function Test-Installation {
     }
 }
 
+function Get-ServiceImagePath {
+    param([string]$ServiceName)
+
+    try {
+        $registryPath = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\$ServiceName"
+        $imagePath = (Get-ItemProperty -Path $registryPath -Name ImagePath -ErrorAction Stop).ImagePath
+        return $imagePath
+    }
+    catch {
+        return $null
+    }
+}
+
+function Install-WindowsService {
+    param(
+        [string]$BinaryPath,
+        [bool]$IsUserInstall,
+        [bool]$ForceInstall
+    )
+
+    if ($IsUserInstall) {
+        Write-Verbose "User install requested; skipping Windows service registration."
+        return $false
+    }
+
+    if (-not (Test-Administrator)) {
+        Write-Warning "Administrator privileges are required to install the Windows service. Skipping service registration."
+        return $false
+    }
+
+    $serviceName = $script:CertCtrlServiceName
+    $displayName = $script:CertCtrlServiceDisplayName
+    $description = $script:CertCtrlServiceDescription
+    $binaryWithArgs = "`"$BinaryPath`" $script:CertCtrlServiceArgs"
+
+    try {
+        $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($existing) {
+            $existingImagePath = Get-ServiceImagePath -ServiceName $serviceName
+            if (-not $ForceInstall) {
+                Write-Info "Windows service '$serviceName' already exists. Use -Force to recreate it."
+                if ($existingImagePath -and ($existingImagePath -ne $binaryWithArgs)) {
+                    Write-Warning "Existing service binary path differs: $existingImagePath"
+                    Write-Warning "Re-run with -Force to update the service to $binaryWithArgs"
+                }
+                if ($existing.Status -ne 'Running') {
+                    try {
+                        Start-Service -Name $serviceName -ErrorAction Stop
+                        Write-Info "Started existing service '$serviceName'."
+                        return $true
+                    }
+                    catch {
+                        Write-Warning "Failed to start existing service '$serviceName': $($_.Exception.Message)"
+                        return $false
+                    }
+                }
+                return $true
+            }
+
+            Write-Info "Recreating existing Windows service '$serviceName'."
+            if ($existing.Status -eq 'Running') {
+                Write-Info "Stopping '$serviceName'..."
+                Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+            }
+            sc.exe delete $serviceName | Out-Null
+            Start-Sleep -Seconds 2
+            while (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+                Start-Sleep -Milliseconds 200
+            }
+        }
+
+        Write-Info "Registering Windows service '$serviceName'..."
+        New-Service -Name $serviceName -BinaryPathName $binaryWithArgs -DisplayName $displayName -Description $description -StartupType Automatic -ErrorAction Stop
+        Write-Info "Configured '$serviceName' for Automatic startup."
+
+        try {
+            Start-Service -Name $serviceName -ErrorAction Stop
+            Write-Success "Windows service '$serviceName' started successfully."
+        }
+        catch {
+            Write-Warning "Service '$serviceName' was registered but failed to start: $($_.Exception.Message)"
+            return $false
+        }
+
+        return $true
+    }
+    catch {
+        Write-Warning "Failed to configure Windows service '$serviceName': $($_.Exception.Message)"
+        $manualCommand = "sc create $serviceName binPath=\"$binaryWithArgs\""
+        Write-Warning "You can manually register it later with: $manualCommand"
+        return $false
+    }
+}
+
 # Show completion message
 function Show-Completion {
-    param([bool]$IsUserInstall)
+    param(
+        [bool]$IsUserInstall,
+        [bool]$ServiceInstalled
+    )
     
     Write-Host ""
     Write-Success "cert-ctrl installation completed!"
@@ -331,6 +434,13 @@ function Show-Completion {
     }
     else {
         Write-Host "  1. Run: cert-ctrl --help"
+        if ($ServiceInstalled) {
+            Write-Host "  2. The Cert Ctrl Agent service is running. Manage it with: Get-Service $script:CertCtrlServiceName"
+        }
+        else {
+            $manualImagePath = "`"$env:ProgramFiles\CertCtrl\cert-ctrl.exe`" $script:CertCtrlServiceArgs"
+            Write-Host ("  2. (Optional) Register the Windows service later: sc create {0} binPath=\"{1}\"" -f $script:CertCtrlServiceName, $manualImagePath)
+        }
     }
     
     Write-Host ""
@@ -435,8 +545,11 @@ function Install-CertCtrl {
         # Verify
         Test-Installation $binaryPath
         
+        # Install Windows service when possible
+        $serviceInstalled = Install-WindowsService $binaryPath $UserInstall.IsPresent $Force.IsPresent
+
         # Show completion
-        Show-Completion $UserInstall.IsPresent
+        Show-Completion $UserInstall.IsPresent $serviceInstalled
     }
     finally {
         # Cleanup
