@@ -436,32 +436,54 @@ jobs:
         shell: pwsh
         run: |
           $install = Join-Path $env:GITHUB_WORKSPACE 'install'
-          $build   = Join-Path $env:GITHUB_WORKSPACE 'build'
           $payload = Join-Path $env:GITHUB_WORKSPACE 'package'
           if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
           New-Item -Path $payload -ItemType Directory -Force | Out-Null
-          $binSrc = Join-Path $install 'bin'
+
+          $candidateDirs = @()
+          $primaryBin = Join-Path $install 'bin'
+          if (Test-Path $primaryBin) { $candidateDirs += $primaryBin }
+          $fallbackBins = Get-ChildItem -Path $install -Directory -Recurse -Depth 2 -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(bin|Release|Debug)$' }
+          foreach ($dir in $fallbackBins) {
+            if ($candidateDirs -notcontains $dir.FullName) {
+              $candidateDirs += $dir.FullName
+            }
+          }
+
+          if (-not $candidateDirs) {
+            Write-Error "No candidate directories found under '$install' for staging executables."
+            exit 1
+          }
+
+          $binSrc = $null
+          $executables = @()
+          foreach ($dir in $candidateDirs) {
+            $found = Get-ChildItem -Path $dir -Filter *.exe -File -Recurse -ErrorAction SilentlyContinue
+            if ($found) {
+              $binSrc = $dir
+              $executables = $found
+              break
+            }
+          }
+
+          if (-not $binSrc -or -not $executables) {
+            Write-Error "No executables (*.exe) found under '$install'." 
+            Get-ChildItem -Path $install -Recurse | Select-Object FullName
+            exit 1
+          }
+
+          Write-Host "Staging executables from '$binSrc': $($executables.Name -join ', ')"
+
           $binDst = Join-Path $payload 'bin'
-          if (-not (Test-Path $binSrc)) {
-            Write-Error "Expected executable directory '$binSrc' missing"
-            exit 1
-          }
-          $executables = Get-ChildItem -Path $binSrc -Filter *.exe -File -Recurse
-          if (-not $executables) {
-            Write-Error "No executables found in '$binSrc'"
-            exit 1
-          }
           robocopy $binSrc $binDst *.exe /E /XF *.pdb /NFL /NDL /NP /NJH /NJS | Out-Null
           if ($LASTEXITCODE -gt 3) { exit $LASTEXITCODE }
-          if (-not (Test-Path $binDst)) {
-            Write-Error "Failed to stage executables into '$binDst'"
-            exit 1
-          }
-          $stagedExecutables = Get-ChildItem -Path $binDst -Filter *.exe -File -Recurse
+
+          $stagedExecutables = Get-ChildItem -Path $binDst -Filter *.exe -File -Recurse -ErrorAction SilentlyContinue
           if (-not $stagedExecutables) {
-            Write-Error "No executables were copied into '$binDst'"
+            Write-Error "Expected staged executables in '$binDst' but none were found."
             exit 1
           }
+
           $dest = Join-Path $env:GITHUB_WORKSPACE 'dist'
           New-Item -Path $dest -ItemType Directory -Force | Out-Null
           $archive = "${env:ARTIFACT_BASE:-cert-ctrl-unknown}.${env:ARCHIVE_EXT:-zip}"
