@@ -542,7 +542,10 @@ jobs:
 
           $binDst = Join-Path $payload 'bin'
           foreach ($exe in $executables) {
-            $relative = $exe.FullName.Substring($binSrc.Length).TrimStart('\\','/')
+            $relative = $exe.FullName.Substring($binSrc.Length)
+            while ($relative.StartsWith('\') -or $relative.StartsWith('/')) {
+              $relative = $relative.Substring(1)
+            }
             $destPath = Join-Path $binDst $relative
             $destDir = Split-Path -Path $destPath -Parent
             if ($destDir -and -not (Test-Path $destDir)) {
