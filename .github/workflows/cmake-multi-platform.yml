@@ -272,7 +272,12 @@ jobs:
           os_slug=$(printf '%s' "${RUNNER_OS:-self-hosted}" | tr '[:upper:]' '[:lower:]')
           arch_slug=$(printf '%s' "${RUNNER_ARCH:-x64}" | tr '[:upper:]' '[:lower:]')
           slug="${os_slug}-${arch_slug}"
-          base_root="$(cd "${RUNNER_WORKSPACE}" && cd .. && pwd)"
+          workspace_root="${RUNNER_WORKSPACE:-${GITHUB_WORKSPACE}}"
+          if [ -z "$workspace_root" ]; then
+            echo "RUNNER_WORKSPACE is not defined" >&2
+            exit 1
+          fi
+          base_root=$(dirname "$(dirname "$(cd "$workspace_root" && pwd)")")
           cache_root="${base_root}/_vcpkg-cache/${slug}"
           mkdir -p "$cache_root/downloads"
           echo "Using vcpkg cache directory: $cache_root"
@@ -286,9 +291,15 @@ jobs:
         if: env.IS_SELF_HOSTED == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
-          $workspaceRoot = [System.IO.Path]::GetFullPath($env:RUNNER_WORKSPACE)
+          $workspaceRoot = $env:RUNNER_WORKSPACE
+          if (-not $workspaceRoot) { $workspaceRoot = $env:GITHUB_WORKSPACE }
+          if (-not $workspaceRoot) { throw 'RUNNER_WORKSPACE is not defined' }
+          $workspaceRoot = [System.IO.Path]::GetFullPath($workspaceRoot)
           $parent = [System.IO.Directory]::GetParent($workspaceRoot)
-          $cacheRootBase = Join-Path $parent.FullName '_vcpkg-cache'
+          if (-not $parent) { throw 'Unable to determine parent of RUNNER_WORKSPACE' }
+          $grandParent = [System.IO.Directory]::GetParent($parent.FullName)
+          if (-not $grandParent) { throw 'Unable to determine grandparent of RUNNER_WORKSPACE' }
+          $cacheRootBase = Join-Path $grandParent.FullName '_vcpkg-cache'
           $osSlug = $env:RUNNER_OS
           if ([string]::IsNullOrWhiteSpace($osSlug)) { $osSlug = 'self-hosted' }
           $archSlug = $env:RUNNER_ARCH
@@ -307,12 +318,28 @@ jobs:
         if: env.SKIP_CONFIGURE == 'true'
         run: echo "Skipping CMake configure step; existing cache is compatible with requested build type."
 
-      - name: Clean build directory (self-hosted)
-        if: env.IS_SELF_HOSTED == 'true' && env.REQUESTED_CLEAN_BUILD == 'true'
+      - name: Clean build directory (self-hosted Unix)
+        if: env.IS_SELF_HOSTED == 'true' && env.REQUESTED_CLEAN_BUILD == 'true' && runner.os != 'Windows'
+        shell: bash
         run: |
-          echo "Removing existing build artifacts from self-hosted runner"
+          set -euo pipefail
+          echo "Removing existing build artifacts from self-hosted runner (Unix)"
           rm -rf "${{ github.workspace }}/build"
           rm -f "${{ github.workspace }}/compile_commands.json"
+
+      - name: Clean build directory (self-hosted Windows)
+        if: env.IS_SELF_HOSTED == 'true' && env.REQUESTED_CLEAN_BUILD == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "Removing existing build artifacts from self-hosted runner (Windows)"
+          $buildPath = Join-Path "${{ github.workspace }}" 'build'
+          if (Test-Path $buildPath) {
+            Remove-Item -Path $buildPath -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          $compileCommands = Join-Path "${{ github.workspace }}" 'compile_commands.json'
+          if (Test-Path $compileCommands) {
+            Remove-Item -Path $compileCommands -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Cache vcpkg downloads
         if: env.IS_SELF_HOSTED != 'true'
