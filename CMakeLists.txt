@@ -313,7 +313,7 @@ set(_GIT_DIFF_RESULT 0)
 if(Git_FOUND)
     # Prefer semver-like tags (v*) and include commit metadata when available
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} describe --tags --long --dirty --match "v*"
+        COMMAND ${GIT_EXECUTABLE} describe --tags --long --dirty --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*"
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         OUTPUT_VARIABLE GIT_DESCRIBE
         OUTPUT_STRIP_TRAILING_WHITESPACE
