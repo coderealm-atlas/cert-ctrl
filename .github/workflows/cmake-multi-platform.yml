@@ -35,7 +35,7 @@ on:
         options:
           - 'false'
           - 'true'
-        default: 'false'
+        default: 'true'
       skip_tests:
         description: Skip running ctest after the build
         type: choice
@@ -691,25 +691,13 @@ jobs:
             tag="${GITHUB_REF#refs/tags/}"
             title="$tag"
           else
-            if tag=$(git describe --tags --abbrev=0 --match "v*" 2>/dev/null); then
-              title="$tag"
-            else
-              title=""
-            fi
-
-            if [ -n "$title" ]; then
-              tag="$title"
+            if describe=$(git describe --tags --long --match "v*" --abbrev=8 2>/dev/null); then
+              describe=${describe%-dirty}
+              tag="$describe"
+              title="$describe"
             else
               short_sha=$(git rev-parse --short HEAD)
               tag="build-${GITHUB_RUN_ID}-${short_sha}"
-              title="$tag"
-            fi
-          fi
-
-          if [ -z "$title" ]; then
-            if describe=$(git describe --tags --long --dirty --match "v*" 2>/dev/null); then
-              title="$describe"
-            else
               title="$tag"
             fi
           fi

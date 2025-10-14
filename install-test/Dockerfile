@@ -14,10 +14,12 @@ RUN apt-get update \
       tar \
       gzip \
       bash \
-    coreutils \
-      python3 \
-      libatomic1 \
+            coreutils \
+            python3 \
  && rm -rf /var/lib/apt/lists/*
+
+# Explicitly drop any shared libatomic artifacts to validate static linkage.
+RUN rm -f /usr/lib/gcc/*/*/libatomic.so* /usr/lib/x86_64-linux-gnu/libatomic.so*
 
 # Download and patch the installer script so logging stays on stderr for captured outputs.
 RUN set -eux; \
@@ -49,6 +51,10 @@ RUN set -eux; \
         --force \
         --install-dir /usr/local/bin; \
     rm -f /tmp/install-cert-ctrl.sh
+
+# Overwrite with locally built binary to validate current tree artifacts.
+COPY cert-ctrl /tmp/local-cert-ctrl
+RUN install -m 0755 /tmp/local-cert-ctrl /usr/local/bin/cert-ctrl && rm /tmp/local-cert-ctrl
 
 WORKDIR /root
 

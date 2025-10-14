@@ -18,6 +18,10 @@ chmod +x run.sh
 
 # Test a specific tagged release
 ./run.sh v0.1.0
+
+By default the script stages the locally built `build/debug/cert_ctrl_debug` binary into the Docker build context so
+the smoke test exercises your current tree. Set `CERT_CTRL_BINARY=/path/to/cert-ctrl` if you want to provide a
+different artifact (for example a Release build or a pre-packaged tarball).
 ```
 
 The container emits the installed binary's version on stdout and exits. Adjust the Dockerfile to add further integration tests if needed.
