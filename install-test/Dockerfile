@@ -14,23 +14,43 @@ RUN apt-get update \
       tar \
       gzip \
       bash \
-      coreutils \
+    coreutils \
+      python3 \
+      libatomic1 \
  && rm -rf /var/lib/apt/lists/*
+
+# Download and patch the installer script so logging stays on stderr for captured outputs.
+RUN set -eux; \
+    curl -fsSL https://install.lets-script.com/install.sh -o /tmp/install-cert-ctrl.sh; \
+    sed -i 's|https://github.com.cnpmjs.org|https://install.lets-script.com/releases/proxy|g' /tmp/install-cert-ctrl.sh; \
+    python3 - <<'PY'
+from pathlib import Path
+
+path = Path('/tmp/install-cert-ctrl.sh')
+text = path.read_text()
+
+replacements = {
+    'log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }\n': 'log_info() { echo -e "${BLUE}[INFO]${NC} $1" >&2; }\n',
+    'log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }\n': 'log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1" >&2; }\n',
+    'log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }\n': 'log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1" >&2; }\n',
+    '    if [ "$VERBOSE" = "true" ]; then\n        echo -e "${BLUE}[VERBOSE]${NC} $1"\n    fi\n': '    if [ "$VERBOSE" = "true" ]; then\n        echo -e "${BLUE}[VERBOSE]${NC} $1" >&2\n    fi\n'
+}
+
+for old, new in replacements.items():
+    text = text.replace(old, new)
+
+path.write_text(text)
+PY
 
 # Install cert-ctrl via the Cloudflare installer-service, forcing it to use the proxy mirror so redirects are cached server-side.
 RUN set -eux; \
-        curl -fsSL https://install.lets-script.com/install.sh -o /tmp/install-cert-ctrl.sh; \
-        sed -i 's|https://github.com.cnpmjs.org|https://install.lets-script.com/releases/proxy|g' /tmp/install-cert-ctrl.sh; \
-        INSTALL_SERVICE=false NONINTERACTIVE=true bash /tmp/install-cert-ctrl.sh \
-                --version "${CERT_CTRL_VERSION}" \
-                --force \
-                --install-dir /usr/local/bin; \
-        rm -f /tmp/install-cert-ctrl.sh
+    INSTALL_SERVICE=false NONINTERACTIVE=true bash /tmp/install-cert-ctrl.sh \
+        --version "${CERT_CTRL_VERSION}" \
+        --force \
+        --install-dir /usr/local/bin; \
+    rm -f /tmp/install-cert-ctrl.sh
 
-# Create a non-root user for optional interactive testing.
-RUN useradd --create-home tester
-USER tester
-WORKDIR /home/tester
+WORKDIR /root
 
 # Default command prints the installed binary version.
 CMD ["cert-ctrl", "--version"]

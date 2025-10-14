@@ -17,6 +17,9 @@ endif()
 project(bbserver LANGUAGES CXX)
 
 include(GNUInstallDirs)
+include(CheckCXXCompilerFlag)
+
+message(STATUS "CMAKE_CXX_STANDARD_LIBRARIES=${CMAKE_CXX_STANDARD_LIBRARIES}")
 
 # Interface target to unify Boost.DI constructor parameter limit across all targets
 add_library(di_config INTERFACE)
@@ -37,12 +40,212 @@ endif()
 
 find_package(Threads REQUIRED)
 
-option(ENABLE_OPENMP "Enable OpenMP (link if available)" ON)
-# Use imported OpenMP targets when present; don’t hard-fail if missing
-if(ENABLE_OPENMP)
-    find_package(OpenMP QUIET)
-else()
-    set(OpenMP_CXX_FOUND OFF)
+add_library(certctrl_libatomic INTERFACE)
+set(CERTCTRL_USING_STATIC_LIBATOMIC FALSE)
+
+function(_certctrl_entry_contains_atomic out entry)
+    if("${entry}" STREQUAL "atomic" OR "${entry}" STREQUAL "-latomic")
+        set(${out} TRUE PARENT_SCOPE)
+        return()
+    endif()
+
+    if("${entry}" MATCHES "\\$<LINK_ONLY:-?atomic>")
+        set(${out} TRUE PARENT_SCOPE)
+        return()
+    endif()
+
+    if("${entry}" MATCHES "(^|[^A-Za-z0-9_:])-?l?atomic($|[^A-Za-z0-9_])" AND NOT "${entry}" MATCHES "::")
+        set(${out} TRUE PARENT_SCOPE)
+        return()
+    endif()
+
+    set(${out} FALSE PARENT_SCOPE)
+endfunction()
+
+function(certctrl_use_static_atomic target)
+    if(NOT CERTCTRL_USING_STATIC_LIBATOMIC)
+        return()
+    endif()
+
+    if(NOT TARGET ${target})
+        message(FATAL_ERROR "certctrl_use_static_atomic: target `${target}` does not exist.")
+    endif()
+
+    get_target_property(_certctrl_alias_target ${target} ALIASED_TARGET)
+    if(NOT _certctrl_alias_target STREQUAL "_certctrl_alias_target-NOTFOUND" AND _certctrl_alias_target AND NOT _certctrl_alias_target STREQUAL "${target}")
+        certctrl_use_static_atomic(${_certctrl_alias_target})
+        return()
+    endif()
+
+    get_property(_certctrl_processed GLOBAL PROPERTY CERTCTRL_ATOMIC_PROCESSED)
+    if(_certctrl_processed STREQUAL "_certctrl_processed-NOTFOUND")
+        set(_certctrl_processed "")
+    endif()
+    list(FIND _certctrl_processed "${target}" _certctrl_processed_index)
+    if(NOT _certctrl_processed_index EQUAL -1)
+        return()
+    endif()
+    set_property(GLOBAL APPEND PROPERTY CERTCTRL_ATOMIC_PROCESSED "${target}")
+
+    set(_certctrl_props
+        LINK_LIBRARIES
+        LINK_OPTIONS
+        INTERFACE_LINK_LIBRARIES
+        INTERFACE_LINK_OPTIONS
+        IMPORTED_LINK_INTERFACE_LIBRARIES
+        IMPORTED_LINK_INTERFACE_OPTIONS
+    )
+
+    foreach(_certctrl_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+        list(APPEND _certctrl_props
+            LINK_LIBRARIES_${_certctrl_cfg}
+            LINK_OPTIONS_${_certctrl_cfg}
+            INTERFACE_LINK_LIBRARIES_${_certctrl_cfg}
+            INTERFACE_LINK_OPTIONS_${_certctrl_cfg}
+            IMPORTED_LINK_INTERFACE_LIBRARIES_${_certctrl_cfg}
+            IMPORTED_LINK_INTERFACE_OPTIONS_${_certctrl_cfg}
+        )
+    endforeach()
+
+    set(_certctrl_child_targets)
+    foreach(_certctrl_prop IN LISTS _certctrl_props)
+        get_target_property(_certctrl_values ${target} ${_certctrl_prop})
+        if(NOT _certctrl_values OR _certctrl_values STREQUAL "NOTFOUND")
+            continue()
+        endif()
+
+        set(_certctrl_filtered "")
+        set(_certctrl_modified FALSE)
+        foreach(_certctrl_entry IN LISTS _certctrl_values)
+            _certctrl_entry_contains_atomic(_certctrl_has_atomic "${_certctrl_entry}")
+            if(_certctrl_has_atomic)
+                set(_certctrl_modified TRUE)
+                message(STATUS "certctrl: removing `${_certctrl_entry}` from ${target}::${_certctrl_prop}")
+            else()
+                list(APPEND _certctrl_filtered "${_certctrl_entry}")
+                if(NOT _certctrl_entry MATCHES "^\\$" AND TARGET ${_certctrl_entry})
+                    list(APPEND _certctrl_child_targets "${_certctrl_entry}")
+                endif()
+            endif()
+        endforeach()
+
+        if(_certctrl_modified)
+            if(_certctrl_filtered)
+                set_property(TARGET ${target} PROPERTY ${_certctrl_prop} ${_certctrl_filtered})
+            else()
+                set_property(TARGET ${target} PROPERTY ${_certctrl_prop})
+            endif()
+        endif()
+    endforeach()
+
+    if(_certctrl_child_targets)
+        list(REMOVE_DUPLICATES _certctrl_child_targets)
+        foreach(_certctrl_child IN LISTS _certctrl_child_targets)
+            certctrl_use_static_atomic(${_certctrl_child})
+        endforeach()
+    endif()
+endfunction()
+
+if(NOT APPLE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        check_cxx_compiler_flag("-static-libatomic" CERTCTRL_HAS_STATIC_LIBATOMIC)
+        if(CERTCTRL_HAS_STATIC_LIBATOMIC)
+            target_link_options(certctrl_libatomic INTERFACE -static-libatomic)
+            set(CERTCTRL_USING_STATIC_LIBATOMIC TRUE)
+        else()
+            execute_process(
+                COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libatomic.a
+                OUTPUT_VARIABLE CERTCTRL_LIBATOMIC_STATIC_PATH
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            if(CERTCTRL_LIBATOMIC_STATIC_PATH AND NOT CERTCTRL_LIBATOMIC_STATIC_PATH STREQUAL "libatomic.a" AND EXISTS "${CERTCTRL_LIBATOMIC_STATIC_PATH}")
+                message(STATUS "Linking libatomic statically from ${CERTCTRL_LIBATOMIC_STATIC_PATH}")
+                target_link_libraries(certctrl_libatomic INTERFACE ${CERTCTRL_LIBATOMIC_STATIC_PATH})
+                set(CERTCTRL_USING_STATIC_LIBATOMIC TRUE)
+            else()
+                set(_libatomic_candidates)
+                foreach(_libatomic_name libatomic.a libatomic.so libatomic.so.1)
+                    execute_process(
+                        COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=${_libatomic_name}
+                        OUTPUT_VARIABLE _libatomic_candidate
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        ERROR_QUIET
+                    )
+                    if(_libatomic_candidate AND NOT _libatomic_candidate STREQUAL ${_libatomic_name})
+                        if(EXISTS "${_libatomic_candidate}")
+                            list(APPEND _libatomic_candidates "${_libatomic_candidate}")
+                        endif()
+                    endif()
+                endforeach()
+
+                list(APPEND _libatomic_candidates
+                    /usr/lib/gcc/x86_64-linux-gnu/libatomic.a
+                    /usr/lib/gcc/x86_64-linux-gnu/libatomic.so
+                    /usr/lib/gcc/x86_64-linux-gnu/13/libatomic.a
+                    /usr/lib/gcc/x86_64-linux-gnu/13/libatomic.so
+                )
+
+                foreach(_candidate IN LISTS _libatomic_candidates)
+                    if(EXISTS "${_candidate}")
+                        set(CERTCTRL_LIBATOMIC_LIBRARY "${_candidate}")
+                        break()
+                    endif()
+                endforeach()
+
+                if(NOT CERTCTRL_LIBATOMIC_LIBRARY)
+                    find_library(CERTCTRL_LIBATOMIC_LIBRARY atomic)
+                endif()
+
+                if(CERTCTRL_LIBATOMIC_LIBRARY)
+                    message(WARNING "Compiler does not support -static-libatomic; linking against ${CERTCTRL_LIBATOMIC_LIBRARY}. Consider installing libatomic-static to enable a fully static embed.")
+                    target_link_libraries(certctrl_libatomic INTERFACE ${CERTCTRL_LIBATOMIC_LIBRARY})
+                    set(CERTCTRL_USING_STATIC_LIBATOMIC FALSE)
+                else()
+                    message(FATAL_ERROR "libatomic is required but neither -static-libatomic nor an atomic library could be found. Install libatomic-dev or similar.")
+                endif()
+            endif()
+        endif()
+    endif()
+endif()
+
+if(CERTCTRL_USING_STATIC_LIBATOMIC)
+    get_property(_certctrl_all_targets GLOBAL PROPERTY TARGETS)
+    foreach(_certctrl_target IN LISTS _certctrl_all_targets)
+        foreach(_certctrl_probe_prop
+            INTERFACE_LINK_LIBRARIES
+            INTERFACE_LINK_OPTIONS
+            IMPORTED_LINK_INTERFACE_LIBRARIES
+            IMPORTED_LINK_INTERFACE_OPTIONS
+            )
+            get_target_property(_certctrl_probe_values ${_certctrl_target} ${_certctrl_probe_prop})
+            if(_certctrl_probe_values AND NOT _certctrl_probe_values STREQUAL "NOTFOUND")
+                foreach(_certctrl_probe_entry IN LISTS _certctrl_probe_values)
+                    _certctrl_entry_contains_atomic(_certctrl_probe_has "${_certctrl_probe_entry}")
+                    if(_certctrl_probe_has)
+                        message(STATUS "certctrl: target `${_certctrl_target}` property ${_certctrl_probe_prop} includes `${_certctrl_probe_entry}`")
+                    endif()
+                endforeach()
+            endif()
+        endforeach()
+        foreach(_certctrl_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+            foreach(_certctrl_probe_prop
+                INTERFACE_LINK_LIBRARIES_${_certctrl_cfg}
+                INTERFACE_LINK_OPTIONS_${_certctrl_cfg}
+                IMPORTED_LINK_INTERFACE_LIBRARIES_${_certctrl_cfg}
+                )
+                get_target_property(_certctrl_cfg_values ${_certctrl_target} ${_certctrl_probe_prop})
+                if(_certctrl_cfg_values AND NOT _certctrl_cfg_values STREQUAL "NOTFOUND")
+                    foreach(_certctrl_cfg_entry IN LISTS _certctrl_cfg_values)
+                        _certctrl_entry_contains_atomic(_certctrl_cfg_has "${_certctrl_cfg_entry}")
+                        if(_certctrl_cfg_has)
+                            message(STATUS "certctrl: target `${_certctrl_target}` property ${_certctrl_probe_prop} includes `${_certctrl_cfg_entry}`")
+                        endif()
+                    endforeach()
+                endif()
+            endforeach()
+        endforeach()
+    endforeach()
 endif()
 
 if(APPLE)
@@ -386,6 +589,7 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE jwt-cpp::jwt-cpp
     PRIVATE unofficial-sodium::sodium
     PRIVATE fmt::fmt
+    PRIVATE certctrl_libatomic
     )
 
 if(APPLE)
@@ -398,6 +602,8 @@ if(OpenMP_CXX_FOUND)
 else()
     message(STATUS "OpenMP not found or disabled; proceeding without OpenMP")
 endif()
+
+certctrl_use_static_atomic(${CERT_CTRL_APP_NAME})
 
 install(TARGETS ${CERT_CTRL_APP_NAME}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

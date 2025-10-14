@@ -53,13 +53,13 @@ BLUE='\x1b[0;34m'
 NC='\x1b[0m'
 
 # Logging functions
-log_info() { echo -e "\${BLUE}[INFO]\${NC} $1"; }
-log_success() { echo -e "\${GREEN}[SUCCESS]\${NC} $1"; }
-log_warning() { echo -e "\${YELLOW}[WARNING]\${NC} $1"; }
+log_info() { echo -e "\${BLUE}[INFO]\${NC} $1" >&2; }
+log_success() { echo -e "\${GREEN}[SUCCESS]\${NC} $1" >&2; }
+log_warning() { echo -e "\${YELLOW}[WARNING]\${NC} $1" >&2; }
 log_error() { echo -e "\${RED}[ERROR]\${NC} $1" >&2; }
 log_verbose() {
     if [ "$VERBOSE" = "true" ]; then
-        echo -e "\${BLUE}[VERBOSE]\${NC} $1"
+        echo -e "\${BLUE}[VERBOSE]\${NC} $1" >&2
     fi
 }
 
