@@ -25,6 +25,7 @@ target_link_libraries(test_program_options PRIVATE
   Boost::program_options
   fmt::fmt
   protobuf::libprotobuf
+  certctrl_libatomic
 )
 if(APPLE)
   target_link_libraries(test_program_options PRIVATE c++abi)
@@ -46,6 +47,8 @@ endif()
 if(APPLE)
   add_dependencies(test_program_options atomic_stub)
 endif()
+
+certctrl_use_static_atomic(test_program_options)
 
 include(GoogleTest)
 gtest_discover_tests(test_program_options DISCOVERY_TIMEOUT 30)
@@ -82,6 +85,7 @@ target_link_libraries(test_login_handler_workflow PRIVATE
   protobuf::libprotobuf
   OpenSSL::SSL
   OpenSSL::Crypto
+  certctrl_libatomic
 )
 if(APPLE)
   target_link_libraries(test_login_handler_workflow PRIVATE c++abi)
@@ -90,6 +94,8 @@ endif()
 if(APPLE)
   add_dependencies(test_login_handler_workflow atomic_stub)
 endif()
+
+certctrl_use_static_atomic(test_login_handler_workflow)
 
 gtest_discover_tests(test_login_handler_workflow)
 
@@ -122,6 +128,7 @@ target_link_libraries(test_login_real_server PRIVATE
   Boost::log
   Boost::log_setup
   unofficial-sodium::sodium
+  certctrl_libatomic
 )
 if(APPLE)
   target_link_libraries(test_login_real_server PRIVATE c++abi)
@@ -130,6 +137,8 @@ endif()
 if(APPLE)
   add_dependencies(test_login_real_server atomic_stub)
 endif()
+
+certctrl_use_static_atomic(test_login_real_server)
 
 gtest_discover_tests(test_login_real_server DISCOVERY_TIMEOUT 60)
 
@@ -164,6 +173,7 @@ target_link_libraries(test_device_registration PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   unofficial-sodium::sodium
+  certctrl_libatomic
 )
 if(APPLE)
   target_link_libraries(test_device_registration PRIVATE c++abi)
@@ -172,6 +182,8 @@ endif()
 if(APPLE)
   add_dependencies(test_device_registration atomic_stub)
 endif()
+
+certctrl_use_static_atomic(test_device_registration)
 
 gtest_discover_tests(test_device_registration DISCOVERY_TIMEOUT 60)
 
@@ -212,6 +224,7 @@ target_link_libraries(test_install_config_manager PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   unofficial-sodium::sodium
+  certctrl_libatomic
 )
 if(APPLE)
   target_link_libraries(test_install_config_manager PRIVATE c++abi)
@@ -220,6 +233,8 @@ endif()
 if(APPLE)
   add_dependencies(test_install_config_manager atomic_stub)
 endif()
+
+certctrl_use_static_atomic(test_install_config_manager)
 
 gtest_discover_tests(test_install_config_manager DISCOVERY_TIMEOUT 30)
 
@@ -260,6 +275,7 @@ target_link_libraries(test_updates_polling_handler PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   unofficial-sodium::sodium
+  certctrl_libatomic
 )
 if(APPLE)
   target_link_libraries(test_updates_polling_handler PRIVATE c++abi)
@@ -267,4 +283,6 @@ endif()
 if(APPLE)
   add_dependencies(test_updates_polling_handler atomic_stub)
 endif()
+certctrl_use_static_atomic(test_updates_polling_handler)
+
 gtest_discover_tests(test_updates_polling_handler DISCOVERY_TIMEOUT 30)
