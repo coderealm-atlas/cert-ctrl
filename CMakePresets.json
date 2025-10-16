@@ -83,6 +83,23 @@
         "VCPKG_DEFAULT_HOST_TRIPLET": "x64-windows",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
       }
+    },
+    {
+      "name": "release-compat",
+      "inherits": "default",
+      "description": "Release build with broad compatibility for older Linux systems",
+      "binaryDir": "${sourceDir}/build/release-compat",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_CXX_FLAGS": "-O2 -DNDEBUG -static-libgcc -static-libstdc++ -fno-stack-protector",
+        "CMAKE_C_FLAGS": "-O2 -DNDEBUG -static-libgcc -fno-stack-protector",
+        "DISABLE_LTO": "ON"
+      },
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$env{CORES}"
+      }
     }
   ],
   "buildPresets": [
@@ -106,6 +123,10 @@
     {
       "name": "w64",
       "configurePreset": "w64"
+    },
+    {
+      "name": "release-compat",
+      "configurePreset": "release-compat"
     }
   ]
 }

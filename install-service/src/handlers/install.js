@@ -71,34 +71,21 @@ export async function installHandler(request, env) {
 // Mirror selection logic
 async function selectBestMirror(country, env) {
   const mirrors = {
-    github: {
-      name: 'github',
-      url: 'https://github.com',
-      regions: ['US', 'EU', 'default']
-    },
-    china: {
-      name: 'china-mirror',
-      url: 'https://github.com.cnpmjs.org',
-      regions: ['CN', 'HK']
-    },
     proxy: {
       name: 'cloudflare-proxy',
       url: `https://${env.CURRENT_HOST || 'install.lets-script.com'}/releases/proxy`,
       regions: ['all']
+    },
+    github: {
+      name: 'github-direct',
+      url: 'https://github.com',
+      regions: ['fallback']
     }
   };
 
-  // For China, prefer local mirror
-  if (country === 'CN' || country === 'HK') {
-    return mirrors.china;
-  }
-
-  // For other regions, use GitHub directly or proxy if configured
-  if (env.USE_PROXY_BY_DEFAULT === 'true') {
-    return mirrors.proxy;
-  }
-
-  return mirrors.github;
+  // Always use Cloudflare proxy for all regions
+  // This ensures consistent downloads and avoids external mirror issues
+  return mirrors.proxy;
 }
 
 // A/B testing for different installation approaches
