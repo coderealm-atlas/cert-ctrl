@@ -22,6 +22,8 @@
   git submodule update --init --recursive
   ```
 
+> 📖 **Working with submodules?** See [docs/SUBMODULE_WORKFLOW.md](docs/SUBMODULE_WORKFLOW.md) for best practices and troubleshooting.
+
 ### Configure & build
 
 Use the provided CMake presets for the common build types.
@@ -47,6 +49,12 @@ ctest --preset debug
 Additional integration workflows are described in the docs under `Testing/` and `docs/`.
 
 ## Documentation
+
+- **[Installation Guide](INSTALL.md)** - Comprehensive installation instructions for different platforms and deployment scenarios
+- **[Build System](docs/BUILD_SYSTEM.md)** - CMake configuration, presets, and build customization
+- **[Submodule Workflow](docs/SUBMODULE_WORKFLOW.md)** - Best practices for managing Git submodules, troubleshooting, and common pitfalls
+- **[Release Workflow](docs/RELEASE_WORKFLOW.md)** - Process for cutting new releases and version management
+- **[API Reference](docs/HTTP_API_REFERENCE.md)** - RESTful API documentation for direct backend integration
 
 - Device registration flow: `docs/USER_DEVICE_REGISTRATION_WORKFLOW.md`
 - Device login: `docs/LOGIN_WORKFLOW.md`
