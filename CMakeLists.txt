@@ -27,6 +27,19 @@ target_compile_definitions(di_config INTERFACE BOOST_DI_CFG_CTOR_LIMIT_SIZE=16)
 
 # Do not override the chosen compiler in CMake; honor what the user/toolchain sets.
 
+# Add compatibility flags for broader glibc/libstdc++ support
+if(UNIX AND NOT APPLE AND NOT WIN32)
+    # Target older glibc and libstdc++ for better compatibility
+    add_compile_options(-D_GLIBCXX_USE_CXX11_ABI=1)  # Use newer C++11 ABI but compatible
+    add_link_options(-static-libgcc -static-libstdc++)  # Static link runtime libraries
+    
+    # Try to use older symbol versions when possible
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-stack-protector")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-stack-protector")
+    
+    message(STATUS "Applied Linux compatibility flags for broader glibc/libstdc++ support")
+endif()
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT WIN32)
     set(THREADS_PTHREADS_WEAK_SEARCH FALSE)
     set(CMAKE_THREAD_LIBS_INIT "-pthread")
@@ -416,8 +429,13 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "Test")
 else()
     add_definitions(-DRELEASE_BUILD)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND NOT WIN32)
-        set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto=thin -DNDEBUG")
-        set(CMAKE_C_FLAGS_RELEASE "-O3 -flto=thin -DNDEBUG")
+        if(DISABLE_LTO)
+            set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+            set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+        else()
+            set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto -DNDEBUG")
+            set(CMAKE_C_FLAGS_RELEASE "-O3 -flto -DNDEBUG")
+        endif()
         set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-fuse-ld=lld")
     elseif(MSVC)
         # Enhanced MSVC optimization flags

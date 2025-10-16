@@ -5,10 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       build_type:
-        description: CMake build type
+        description: CMake build type (Release-Compat builds for broader compatibility - uses static linking on Linux, static runtime on Windows)
         type: choice
         options:
           - Release
+          - Release-Compat
           - Debug
         default: Release
       target_runner:
@@ -202,12 +203,21 @@ jobs:
               ;;
           esac
 
-          artifact_slug="${os_slug}-${arch_slug}"
+          # Add compat suffix for compatibility builds
+          build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
+          if [ "$build_type" = "Release-Compat" ]; then
+            artifact_slug="${os_slug}-${arch_slug}-compat"
+            artifact_base="cert-ctrl-${os_slug}-${arch_slug}-compat"
+          else
+            artifact_slug="${os_slug}-${arch_slug}"
+            artifact_base="cert-ctrl-${os_slug}-${arch_slug}"
+          fi
+
           {
             echo "ARTIFACT_PLATFORM=$os_slug"
             echo "ARTIFACT_ARCH=$arch_slug"
             echo "ARTIFACT_SLUG=$artifact_slug"
-            echo "ARTIFACT_BASE=cert-ctrl-$artifact_slug"
+            echo "ARTIFACT_BASE=$artifact_base"
             echo "ARCHIVE_EXT=tar.gz"
           } >> "$GITHUB_ENV"
 
@@ -221,11 +231,21 @@ jobs:
             'ARM' { $archSlug = 'arm'; break }
             default { $archSlug = 'x64' }
           }
-          $artifactSlug = "$osSlug-$archSlug"
+          
+          # Add compat suffix for compatibility builds
+          $buildType = "${{ github.event.inputs.build_type || matrix.build_type }}"
+          if ($buildType -eq "Release-Compat") {
+            $artifactSlug = "$osSlug-$archSlug-compat"
+            $artifactBase = "cert-ctrl-$osSlug-$archSlug-compat"
+          } else {
+            $artifactSlug = "$osSlug-$archSlug"
+            $artifactBase = "cert-ctrl-$osSlug-$archSlug"
+          }
+          
           "ARTIFACT_PLATFORM=$osSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "ARTIFACT_ARCH=$archSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "ARTIFACT_SLUG=$artifactSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "ARTIFACT_BASE=cert-ctrl-$artifactSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ARTIFACT_BASE=$artifactBase" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "ARCHIVE_EXT=zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Detect reusable configure (self-hosted Unix)
@@ -387,20 +407,36 @@ jobs:
         if: runner.os != 'Windows' && env.SKIP_CONFIGURE != 'true'
         run: |
           set -euo pipefail
-          cmake_args=(
-            -G "Ninja"
-            -B "${{ github.workspace }}/build"
-            -S "${{ github.workspace }}"
-            -DCMAKE_C_COMPILER=clang
-            -DCMAKE_CXX_COMPILER=clang++
-            -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}
-            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
-          )
-          if [ "${{ env.IS_SELF_HOSTED }}" != "true" ]; then
-            cmake_args+=(
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
+          
+          # Determine if we should use a preset or manual configuration
+          if [ "$build_type" = "Release-Compat" ]; then
+            # Use the release-compat preset
+            cmake_args=(
+              --preset=release-compat
+              -B "${{ github.workspace }}/build"
+              -S "${{ github.workspace }}"
             )
+          else
+            # Use manual configuration for other build types
+            cmake_args=(
+              -G "Ninja"
+              -B "${{ github.workspace }}/build"
+              -S "${{ github.workspace }}"
+              -DCMAKE_C_COMPILER=clang
+              -DCMAKE_CXX_COMPILER=clang++
+              -DCMAKE_BUILD_TYPE=$build_type
+              -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+            )
+          fi
+          
+          if [ "${{ env.IS_SELF_HOSTED }}" != "true" ]; then
+            if [ "$build_type" != "Release-Compat" ]; then
+              cmake_args+=(
+                -DCMAKE_C_COMPILER_LAUNCHER=sccache
+                -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+              )
+            fi
           fi
           cmake "${cmake_args[@]}"
 
@@ -408,25 +444,65 @@ jobs:
         if: runner.os == 'Windows' && env.SKIP_CONFIGURE != 'true'
         shell: pwsh
         run: |
-          $cmakeArgs = @(
-            '-G', 'Ninja',
-            '-B', "${{ github.workspace }}/build",
-            '-S', "${{ github.workspace }}",
-            '-DCMAKE_C_COMPILER=cl.exe',
-            '-DCMAKE_CXX_COMPILER=cl.exe',
-            "-DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || matrix.build_type }}",
-            "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
-          )
-          if ("${{ env.IS_SELF_HOSTED }}" -ne "true") {
-            $cmakeArgs += @(
-              '-DCMAKE_C_COMPILER_LAUNCHER=sccache',
-              '-DCMAKE_CXX_COMPILER_LAUNCHER=sccache'
+          $buildType = "${{ github.event.inputs.build_type || matrix.build_type }}"
+          
+          # For Windows, Release-Compat is treated as Release with static runtime
+          if ($buildType -eq "Release-Compat") {
+            $effectiveBuildType = "Release"
+            $cmakeArgs = @(
+              '-G', 'Ninja',
+              '-B', "${{ github.workspace }}/build",
+              '-S', "${{ github.workspace }}",
+              '-DCMAKE_C_COMPILER=cl.exe',
+              '-DCMAKE_CXX_COMPILER=cl.exe',
+              "-DCMAKE_BUILD_TYPE=$effectiveBuildType",
+              "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
+              '-DVCPKG_TARGET_TRIPLET=x64-windows-static'
             )
+          } else {
+            # Use manual configuration for other build types
+            $cmakeArgs = @(
+              '-G', 'Ninja',
+              '-B', "${{ github.workspace }}/build",
+              '-S', "${{ github.workspace }}",
+              '-DCMAKE_C_COMPILER=cl.exe',
+              '-DCMAKE_CXX_COMPILER=cl.exe',
+              "-DCMAKE_BUILD_TYPE=$buildType",
+              "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+            )
+          }
+          
+          if ("${{ env.IS_SELF_HOSTED }}" -ne "true") {
+            if ($buildType -ne "Release-Compat") {
+              $cmakeArgs += @(
+                '-DCMAKE_C_COMPILER_LAUNCHER=sccache',
+                '-DCMAKE_CXX_COMPILER_LAUNCHER=sccache'
+              )
+            }
           }
           cmake @cmakeArgs
 
-      - name: Build
-        run: cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --parallel
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
+          if [ "$build_type" = "Release-Compat" ]; then
+            cmake --build --preset=release-compat --parallel
+          else
+            cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --parallel
+          fi
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $buildType = "${{ github.event.inputs.build_type || matrix.build_type }}"
+          if ($buildType -eq "Release-Compat") {
+            # For Windows compat, build as Release
+            cmake --build "${{ github.workspace }}/build" --config Release --parallel
+          } else {
+            cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --parallel
+          }
 
       - name: Test
         if: env.REQUESTED_SKIP_TESTS != 'true'
