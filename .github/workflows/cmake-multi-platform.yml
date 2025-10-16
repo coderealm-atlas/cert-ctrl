@@ -403,7 +403,8 @@ jobs:
         if: env.IS_SELF_HOSTED != 'true'
         uses: mozilla-actions/sccache-action@v0.0.3
 
-      - name: Set build directory environment variable
+      - name: Set build directory environment variable (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
@@ -412,6 +413,17 @@ jobs:
           else
             echo "BUILD_DIR=${{ github.workspace }}/build" >> "$GITHUB_ENV"
           fi
+
+      - name: Set build directory environment variable (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $build_type = "${{ github.event.inputs.build_type || matrix.build_type }}"
+          if ($build_type -eq "Release-Compat") {
+            echo "BUILD_DIR=${{ github.workspace }}/build/release-compat" >> $env:GITHUB_ENV
+          } else {
+            echo "BUILD_DIR=${{ github.workspace }}/build" >> $env:GITHUB_ENV
+          }
 
       - name: Configure CMake (Unix)
         if: runner.os != 'Windows' && env.SKIP_CONFIGURE != 'true'
@@ -472,9 +484,10 @@ jobs:
           # For Windows, Release-Compat is treated as Release with static runtime
           if ($buildType -eq "Release-Compat") {
             $effectiveBuildType = "Release"
+            $buildDir = "${{ github.workspace }}/build/release-compat"
             $cmakeArgs = @(
               '-G', 'Ninja',
-              '-B', "${{ github.workspace }}/build",
+              '-B', $buildDir,
               '-S', "${{ github.workspace }}",
               '-DCMAKE_C_COMPILER=cl.exe',
               '-DCMAKE_CXX_COMPILER=cl.exe',
@@ -484,9 +497,10 @@ jobs:
             )
           } else {
             # Use manual configuration for other build types
+            $buildDir = "${{ github.workspace }}/build"
             $cmakeArgs = @(
               '-G', 'Ninja',
-              '-B', "${{ github.workspace }}/build",
+              '-B', $buildDir,
               '-S', "${{ github.workspace }}",
               '-DCMAKE_C_COMPILER=cl.exe',
               '-DCMAKE_CXX_COMPILER=cl.exe',
