@@ -102,10 +102,11 @@ switch -regex ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitectu
     default { $archSlug = 'x64' }
 }
 
+
 $installPath = if ($InstallDir) {
     $InstallDir
-} elseif ($UserInstall -or {{USER_INSTALL}}) {
-    Join-Path $env:USERPROFILE "AppData\Local\Programs\cert-ctrl"
+} elseif ($UserInstall -or ("{{USER_INSTALL}}" -eq "true")) {
+    Join-Path $env:USERPROFILE "AppData\\Local\\Programs\\cert-ctrl"
 } else {
     "C:\\Program Files\\cert-ctrl"
 }
@@ -126,7 +127,7 @@ $zipPath = Join-Path $tempDir "cert-ctrl.zip"
 Write-Info "Downloading cert-ctrl $Version..."
 Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath -UseBasicParsing
 
-if ($DryRun -or {{DRY_RUN}}) {
+if ($DryRun -or ("{{DRY_RUN}}" -eq "true")) {
     Write-Info "DRY RUN: Installation files prepared at $tempDir"
     exit 0
 }
@@ -137,7 +138,7 @@ New-Item -ItemType Directory -Force -Path $installPath | Out-Null
 
 $binaryPath = Join-Path $tempDir 'cert-ctrl.exe'
 if (-not (Test-Path $binaryPath)) {
-    $binaryPath = Join-Path $tempDir 'bin\cert-ctrl.exe'
+    $binaryPath = Join-Path $tempDir 'bin\\cert-ctrl.exe'
 }
 
 if (-not (Test-Path $binaryPath)) {
@@ -149,7 +150,8 @@ $destinationBinary = Join-Path $installPath 'cert-ctrl.exe'
 Copy-Item -Path $binaryPath -Destination $destinationBinary -Force
 $serviceInstalled = Register-CertCtrlService -BinaryPath $destinationBinary -IsUserInstall:$paramUserInstall -ForceInstall:$paramForceInstall
 
-Write-Success "cert-ctrl installed at $installPath"
+Write-Success "cert-ctrl installed at $destinationBinary"
+Write-Info "Binary directory: $installPath"
 Write-Info "Add $installPath to your PATH if not already present."
 if ($serviceInstalled) {
     Write-Info "Windows service '$serviceName' is running. Manage it with: Get-Service $serviceName"
