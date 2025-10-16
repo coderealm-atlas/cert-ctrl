@@ -203,15 +203,9 @@ jobs:
               ;;
           esac
 
-          # Add compat suffix for compatibility builds
-          build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
-          if [ "$build_type" = "Release-Compat" ]; then
-            artifact_slug="${os_slug}-${arch_slug}-compat"
-            artifact_base="cert-ctrl-${os_slug}-${arch_slug}-compat"
-          else
-            artifact_slug="${os_slug}-${arch_slug}"
-            artifact_base="cert-ctrl-${os_slug}-${arch_slug}"
-          fi
+          # Use unified naming for all build types
+          artifact_slug="${os_slug}-${arch_slug}"
+          artifact_base="cert-ctrl-${os_slug}-${arch_slug}"
 
           {
             echo "ARTIFACT_PLATFORM=$os_slug"
@@ -232,15 +226,9 @@ jobs:
             default { $archSlug = 'x64' }
           }
           
-          # Add compat suffix for compatibility builds
-          $buildType = "${{ github.event.inputs.build_type || matrix.build_type }}"
-          if ($buildType -eq "Release-Compat") {
-            $artifactSlug = "$osSlug-$archSlug-compat"
-            $artifactBase = "cert-ctrl-$osSlug-$archSlug-compat"
-          } else {
-            $artifactSlug = "$osSlug-$archSlug"
-            $artifactBase = "cert-ctrl-$osSlug-$archSlug"
-          }
+          # Use unified naming for all build types
+          $artifactSlug = "$osSlug-$archSlug"
+          $artifactBase = "cert-ctrl-$osSlug-$archSlug"
           
           "ARTIFACT_PLATFORM=$osSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "ARTIFACT_ARCH=$archSlug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
