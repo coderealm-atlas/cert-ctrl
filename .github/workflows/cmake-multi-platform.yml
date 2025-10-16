@@ -403,6 +403,16 @@ jobs:
         if: env.IS_SELF_HOSTED != 'true'
         uses: mozilla-actions/sccache-action@v0.0.3
 
+      - name: Set build directory environment variable
+        shell: bash
+        run: |
+          build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
+          if [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "Linux" ]; then
+            echo "BUILD_DIR=${{ github.workspace }}/build/release-compat" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_DIR=${{ github.workspace }}/build" >> "$GITHUB_ENV"
+          fi
+
       - name: Configure CMake (Unix)
         if: runner.os != 'Windows' && env.SKIP_CONFIGURE != 'true'
         run: |
@@ -410,12 +420,25 @@ jobs:
           build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
           
           # Determine if we should use a preset or manual configuration
-          if [ "$build_type" = "Release-Compat" ]; then
-            # Use the release-compat preset
+          if [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "Linux" ]; then
+            # Use the release-compat preset on Linux only (preset defines its own build directory)
             cmake_args=(
               --preset=release-compat
+            )
+          elif [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "macOS" ]; then
+            # Manual configuration for macOS compatibility builds (no static libgcc/libstdc++)
+            cmake_args=(
+              -G "Ninja"
               -B "${{ github.workspace }}/build"
               -S "${{ github.workspace }}"
+              -DCMAKE_C_COMPILER=clang
+              -DCMAKE_CXX_COMPILER=clang++
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+              -DVCPKG_TARGET_TRIPLET=x64-osx
+              -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG"
+              -DCMAKE_C_FLAGS="-O2 -DNDEBUG"
+              -DDISABLE_LTO=ON
             )
           else
             # Use manual configuration for other build types
@@ -486,9 +509,11 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
-          if [ "$build_type" = "Release-Compat" ]; then
+          if [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "Linux" ]; then
+            # Use build preset for Linux compatibility builds
             cmake --build --preset=release-compat --parallel
           else
+            # Use regular build for all other cases (including macOS compat)
             cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --parallel
           fi
 
@@ -506,13 +531,13 @@ jobs:
 
       - name: Test
         if: env.REQUESTED_SKIP_TESTS != 'true'
-        working-directory: ${{ github.workspace }}/build
+        working-directory: ${{ env.BUILD_DIR }}
         run: ctest --build-config ${{ matrix.build_type }}
 
       - name: Install build outputs
         if: env.REQUESTED_UPLOAD_ARTIFACTS == 'true'
         run: >
-          cmake --install "${{ github.workspace }}/build"
+          cmake --install "${{ env.BUILD_DIR }}"
           --config ${{ matrix.build_type }}
           --prefix "${{ github.workspace }}/install"
 
@@ -732,9 +757,9 @@ jobs:
         with:
           name: vcpkg-logs-${{ runner.os }}
           path: |
-            ${{ github.workspace }}/build/vcpkg-manifest-install.log
-            ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.log
-            ${{ github.workspace }}/build/vcpkg_installed/*/buildtrees/**/*.txt
+            ${{ env.BUILD_DIR }}/vcpkg-manifest-install.log
+            ${{ env.BUILD_DIR }}/vcpkg_installed/*/buildtrees/**/*.log
+            ${{ env.BUILD_DIR }}/vcpkg_installed/*/buildtrees/**/*.txt
           if-no-files-found: ignore
 
   publish-release:
