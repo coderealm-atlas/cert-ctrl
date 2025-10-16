@@ -536,11 +536,16 @@ jobs:
         shell: pwsh
         run: |
           $buildType = "${{ github.event.inputs.build_type || matrix.build_type }}"
+          $buildDir = "${{ env.BUILD_DIR }}"
+          if (-not (Test-Path $buildDir)) {
+            throw "CMake build directory not found: $buildDir"
+          }
+
           if ($buildType -eq "Release-Compat") {
-            # For Windows compat, build as Release
-            cmake --build "${{ github.workspace }}/build" --config Release --parallel
+            # Release-Compat configures as Release but lives under the compat build directory
+            cmake --build $buildDir --config Release --parallel
           } else {
-            cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --parallel
+            cmake --build $buildDir --config ${{ matrix.build_type }} --parallel
           }
 
       - name: Test
