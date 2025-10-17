@@ -23,6 +23,7 @@ export async function getInstallTemplate(scriptType, options) {
     VERBOSE: params.verbose ? 'true' : 'false',
     FORCE: params.force ? 'true' : 'false',
     INSTALL_DIR: params.installDir || '',
+    CONFIG_DIR: '/etc/certctrl',
     DRY_RUN: params.dryRun ? 'true' : 'false',
     GITHUB_REPO_OWNER: 'coderealm-atlas',
     GITHUB_REPO_NAME: 'cert-ctrl'
