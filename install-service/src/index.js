@@ -50,7 +50,6 @@ router.get('/', async (request, env) => {
     usage: {
       'Quick Install (Unix)': 'curl -fsSL https://install.lets-script.com/install.sh | bash',
       'Quick Install (Windows)': 'iwr -useb https://install.lets-script.com/install.ps1 | iex',
-      'User Install (Unix)': 'curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --user-install',
       'Version Check': 'curl https://install.lets-script.com/api/version/latest'
     }
   };

@@ -48,6 +48,7 @@ struct CliParams {
   size_t offset = 0;
   size_t limit = 10;
   bool allow_non_root = false;
+  bool confirm_update = false; // --yes flag for auto-confirming updates
 };
 
 struct CliCtx {

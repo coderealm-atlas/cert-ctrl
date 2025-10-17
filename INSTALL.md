@@ -27,7 +27,7 @@ sudo bash install.sh
 This will automatically:
 - Detect your platform and architecture
 - Download the latest release
-- Install to `/usr/local/bin` (requires root) or `~/.local/bin` (with `--user-install`)
+- Install to `/usr/local/bin` (requires root)
 - Set up systemd service (Linux only)
 - Verify the installation
 
@@ -72,13 +72,6 @@ The installer automatically detects:
 curl -fsSL https://install.lets-script.com/install.sh | bash
 ```
 
-#### User Installation
-
-```bash
-# Install for current user only
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --user-install
-```
-
 #### Custom Installation Directory
 
 ```bash
@@ -109,9 +102,6 @@ irm https://install.lets-script.com/install.ps1 | iex
 
 ```powershell
 # Install for current user only
-irm https://install.lets-script.com/install.ps1 | iex -ArgumentList "--user-install"
-```
-
 #### Custom Installation Directory
 
 ```powershell
@@ -240,12 +230,8 @@ Default configuration locations:
 
 #### Installation
 ```bash
-# Install for current user
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --user-install
-
-# Add to PATH (if not already)
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+# Install system-wide (requires root)
+sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash
 
 # Verify installation
 cert-ctrl --version
@@ -572,8 +558,8 @@ cert-ctrl recognizes these environment variables:
 # Fix: Use sudo for system installation
 curl -fsSL https://install.lets-script.com/install.sh | sudo bash
 
-# Or: Use user installation
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --user-install
+# System-wide installation requires root
+sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash
 ```
 
 #### Command Not Found

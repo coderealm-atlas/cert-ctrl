@@ -79,9 +79,6 @@ iwr -useb https://install.lets-script.com/install.ps1 | iex
 ### Advanced Installation
 
 ```bash
-# User installation (no sudo)
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --user-install
-
 # Specific version
 curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --version v1.2.3
 

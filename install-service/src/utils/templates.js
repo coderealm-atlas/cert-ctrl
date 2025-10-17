@@ -20,7 +20,6 @@ export async function getInstallTemplate(scriptType, options) {
     MIRROR_NAME: mirror.name,
     BASE_URL: baseUrl,
     VERSION: params.version,
-    USER_INSTALL: params.userInstall ? 'true' : 'false',
     VERBOSE: params.verbose ? 'true' : 'false',
     FORCE: params.force ? 'true' : 'false',
     INSTALL_DIR: params.installDir || '',

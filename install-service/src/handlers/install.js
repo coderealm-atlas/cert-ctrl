@@ -19,7 +19,6 @@ export async function installHandler(request, env) {
     // Get query parameters
     const params = {
       version: url.searchParams.get('version') || 'latest',
-      userInstall: url.searchParams.has('user-install') || url.searchParams.has('user'),
       verbose: url.searchParams.has('verbose') || url.searchParams.has('v'),
       force: url.searchParams.has('force'),
       installDir: url.searchParams.get('install-dir') || url.searchParams.get('dir'),
