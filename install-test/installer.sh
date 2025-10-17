@@ -504,7 +504,7 @@ main() {
     resolve_version
     
     if [ "$USER_INSTALL" = "false" ] && [ ! -w "$(dirname "$INSTALL_DIR")" ] && [ "$EUID" -ne 0 ]; then
-        log_error "Installation requires root privileges or use --user-install"
+        log_error "Installation requires root privileges"
         exit 1
     fi
     
@@ -556,10 +556,6 @@ main() {
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --user-install|--user)
-            USER_INSTALL=true
-            shift
-            ;;
         --version)
             VERSION="$2"
             shift 2
@@ -616,7 +612,6 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
-            echo "  --user-install    Install to user directory"
             echo "  --version VER     Install specific version"
             echo "  --install-dir DIR Custom install directory"
             echo "  --config-dir DIR  Override configuration directory"

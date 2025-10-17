@@ -358,7 +358,7 @@ install_binary() {
     
     if [ "$DRY_RUN" = "true" ]; then
         log_info "DRY RUN: Would install to $INSTALL_DIR"
-        if [ "$INSTALL_SERVICE" = "true" ]; then
+        if [ "$INSTALL_SERVICE" = "true" ] && [ "$USER_INSTALL" = "false" ]; then
             log_info "DRY RUN: Would install systemd unit $SERVICE_NAME"
         fi
         return 0
@@ -412,8 +412,28 @@ install_binary() {
 
 # Setup PATH
 setup_path() {
-    # System installation - /usr/local/bin should already be in PATH
-    return 0
+    if [ "$USER_INSTALL" = "true" ]; then
+        local shell_rc=""
+        
+        case "$SHELL" in
+            */bash)  shell_rc="$HOME/.bashrc" ;;
+            */zsh)   shell_rc="$HOME/.zshrc" ;;
+            */fish)  shell_rc="$HOME/.config/fish/config.fish" ;;
+            *)       shell_rc="$HOME/.profile" ;;
+        esac
+        
+        if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+            log_info "Adding $INSTALL_DIR to PATH"
+            
+            if [[ "$shell_rc" == *"fish"* ]]; then
+                echo "set -gx PATH $INSTALL_DIR \$PATH" >> "$shell_rc"
+            else
+                echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$shell_rc"
+            fi
+            
+            log_warning "Please restart your shell or run: source $shell_rc"
+        fi
+    fi
 }
 
 # Verify installation
@@ -508,8 +528,13 @@ main() {
     log_success "cert-ctrl installation completed!"
     echo
     echo "Next steps:"
-    echo "  - Run: cert-ctrl --help"
-    if [ "$INSTALL_SERVICE" = "true" ]; then
+    if [ "$USER_INSTALL" = "true" ] && [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+        echo "  - Restart your shell or source your shell config"
+        echo "  - Run: cert-ctrl --help"
+    else
+        echo "  - Run: cert-ctrl --help"
+    fi
+    if [ "$INSTALL_SERVICE" = "true" ] && [ "$USER_INSTALL" = "false" ]; then
         if [ "$ENABLE_SERVICE" = "true" ]; then
             echo "  - Check service status: systemctl status $SERVICE_NAME"
         else
@@ -601,11 +626,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$CONFIG_DIR" ]; then
-    CONFIG_DIR="/etc/certctrl"
+    if [ "$USER_INSTALL" = "true" ]; then
+        CONFIG_DIR="$HOME/.config/certctrl"
+    else
+        CONFIG_DIR="/etc/certctrl"
+    fi
 fi
 
 if [ -z "$INSTALL_SERVICE" ]; then
-    INSTALL_SERVICE="true"
+    if [ "$USER_INSTALL" = "true" ]; then
+        INSTALL_SERVICE="false"
+    else
+        INSTALL_SERVICE="true"
+    fi
 fi
 
 if [ -z "$ENABLE_SERVICE" ]; then

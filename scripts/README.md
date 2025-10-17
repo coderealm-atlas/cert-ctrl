@@ -28,9 +28,6 @@ curl -fsSL https://install.cert-ctrl.com/install.sh | bash
 
 **With options:**
 ```bash
-# User installation (no sudo required)
-curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --user-install
-
 # Specific version
 curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --version v1.2.3
 
@@ -202,8 +199,7 @@ GPG_KEY_ID=your-key-id ./scripts/package/package.sh --sign --all-platforms
 ```yaml
 - name: Install cert-ctrl
   run: |
-    curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --user-install
-    echo "$HOME/.local/bin" >> $GITHUB_PATH
+    sudo curl -fsSL https://install.cert-ctrl.com/install.sh | sudo bash
 
 - name: Update cert-ctrl
   run: |
@@ -261,7 +257,7 @@ end
 **Permission Denied:**
 ```bash
 # Linux/macOS: Use user installation
-curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --user-install
+sudo curl -fsSL https://install.cert-ctrl.com/install.sh | sudo bash
 
 # Windows: Run PowerShell as Administrator
 ```
@@ -305,7 +301,7 @@ curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --verbose
 
 ```bash
 # Test installation script
-VERSION=v1.0.0 INSTALL_DIR=/tmp/cert-ctrl-test ./scripts/install/install.sh --user-install
+VERSION=v1.0.0 INSTALL_DIR=/tmp/cert-ctrl-test ./scripts/install/install.sh
 
 # Test update script
 ./scripts/update/update.sh --dry-run --verbose

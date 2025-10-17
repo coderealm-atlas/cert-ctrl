@@ -32,19 +32,54 @@ fs::path get_env_path(const char *name) {
   return {};
 }
 
+// Resolve default configuration and runtime directory paths with environment variable support.
+// 
+// Environment variable precedence (highest to lowest):
+// 1. CERTCTRL_CONFIG_DIR + CERTCTRL_RUNTIME_DIR - Direct path overrides
+// 2. CERTCTRL_BASE_DIR - Base directory override (appends /config and /runtime)
+// 3. Platform-specific defaults with individual overrides
+// 4. Pure platform-specific defaults
+//
+// Platform defaults:
+// - Linux: /etc/certctrl (config), /var/lib/certctrl (runtime)
+// - macOS: /Library/Application Support/certctrl/{config,runtime}
+// - Windows: %PROGRAMDATA%/certctrl/{config,runtime}
 DefaultPaths resolve_default_paths() {
+  // Check for environment variable overrides first
+  fs::path config_override = get_env_path("CERTCTRL_CONFIG_DIR");
+  fs::path runtime_override = get_env_path("CERTCTRL_RUNTIME_DIR");
+  
+  if (!config_override.empty() && !runtime_override.empty()) {
+    return {config_override, runtime_override};
+  }
+  
+  // Check for base directory override
+  fs::path base_override = get_env_path("CERTCTRL_BASE_DIR");
+  if (!base_override.empty()) {
+    fs::path config_dir = config_override.empty() ? (base_override / "config") : config_override;
+    fs::path runtime_dir = runtime_override.empty() ? (base_override / "runtime") : runtime_override;
+    return {config_dir, runtime_dir};
+  }
+
 #ifdef _WIN32
   fs::path program_data = get_env_path("PROGRAMDATA");
   if (program_data.empty()) {
     program_data = fs::path("C:/ProgramData");
   }
   auto base = program_data / "certctrl";
-  return {base / "config", base / "runtime"};
+  fs::path config_dir = config_override.empty() ? (base / "config") : config_override;
+  fs::path runtime_dir = runtime_override.empty() ? (base / "runtime") : runtime_override;
+  return {config_dir, runtime_dir};
 #elif defined(__APPLE__)
   fs::path base("/Library/Application Support/certctrl");
-  return {base / "config", base / "runtime"};
+  fs::path config_dir = config_override.empty() ? (base / "config") : config_override;
+  fs::path runtime_dir = runtime_override.empty() ? (base / "runtime") : runtime_override;
+  return {config_dir, runtime_dir};
 #else
-  return {fs::path("/etc/certctrl"), fs::path("/var/lib/certctrl")};
+  // Linux/Unix defaults
+  fs::path config_dir = config_override.empty() ? fs::path("/etc/certctrl") : config_override;
+  fs::path runtime_dir = runtime_override.empty() ? fs::path("/var/lib/certctrl") : runtime_override;
+  return {config_dir, runtime_dir};
 #endif
 }
 
@@ -86,7 +121,7 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
         {"auto_apply_config", false},
         {"verbose", "info"},
         {"url_base", "https://api.cjj365.cc"},
-        {"update_check_url", "https://install.cert-ctrl.com/api/version/check"},
+        {"update_check_url", "https://install.lets-script.com/api/version/check"},
         {"runtime_dir", runtime_dir.string()}};
     write_json_if_missing(config_dir / "application.json", application);
 
@@ -172,6 +207,15 @@ bool is_running_as_root() {
 } // namespace
 
 int main(int argc, char *argv[]) {
+  // Early version check - handle version requests before any initialization
+  for (int i = 1; i < argc; ++i) {
+    std::string arg(argv[i]);
+    if (arg == "-v" || arg == "--version" || arg == "version" || arg == "v") {
+      std::cout << MYAPP_VERSION << std::endl;
+      return EXIT_SUCCESS;
+    }
+  }
+
   try {
     po::variables_map vm;
     po::options_description generic_desc("A cert-ctrl tool");
@@ -214,6 +258,9 @@ int main(int argc, char *argv[]) {
         ("no-root",
          po::bool_switch(&cli_params.allow_non_root)->default_value(false),
          "suppress warning when running without root privileges.") //
+        ("yes,y",
+         po::bool_switch(&cli_params.confirm_update)->default_value(false),
+         "automatically confirm update without prompting (for update subcommand).") //
         ("help,h", "Print help");
 
     po::options_description hidden_desc("Hidden options");
@@ -257,7 +304,8 @@ int main(int argc, char *argv[]) {
       std::cerr << generic_desc << std::endl;
       std::cerr << "Subcommands:" << std::endl;
       std::cerr << "  login          Login the device." << std::endl;
-      std::cerr << "  conf           Configure the device." << std::endl
+      std::cerr << "  conf           Configure the device." << std::endl;
+      std::cerr << "  update         Check for and install application updates." << std::endl
                 << std::endl;
       std::cerr << "Default behavior:" << std::endl;
       std::cerr << "  No subcommand -> agent update check followed by a device "

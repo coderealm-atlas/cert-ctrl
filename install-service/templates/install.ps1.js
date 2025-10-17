@@ -105,13 +105,9 @@ switch -regex ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitectu
 
 $installPath = if ($InstallDir) {
     $InstallDir
-} elseif ($UserInstall -or ("{{USER_INSTALL}}" -eq "true")) {
-    Join-Path $env:USERPROFILE "AppData\\Local\\Programs\\cert-ctrl"
 } else {
     "C:\\Program Files\\cert-ctrl"
 }
-
-$paramUserInstall = ([bool]$UserInstall) -or ("{{USER_INSTALL}}" -eq "true")
 $paramForceInstall = ([bool]$Force) -or ("{{FORCE}}" -eq "true")
 
 $mirrorUrl = "{{MIRROR_URL}}"

@@ -1,7 +1,7 @@
 #!/bin/bash
 # install.sh - Universal installer for cert-ctrl
 # Usage: curl -fsSL https://install.cert-ctrl.com/install.sh | bash
-# Or: curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --version=v1.0.0 --user-install
+# Or: sudo curl -fsSL https://install.cert-ctrl.com/install.sh | sudo bash -s -- --version=v1.0.0
 
 set -euo pipefail
 
@@ -93,8 +93,7 @@ check_dependencies() {
 check_permissions() {
     if [ "$USER_INSTALL" = "false" ] && [ ! -w "$INSTALL_DIR" ]; then
         if [ "$EUID" -ne 0 ]; then
-            log_error "Installation to $INSTALL_DIR requires root privileges."
-            log_error "Either run with sudo or use --user-install flag."
+            log_error "Installation requires root privileges."
             exit 1
         fi
     fi
@@ -309,7 +308,6 @@ Usage: $0 [OPTIONS]
 
 Options:
     --version VERSION       Install specific version (default: latest)
-    --user-install         Install to user directory (~/.local/bin)
     --install-dir DIR      Custom installation directory
     --force                Overwrite existing installation
     --verbose              Enable verbose output
@@ -319,11 +317,8 @@ Examples:
     # Install latest version to /usr/local/bin (requires sudo)
     $0
 
-    # Install to user directory (no sudo required)
-    $0 --user-install
-
     # Install specific version
-    $0 --version v1.2.3 --user-install
+    sudo $0 --version v1.2.3
 
     # Install to custom directory
     $0 --install-dir /opt/cert-ctrl
@@ -400,10 +395,6 @@ check_runtime_dependencies() {
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --user-install)
-            USER_INSTALL="true"
-            shift
-            ;;
         --version)
             if [ -z "${2:-}" ]; then
                 log_error "Version parameter requires a value"

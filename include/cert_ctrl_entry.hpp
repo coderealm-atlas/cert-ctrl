@@ -15,6 +15,7 @@
 #include "handlers/handler_dispatcher.hpp"
 #include "handlers/i_handler.hpp"
 #include "handlers/login_handler.hpp"
+#include "handlers/update_handler.hpp"
 #include "handlers/updates_polling_handler.hpp"
 #include "http_client_manager.hpp"
 #include "io_context_manager.hpp"
@@ -85,7 +86,7 @@ public:
         di::bind<certctrl::CliCtx>().to(cli_ctx_),
         // Register all handlers for aggregate injection; DI will convert to
         // vector<unique_ptr<IHandler>>
-        di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::LoginHandler, certctrl::UpdatesPollingHandler>());
+        di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::LoginHandler, certctrl::UpdateHandler, certctrl::UpdatesPollingHandler>());
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();

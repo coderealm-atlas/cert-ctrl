@@ -364,10 +364,10 @@ gpg --verify cert-ctrl.tar.gz.sig cert-ctrl.tar.gz
 - **Linux**: Root for system-wide installation, user for local installation
 - **Windows**: Administrator for Program Files, user for AppData
 
-#### Sandboxed Installation
+#### System Installation
 ```bash
-# Install in user space (no root required)
-curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --user-install
+# Install system-wide (requires root)
+sudo curl -fsSL https://install.cert-ctrl.com/install.sh | sudo bash
 ```
 
 ### 4.3 Update Security
@@ -515,10 +515,6 @@ main() {
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --user-install)
-            USER_INSTALL="true"
-            shift
-            ;;
         --version)
             VERSION="$2"
             shift 2

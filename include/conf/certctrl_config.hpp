@@ -29,7 +29,7 @@ namespace certctrl
     bool auto_apply_config{false};
     std::string verbose{};
     std::string base_url{"https://api.cjj365.cc"};
-    std::string update_check_url{"https://install.cert-ctrl.com/api/version/check"};
+    std::string update_check_url{"https://install.lets-script.com/api/version/check"};
     fs::path runtime_dir{};
 
     friend CertctrlConfig tag_invoke(const json::value_to_tag<CertctrlConfig> &,
@@ -60,7 +60,7 @@ namespace certctrl
           if (auto *p = jo_p->if_contains("update_check_url"))
             cc.update_check_url = p->as_string().c_str();
           else
-            std::cerr << "update_check_url not found, using default https://install.cert-ctrl.com/api/version/check" << std::endl;
+            std::cerr << "update_check_url not found, using default https://install.lets-script.com/api/version/check" << std::endl;
           if (auto *p = jo_p->if_contains("runtime_dir"))
             cc.runtime_dir = fs::path(p->as_string().c_str());
           else
