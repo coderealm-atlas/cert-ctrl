@@ -258,8 +258,12 @@ install_config_files() {
     fi
 
     log_info "Installing configuration to $CONFIG_DIR"
-    if [ -d "$CONFIG_DIR" ] && [ "$FORCE" = "false" ]; then
-        if ! prompt_yes_no "Configuration exists in $CONFIG_DIR. Overwrite?"; then
+    if [ -d "$CONFIG_DIR" ] && [ -n "$(ls -A "$CONFIG_DIR" 2>/dev/null)" ] && [ "$FORCE" = "false" ]; then
+        if [ "$NONINTERACTIVE" = "true" ]; then
+            log_info "Configuration directory exists but continuing (non-interactive mode)"
+        else
+            log_warning "Configuration directory $CONFIG_DIR already exists and contains files"
+            log_info "To overwrite: FORCE=true or NONINTERACTIVE=true"
             log_info "Skipping configuration install"
             return 0
         fi
@@ -288,8 +292,39 @@ ensure_service_account() {
     fi
 }
 
+create_systemd_unit() {
+    cat > "/etc/systemd/system/$SERVICE_NAME" << 'EOF'
+[Unit]
+Description=@@DESCRIPTION@@
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+User=@@SERVICE_USER@@
+Group=@@SERVICE_USER@@
+WorkingDirectory=@@CONFIG_DIR@@
+ExecStart=@@BINARY_PATH@@ --config-dirs @@CONFIG_DIR@@
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cert-ctrl
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@@CONFIG_DIR@@
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 install_service_unit() {
-    local extract_dir="$1"
 
     if [ "$INSTALL_SERVICE" != "true" ]; then
         log_verbose "Service installation disabled"
@@ -302,8 +337,10 @@ install_service_unit() {
     fi
 
     if [ "$EUID" -ne 0 ]; then
-        log_error "Service installation requires root privileges"
-        exit 1
+        log_warning "Service installation requires root privileges (skipping service setup)"
+        log_info "To install service manually after installation:"
+        log_info "  sudo systemctl enable --now $SERVICE_NAME"
+        return 0
     fi
 
     if ! command -v systemctl &> /dev/null; then
@@ -311,41 +348,48 @@ install_service_unit() {
         return 0
     fi
 
-    local service_source=""
-    if [ -f "$extract_dir/systemd/certctrl.service" ]; then
-        service_source="$extract_dir/systemd/certctrl.service"
-    elif [ -f "$extract_dir/certctrl.service" ]; then
-        service_source="$extract_dir/certctrl.service"
-    fi
-
-    if [ -z "$service_source" ]; then
-        log_warning "No systemd unit found in archive"
-        return 0
-    fi
-
     ensure_service_account
 
     log_info "Installing systemd unit at /etc/systemd/system/$SERVICE_NAME"
     if [ -f "/etc/systemd/system/$SERVICE_NAME" ] && [ "$FORCE" = "false" ]; then
-        if ! prompt_yes_no "Service $SERVICE_NAME exists. Overwrite?"; then
+        if [ "$NONINTERACTIVE" = "true" ]; then
+            log_info "Overwriting existing service unit (non-interactive mode)"
+        else
+            log_warning "Service $SERVICE_NAME already exists."
+            log_info "To overwrite: FORCE=true or NONINTERACTIVE=true"
             log_info "Skipping service installation"
             return 0
         fi
     fi
-    cp "$service_source" "/etc/systemd/system/$SERVICE_NAME"
 
+    create_systemd_unit
+
+    # Substitute placeholders in the service file
     sed -i "s|@@BINARY_PATH@@|$INSTALL_DIR/cert-ctrl|g" "/etc/systemd/system/$SERVICE_NAME"
-    sed -i "s|__CERT_CTRL_BIN__|$INSTALL_DIR/cert-ctrl|g" "/etc/systemd/system/$SERVICE_NAME"
     sed -i "s|@@CONFIG_DIR@@|$CONFIG_DIR|g" "/etc/systemd/system/$SERVICE_NAME"
-    sed -i "s|__CERT_CTRL_CONFIG__|$CONFIG_DIR|g" "/etc/systemd/system/$SERVICE_NAME"
     sed -i "s|@@SERVICE_USER@@|$SERVICE_ACCOUNT|g" "/etc/systemd/system/$SERVICE_NAME"
     sed -i "s|@@DESCRIPTION@@|$SERVICE_DESCRIPTION|g" "/etc/systemd/system/$SERVICE_NAME"
 
+    # Ensure config directory exists and has proper permissions
+    if [ ! -d "$CONFIG_DIR" ]; then
+        log_info "Creating config directory $CONFIG_DIR"
+        mkdir -p "$CONFIG_DIR"
+    fi
+    chown -R "$SERVICE_ACCOUNT:$SERVICE_ACCOUNT" "$CONFIG_DIR" 2>/dev/null || true
+    chmod 755 "$CONFIG_DIR"
+
     systemctl daemon-reload
+    log_success "Systemd unit installed successfully"
 
     if [ "$ENABLE_SERVICE" = "true" ]; then
         log_info "Enabling and starting $SERVICE_NAME"
-        systemctl enable --now "$SERVICE_NAME"
+        if systemctl enable --now "$SERVICE_NAME"; then
+            log_success "Service $SERVICE_NAME started successfully"
+        else
+            log_warning "Service installation completed but failed to start"
+            log_info "Check logs with: journalctl -u $SERVICE_NAME"
+            log_info "Start manually with: systemctl start $SERVICE_NAME"
+        fi
     else
         log_info "Service installed. Enable manually with: systemctl enable --now $SERVICE_NAME"
     fi
@@ -390,11 +434,25 @@ install_binary() {
     
     # Check existing installation
     if [ -f "$INSTALL_DIR/cert-ctrl" ] && [ "$FORCE" = "false" ]; then
-        if ! prompt_yes_no "cert-ctrl already exists at $INSTALL_DIR/cert-ctrl. Overwrite?"; then
-            log_info "Installation cancelled"
-            rm -rf "$extract_dir"
-            exit 0
+        local current_version=""
+        if [ -x "$INSTALL_DIR/cert-ctrl" ]; then
+            current_version=$("$INSTALL_DIR/cert-ctrl" --version 2>/dev/null || echo "unknown")
         fi
+        
+        log_warning "cert-ctrl is already installed at $INSTALL_DIR/cert-ctrl"
+        if [ -n "$current_version" ]; then
+            log_info "Current version: $current_version"
+            log_info "New version: $VERSION"
+        fi
+        log_info ""
+        log_info "To proceed with installation, choose one of:"
+        log_info "  1. Force overwrite: curl -fsSL https://install.lets-script.com/install.sh | FORCE=true sudo bash"
+        log_info "  2. Remove existing: sudo rm $INSTALL_DIR/cert-ctrl && curl -fsSL https://install.lets-script.com/install.sh | sudo bash"
+        log_info "  3. Non-interactive: curl -fsSL https://install.lets-script.com/install.sh | NONINTERACTIVE=true sudo bash"
+        log_info ""
+        log_error "Installation stopped. Use one of the options above to continue."
+        rm -rf "$extract_dir"
+        exit 1
     fi
     
     # Install
@@ -403,7 +461,7 @@ install_binary() {
     log_success "Binary installed"
 
     install_config_files "$extract_dir"
-    install_service_unit "$extract_dir"
+    install_service_unit
 
     rm -rf "$extract_dir"
 
