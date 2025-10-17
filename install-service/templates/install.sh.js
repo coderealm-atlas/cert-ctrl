@@ -15,9 +15,9 @@ BASE_URL="{{BASE_URL}}"
 VERSION="{{VERSION}}"
 # System installation only - user installation removed
 # USER_INSTALL is always false
-VERBOSE={{VERBOSE}}
-FORCE={{FORCE}}
-DRY_RUN={{DRY_RUN}}
+VERBOSE="\${VERBOSE:-{{VERBOSE}}}"
+FORCE="\${FORCE:-{{FORCE}}}"
+DRY_RUN="\${DRY_RUN:-{{DRY_RUN}}}"
 
 # Advanced configuration (overridable via environment or flags)
 CONFIG_DIR="\${CONFIG_DIR:-}"
@@ -668,6 +668,18 @@ fi
 
 if [ -z "$ENABLE_SERVICE" ]; then
     ENABLE_SERVICE="$INSTALL_SERVICE"
+fi
+
+if [ -z "$FORCE" ]; then
+    FORCE="false"
+fi
+
+if [ -z "$DRY_RUN" ]; then
+    DRY_RUN="false"
+fi
+
+if [ -z "$VERBOSE" ]; then
+    VERBOSE="false"
 fi
 
 # Run installation
