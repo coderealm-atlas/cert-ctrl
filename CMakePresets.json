@@ -87,13 +87,13 @@
     {
       "name": "release-compat",
       "inherits": "default",
-      "description": "Release build with broad compatibility for older Linux systems",
+      "description": "Release build with broad compatibility for older Linux systems (Ubuntu 20.04+)",
       "binaryDir": "${sourceDir}/build/release-compat",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
-        "CMAKE_CXX_FLAGS": "-O2 -DNDEBUG -static-libgcc -static-libstdc++ -fno-stack-protector",
+        "CMAKE_CXX_FLAGS": "-O2 -DNDEBUG -static-libgcc -static-libstdc++ -fno-stack-protector -D_GLIBCXX_USE_CXX11_ABI=0",
         "CMAKE_C_FLAGS": "-O2 -DNDEBUG -static-libgcc -fno-stack-protector",
         "DISABLE_LTO": "ON"
       },
