@@ -263,7 +263,7 @@ install_config_files() {
             log_info "Configuration directory exists but continuing (non-interactive mode)"
         else
             log_warning "Configuration directory $CONFIG_DIR already exists and contains files"
-            log_info "To overwrite: FORCE=true or NONINTERACTIVE=true"
+            log_info "To overwrite: Use ?force in URL or FORCE=true with sudo -E"
             log_info "Skipping configuration install"
             return 0
         fi
@@ -356,7 +356,7 @@ install_service_unit() {
             log_info "Overwriting existing service unit (non-interactive mode)"
         else
             log_warning "Service $SERVICE_NAME already exists."
-            log_info "To overwrite: FORCE=true or NONINTERACTIVE=true"
+            log_info "To overwrite: Use ?force in URL or FORCE=true with sudo -E"
             log_info "Skipping service installation"
             return 0
         fi
@@ -446,9 +446,9 @@ install_binary() {
         fi
         log_info ""
         log_info "To proceed with installation, choose one of:"
-        log_info "  1. Force overwrite: curl -fsSL https://install.lets-script.com/install.sh | FORCE=true sudo bash"
-        log_info "  2. Remove existing: sudo rm $INSTALL_DIR/cert-ctrl && curl -fsSL https://install.lets-script.com/install.sh | sudo bash"
-        log_info "  3. Non-interactive: curl -fsSL https://install.lets-script.com/install.sh | NONINTERACTIVE=true sudo bash"
+        log_info "  1. URL parameter:   curl -fsSL \"https://install.lets-script.com/install.sh?force\" | sudo bash"
+        log_info "  2. Environment var: FORCE=true curl -fsSL https://install.lets-script.com/install.sh | sudo -E bash"
+        log_info "  3. Remove existing: sudo rm $INSTALL_DIR/cert-ctrl && curl -fsSL https://install.lets-script.com/install.sh | sudo bash"
         log_info ""
         log_error "Installation stopped. Use one of the options above to continue."
         rm -rf "$extract_dir"
@@ -486,33 +486,109 @@ verify_installation() {
     if "$binary_path" --version &>/dev/null; then
         local version=$("$binary_path" --version 2>/dev/null | head -n1)
         log_success "Installation verified! Version: $version"
+        return 0
     else
         log_warning "Binary installed but version check failed"
-    fi
-
-    check_runtime_dependencies "$binary_path"
-}
-
-check_runtime_dependencies() {
-    local binary_path="$1"
-
-    if [ -z "$binary_path" ] || [ ! -x "$binary_path" ]; then
-        return 0
-    fi
-
-    if ! command -v ldd &>/dev/null; then
-        log_verbose "Skipping runtime dependency check (ldd not available)"
-        return 0
-    fi
-
-    local missing
-    missing=$(ldd "$binary_path" 2>&1 | awk '/not found/ {print $0}')
-    if [ -n "$missing" ]; then
-        log_warning "Detected missing runtime dependencies:";
-        printf '%s\n' "$missing"
-        log_warning "Please install the packages that provide the libraries listed above and rerun cert-ctrl if it fails to start."
-    else
-        log_verbose "All required shared libraries are available"
+        
+        # Try to run the binary and show error output
+        echo ""
+        log_info "Trying to diagnose the issue..."
+        local error_output
+        error_output=$("$binary_path" 2>&1 || true)
+        
+        # Check if it's a glibc version issue
+        if echo "$error_output" | grep -q "GLIBC_"; then
+            log_error "Your system is missing required glibc versions!"
+            echo ""
+            
+            # Show current glibc version
+            local current_glibc=""
+            if [ -f /lib/x86_64-linux-gnu/libc.so.6 ]; then
+                current_glibc=$(/lib/x86_64-linux-gnu/libc.so.6 2>&1 | grep -o "release version [0-9]*\.[0-9]*" | awk '{print $NF}')
+            fi
+            
+            if [ -z "$current_glibc" ] && command -v ldd &>/dev/null; then
+                current_glibc=$(ldd --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+            fi
+            
+            if [ -n "$current_glibc" ]; then
+                log_warning "Your system has: glibc $current_glibc"
+            else
+                log_warning "Unable to detect your current glibc version"
+            fi
+            
+            # Extract and show required versions
+            local required_versions
+            required_versions=$(echo "$error_output" | grep -o "GLIBC_[0-9.]*" | sort -u | tr '\n' ' ')
+            log_warning "Required versions: $required_versions"
+            
+            echo ""
+            
+            # Detect OS and provide specific advice
+            if [ -f /etc/os-release ]; then
+                local os_id=$(grep "^ID=" /etc/os-release | cut -d'=' -f2 | tr -d '"')
+                local version_id=$(grep "^VERSION_ID=" /etc/os-release | cut -d'=' -f2 | tr -d '"')
+                
+                log_info "Your system: $os_id $version_id"
+                echo ""
+                
+                case "$os_id" in
+                    ubuntu)
+                        case "$version_id" in
+                            "24.04"|"23.10"|"23.04")
+                                log_success "Ubuntu $version_id has compatible glibc - update your packages:"
+                                echo "  sudo apt update && sudo apt full-upgrade -y"
+                                ;;
+                            "22.04")
+                                log_warning "Ubuntu 22.04 LTS has glibc 2.35, but cert-ctrl requires glibc 2.36+."
+                                echo ""
+                                log_info "RECOMMENDED: Upgrade to Ubuntu 24.04 LTS (latest stable)"
+                                echo "  sudo do-release-upgrade"
+                                echo ""
+                                log_info "OR try updating current Ubuntu packages (may not work):"
+                                echo "  sudo apt update && sudo apt full-upgrade -y"
+                                ;;
+                            "20.04")
+                                log_error "Ubuntu 20.04 LTS has glibc 2.31, which is too old for cert-ctrl."
+                                echo ""
+                                log_info "RECOMMENDED: Upgrade to Ubuntu 24.04 LTS"
+                                echo "  sudo do-release-upgrade"
+                                ;;
+                            *)
+                                log_info "Try updating your Ubuntu packages:"
+                                echo "  sudo apt update && sudo apt full-upgrade -y"
+                                ;;
+                        esac
+                        ;;
+                    debian)
+                        log_info "For Debian $version_id, try:"
+                        echo "  sudo apt update && sudo apt full-upgrade -y"
+                        ;;
+                    rhel|centos|rocky|almalinux|fedora)
+                        log_info "For RHEL/CentOS/Rocky/Fedora, update packages:"
+                        echo "  sudo dnf update -y"
+                        ;;
+                    *)
+                        log_info "Try updating your system packages:"
+                        echo "  sudo apt update && sudo apt upgrade -y  # Debian-based"
+                        echo "  sudo dnf update -y                    # RHEL-based"
+                        ;;
+                esac
+            fi
+            
+            echo ""
+            log_info "Alternative options:"
+            echo "  1. Use Docker: docker run cert-ctrl --version"
+            echo "  2. Build from source on your system"
+            echo "  3. Use a container with compatible glibc"
+        else
+            log_error "Binary failed to run:"
+            echo "$error_output"
+        fi
+        
+        echo ""
+        log_error "Installation incomplete due to runtime dependencies."
+        return 1
     fi
 }
 
