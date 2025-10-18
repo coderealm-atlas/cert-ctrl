@@ -2,7 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
-#include <format>
+#include <fmt/format.h>
 #include <optional>
 #include <random>
 #include <string>
@@ -20,7 +20,7 @@ std::string generate_temp_suffix() {
   std::mt19937_64 gen(rd());
   std::uniform_int_distribution<std::uint64_t> dist;
   std::uint64_t random_part = dist(gen);
-  return std::format("{}.{}", now, random_part);
+  return fmt::format("{}.{}", now, random_part);
 }
 
 std::filesystem::perms default_directory_perms() {
@@ -78,7 +78,7 @@ std::optional<std::string> perform_copy_operation(
     bool private_material) {
   try {
     if (!std::filesystem::exists(source)) {
-      return std::format("Source file '{}' not found", source.string());
+      return fmt::format("Source file '{}' not found", source.string());
     }
 
     auto dest_dir = destination.parent_path();
@@ -197,7 +197,7 @@ monad::IO<void> apply_copy_actions(
         if (!dest_path.is_absolute()) {
           return ReturnIO::fail(monad::Error{
               .code = my_errors::GENERAL::INVALID_ARGUMENT,
-              .what = std::format(
+              .what = fmt::format(
                   "Destination path '{}' is not absolute",
                   dest_path.string())});
         }

@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <algorithm>
-#include <format>
+#include <fmt/format.h>
 #include <optional>
 #include <filesystem>
 #include <fstream>
@@ -95,7 +95,7 @@ public:
         certctrl_config_provider_(certctrl_config_provider),
         output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
         opt_desc_("updates polling options"),
-        endpoint_base_(std::format("{}/apiv1/devices/self/updates",
+  endpoint_base_(fmt::format("{}/apiv1/devices/self/updates",
                                    certctrl_config_provider_.get().base_url)) {
     exec_ = boost::asio::make_strand(ioc_);
     po::options_description create_opts("Updates Polling Options");
@@ -339,7 +339,7 @@ private:
     }
 
     const auto refresh_url =
-        std::format("{}/auth/refresh", certctrl_config_provider_.get().base_url);
+  fmt::format("{}/auth/refresh", certctrl_config_provider_.get().base_url);
 
     auto payload_obj = std::make_shared<boost::json::object>(
         boost::json::object{{"refresh_token", *refresh_token_opt}});
@@ -572,7 +572,7 @@ private:
     return monad::IO<void>::fail(
         monad::Error{
             .code = my_errors::NETWORK::READ_ERROR,
-            .what = std::format("HTTP {} response", status)
+            .what = fmt::format("HTTP {} response", status)
         });
   }
   
@@ -650,7 +650,7 @@ private:
                           std::string("Bearer ") + access_token);
           if (!cursor_.empty()) {
             ex->request.set(http::field::if_none_match,
-                            std::format("\"{}\"", cursor_));
+                            fmt::format("\"{}\"", cursor_));
           }
           return ex;
         })

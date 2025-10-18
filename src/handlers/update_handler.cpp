@@ -3,7 +3,7 @@
 #include <boost/beast/http/field.hpp>
 #include <boost/json.hpp>
 #include <boost/url/parse.hpp>
-#include <format>
+#include <fmt/format.h>
 #include <fstream>
 #include <filesystem>
 #include <iostream>
@@ -170,9 +170,9 @@ monad::IO<void> UpdateHandler::perform_update() {
   std::string expected_filename;
   
 #if defined(_WIN32)
-  expected_filename = std::format("cert-ctrl-{}-{}.zip", platform, arch);
+  expected_filename = fmt::format("cert-ctrl-{}-{}.zip", platform, arch);
 #else
-  expected_filename = std::format("cert-ctrl-{}-{}.tar.gz", platform, arch);
+  expected_filename = fmt::format("cert-ctrl-{}-{}.tar.gz", platform, arch);
 #endif
 
   // Get download URL from our Cloudflare install service instead of GitHub directly
@@ -182,16 +182,18 @@ monad::IO<void> UpdateHandler::perform_update() {
   // Convert version check URL to download URL
   // Replace "/api/version/check" with "/download"
   const std::string version_check_suffix = "/api/version/check";
-  if (base_url.ends_with(version_check_suffix)) {
+  if (base_url.size() >= version_check_suffix.size() &&
+      base_url.compare(base_url.size() - version_check_suffix.size(),
+                       version_check_suffix.size(), version_check_suffix) == 0) {
     base_url = base_url.substr(0, base_url.length() - version_check_suffix.length());
   }
-  
+
   // Ensure base_url doesn't end with a slash to avoid double slashes
-  if (base_url.ends_with("/")) {
-    base_url = base_url.substr(0, base_url.length() - 1);
+  if (!base_url.empty() && base_url.back() == '/') {
+    base_url.pop_back();
   }
   
-  std::string download_url = std::format("{}/download/{}", base_url, expected_filename);
+  std::string download_url = fmt::format("{}/download/{}", base_url, expected_filename);
 
   output_.logger().info() << "Download URL: " << download_url << std::endl;
 
@@ -214,7 +216,7 @@ monad::IO<void> UpdateHandler::perform_update() {
     return monad::IO<void>::pure();
   } catch (const std::exception& e) {
     output_.logger().error() << "Update failed: " << e.what() << std::endl;
-    return monad::IO<void>::fail({.code = my_errors::GENERAL::UPDATE_FAILED, .what = e.what()});
+  return monad::IO<void>::fail({.code = my_errors::GENERAL::UPDATE_FAILED, .what = fmt::format("Failed to create backup: {}", e.what())});
   }
 }
 
@@ -251,7 +253,7 @@ monad::IO<void> UpdateHandler::backup_current_binary() {
     return monad::IO<void>::pure();
   } catch (const std::exception& e) {
     return monad::IO<void>::fail({.code = my_errors::GENERAL::UPDATE_FAILED, 
-                           .what = std::format("Failed to create backup: {}", e.what())});
+                           .what = fmt::format("Failed to create backup: {}", e.what())});
   }
 }
 

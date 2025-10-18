@@ -1,4 +1,5 @@
 #include "openssl/openssl_raii.hpp"
+#include <fmt/format.h>
 
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
@@ -1243,9 +1244,9 @@ monad::MyResult<std::string> sign_message(
         std::string(reinterpret_cast<char*>(raw_signature.data()),
                     raw_signature.size()));  // or base64_signature;
   } catch (std::exception& e) {
-    return monad::MyResult<std::string>::Err(
-        {.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-         .what = std::format("sign_message: {}", e.what())});
+  return monad::MyResult<std::string>::Err(
+    {.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
+     .what = fmt::format("sign_message: {}", e.what())});
   }
 }
 
@@ -1304,7 +1305,7 @@ monad::MyResult<std::string> sign_message(const std::string& payload,
   if (!pkey) {
     return monad::MyResult<std::string>::Err(monad::Error{
         .code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-        .what = std::format("Failed to load private key: {}", private_key)});
+        .what = fmt::format("Failed to load private key: {}", private_key)});
   }
   return sign_message(payload, pkey);
 }

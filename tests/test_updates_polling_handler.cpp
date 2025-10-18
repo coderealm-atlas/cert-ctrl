@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 #include <functional>
-#include <format>
+#include <fmt/format.h>
 
 #include <boost/beast/http.hpp>
 #include <sodium.h>
@@ -855,9 +855,9 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
         using monad::GetStringTag;
         namespace http = boost::beast::http;
 
-        std::string url = std::format(
-            "{}/apiv1/users/{}/devices/{}/install-config", base_url,
-            user_id, device_id);
+    std::string url = fmt::format(
+      "{}/apiv1/users/{}/devices/{}/install-config", base_url,
+      user_id, device_id);
 
         return monad::http_io<GetStringTag>(url)
             .map([cookie](auto ex) {
@@ -877,8 +877,8 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
               if (status != 200) {
                 monad::Error err{
                     .code = my_errors::NETWORK::READ_ERROR,
-                    .what = std::format(
-                        "install-config fetch HTTP status {}", status)};
+        .what = fmt::format(
+          "install-config fetch HTTP status {}", status)};
                 err.response_status = status;
                 err.params["response_body_preview"] = ex->response->body();
                 return monad::IO<dto::DeviceInstallConfigDto>::fail(

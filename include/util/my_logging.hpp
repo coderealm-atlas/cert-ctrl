@@ -11,6 +11,7 @@
 #include <boost/log/utility/setup/file.hpp>
 #include <boost/move/utility_core.hpp>
 #include <boost/shared_ptr.hpp>
+#include <fmt/format.h>
 
 #include "common_macros.hpp"
 // #include "models.hpp"
@@ -54,7 +55,7 @@ inline LoggerPtr make_logger_with_session(const std::string &session_id) {
 }
 
 inline void init_my_log(const cjj365::LoggingConfig &loggingConfig) {
-  std::string logfile = std::format("{}/{}_%N.log", loggingConfig.log_dir,
+  std::string logfile = fmt::format("{}/{}_%N.log", loggingConfig.log_dir,
                                     loggingConfig.log_file);
 
   auto sink = logging::add_file_log(

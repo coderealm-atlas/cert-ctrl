@@ -15,7 +15,7 @@ find_package(Protobuf CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 add_executable(test_program_options test_program_options.cpp)
-target_compile_features(test_program_options PRIVATE cxx_std_20)
+target_compile_features(test_program_options PRIVATE cxx_std_17)
 target_include_directories(test_program_options PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/external/http_client/include
@@ -60,7 +60,7 @@ add_executable(test_login_handler_workflow
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${HTTP_CLIENT_SRCS}
 )
-target_compile_features(test_login_handler_workflow PRIVATE cxx_std_20)
+target_compile_features(test_login_handler_workflow PRIVATE cxx_std_17)
 target_include_directories(test_login_handler_workflow PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/external/http_client/include
@@ -104,7 +104,7 @@ add_executable(test_login_real_server
   test_login_real_server.cpp
   ${HTTP_CLIENT_SRCS}
 )
-target_compile_features(test_login_real_server PRIVATE cxx_std_20)
+target_compile_features(test_login_real_server PRIVATE cxx_std_17)
 target_include_directories(test_login_real_server PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/include/util
@@ -150,7 +150,7 @@ add_executable(test_device_registration
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${HTTP_CLIENT_SRCS}
 )
-target_compile_features(test_device_registration PRIVATE cxx_std_20)
+target_compile_features(test_device_registration PRIVATE cxx_std_17)
 target_include_directories(test_device_registration PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/external/http_client/include
@@ -197,7 +197,7 @@ add_executable(test_install_config_manager
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${HTTP_CLIENT_SRCS}
 )
-target_compile_features(test_install_config_manager PRIVATE cxx_std_20)
+target_compile_features(test_install_config_manager PRIVATE cxx_std_17)
 target_include_directories(test_install_config_manager PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/external/http_client/include
@@ -247,7 +247,7 @@ add_executable(test_updates_polling_handler
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${HTTP_CLIENT_SRCS}
 )
-target_compile_features(test_updates_polling_handler PRIVATE cxx_std_20)
+target_compile_features(test_updates_polling_handler PRIVATE cxx_std_17)
 target_include_directories(test_updates_polling_handler PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/external/http_client/include

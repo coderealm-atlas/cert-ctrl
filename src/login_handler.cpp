@@ -12,7 +12,7 @@
 #include <boost/system/error_code.hpp>
 #include <chrono>
 #include <algorithm>
-#include <format>
+#include <fmt/format.h>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -173,7 +173,7 @@ LoginHandler::refresh_session_with_token(const std::string &refresh_token,
   using namespace monad;
 
   const auto &base_url = certctrl_config_provider_.get().base_url;
-  const auto refresh_url = std::format("{}/auth/refresh", base_url);
+  const auto refresh_url = fmt::format("{}/auth/refresh", base_url);
   auto payload_obj = std::make_shared<boost::json::object>(
       boost::json::object{{"refresh_token", refresh_token}});
 
@@ -479,7 +479,7 @@ VoidPureIO LoginHandler::register_device() {
   const auto &base_url = certctrl_config_provider_.get().base_url;
 
   // Gather device info and fingerprint
-  std::string user_agent = std::format("cert-ctrl/{}", MYAPP_VERSION);
+  std::string user_agent = fmt::format("cert-ctrl/{}", MYAPP_VERSION);
   auto info = cjj365::device::gather_device_info(user_agent);
   auto fp_hex = cjj365::device::generate_device_fingerprint_hex(info);
   auto device_public_id =
@@ -658,7 +658,7 @@ VoidPureIO LoginHandler::register_device() {
     }
   }
 
-  auto devices_url = std::format("{}/apiv1/device/registration", base_url);
+  auto devices_url = fmt::format("{}/apiv1/device/registration", base_url);
 
   return http_io<PostJsonTag>(devices_url)
       .map([payload = std::move(payload)](auto ex) mutable {

@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
-#include <format>
+#include <fmt/format.h>
 #include <future>
 #include <iostream>
 #include <random>
@@ -40,7 +40,7 @@ std::string generate_temp_suffix() {
   std::mt19937_64 gen(rd());
   std::uniform_int_distribution<std::uint64_t> dist;
   std::uint64_t random_part = dist(gen);
-  return std::format("{}.{}", now, random_part);
+  return fmt::format("{}.{}", now, random_part);
 }
 
 std::string to_lower_copy(const std::string &value) {
@@ -457,7 +457,7 @@ InstallConfigManager::refresh_from_remote(
     }
 
     const auto &cfg = config_provider_.get();
-    std::string url = std::format("{}/apiv1/devices/self/install-config",
+    std::string url = fmt::format("{}/apiv1/devices/self/install-config",
                                   cfg.base_url);
 
     return http_io<monad::GetStringTag>(url)
@@ -478,7 +478,7 @@ InstallConfigManager::refresh_from_remote(
           int status = ex->response->result_int();
           if (status != 200) {
             Error err{.code = my_errors::NETWORK::READ_ERROR,
-                      .what = std::format(
+                      .what = fmt::format(
                           "install-config fetch HTTP status {}", status)};
             err.response_status = status;
             err.params["response_body_preview"] = ex->response->body();
@@ -726,15 +726,15 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
     const auto &cfg = config_provider_.get();
     std::string url;
     if (*item.ob_type == "cert") {
-      url = std::format("{}/apiv1/devices/self/certificates/{}/bundle?pack=download",
+      url = fmt::format("{}/apiv1/devices/self/certificates/{}/bundle?pack=download",
                         cfg.base_url, *item.ob_id);
     } else if (*item.ob_type == "ca") {
-      url = std::format("{}/apiv1/devices/self/cas/{}/bundle?pack=download",
+      url = fmt::format("{}/apiv1/devices/self/cas/{}/bundle?pack=download",
                         cfg.base_url, *item.ob_id);
     } else {
-      return monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                          .what = std::format("Unsupported ob_type '{}'",
-                                              *item.ob_type)};
+  return monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
+          .what = fmt::format("Unsupported ob_type '{}'",
+                  *item.ob_type)};
     }
 
     namespace http = boost::beast::http;
@@ -778,8 +778,8 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
         break;
       }
 
-      monad::Error err{.code = my_errors::NETWORK::READ_ERROR,
-                       .what = std::format("Resource fetch HTTP {}", status)};
+  monad::Error err{.code = my_errors::NETWORK::READ_ERROR,
+           .what = fmt::format("Resource fetch HTTP {}", status)};
       err.response_status = status;
       err.params["response_body_preview"] = body.substr(0, 512);
 
@@ -833,7 +833,7 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
                                       decrypt_error);
           if (!private_key_pem) {
             return monad::Error{.code = my_errors::GENERAL::UNEXPECTED_RESULT,
-                                .what = std::format(
+                                .what = fmt::format(
                                     "Failed to materialize decrypted private key for cert {}: {}",
                                     *item.ob_id, decrypt_error)};
           }

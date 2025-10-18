@@ -3,10 +3,14 @@ cmake_minimum_required(VERSION 3.16)
 cmake_policy(SET CMP0104 NEW)
 cmake_policy(SET CMP0146 OLD)
 cmake_policy(SET CMP0167 NEW)
+cmake_policy(SET CMP0111 NEW)  # Handle imported targets missing location property
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Fix RPATH issues with Ninja generator
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 
 # CRITICAL: Must set runtime library BEFORE project() to apply to vcpkg packages
 if(MSVC)
@@ -538,6 +542,7 @@ find_package(Boost REQUIRED COMPONENTS log)
 find_package(Boost REQUIRED COMPONENTS log_setup)
 find_package(minizip-ng CONFIG REQUIRED)
 find_package(unofficial-sodium CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 

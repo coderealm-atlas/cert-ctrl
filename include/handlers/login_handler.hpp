@@ -26,6 +26,7 @@
 #include "my_error_codes.hpp"
 #include "simple_data.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
+#include <fmt/format.h>
 
 namespace po = boost::program_options;
 
@@ -61,8 +62,8 @@ public:
         config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
         output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
-        device_auth_url_(std::format("{}/auth/device",
-                                     certctrl_config_provider_.get().base_url)),
+  device_auth_url_(fmt::format("{}/auth/device",
+             certctrl_config_provider_.get().base_url)),
         opt_desc_("misc subcommand options") {
     exec_ = boost::asio::make_strand(ioc_);
     boost::program_options::options_description create_opts("conf Options");

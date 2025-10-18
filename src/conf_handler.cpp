@@ -1,5 +1,5 @@
 #include "handlers/conf_handler.hpp"
-#include <format>
+#include <fmt/format.h>
 
 namespace certctrl {
 
@@ -22,9 +22,9 @@ VoidPureIO ConfHandler::start() {
       certctrl_config_provider_.save({{"verbose", value}});
       output_hub_.logger().info() << "Set verbose to " << value << std::endl;
     } else {
-      std::string msg =
-          std::format("Unknown configuration key: {}, supported keys are: auto_apply_config, verbose",
-                      key);
+    std::string msg =
+      fmt::format("Unknown configuration key: {}, supported keys are: auto_apply_config, verbose",
+            key);
       return show_usage(msg);
     }
   } else if (auto getv_r = cli_ctx_.get_get_k(); getv_r.is_ok()) {
@@ -40,9 +40,9 @@ VoidPureIO ConfHandler::start() {
           << "verbose = " << certctrl_config_provider_.get().verbose
           << std::endl;
     } else {
-      std::string msg =
-          std::format("Unknown configuration key: {}, supported keys are: auto_apply_config, verbose",
-                      key);
+    std::string msg =
+      fmt::format("Unknown configuration key: {}, supported keys are: auto_apply_config, verbose",
+            key);
       return show_usage(msg);
     }
   } else {
