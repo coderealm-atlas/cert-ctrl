@@ -1,0 +1,49 @@
+FROM ubuntu:20.04
+
+# Prevent interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    ninja-build \
+    git \
+    curl \
+    wget \
+    pkg-config \
+    autoconf \
+    automake \
+    libtool \
+    libomp-dev \
+    python3 \
+    python3-distutils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone or copy the source code
+WORKDIR /build
+
+# Copy the entire project
+COPY . /build/
+
+# Build with release-compat preset for maximum compatibility
+RUN cmake --preset release-compat && \
+    cmake --build --preset release-compat --parallel $(nproc)
+
+# Extract the binary
+RUN mkdir -p /output/bin && \
+    find /build/build/release-compat -name "cert-ctrl" -o -name "cert-ctrl.exe" | head -1 | xargs -I {} cp {} /output/bin/cert-ctrl || \
+    find /build/build/release-compat -executable -type f -name "*cert*" | grep -v CMake | head -1 | xargs -I {} cp {} /output/bin/cert-ctrl
+
+# Create the tarball
+WORKDIR /output
+RUN tar -czf /output/cert-ctrl-linux-x64.tar.gz bin/
+
+# Generate checksum
+RUN cd /output && sha256sum cert-ctrl-linux-x64.tar.gz > cert-ctrl-linux-x64.tar.gz.sha256
+
+# Output stage
+FROM scratch
+COPY --from=0 /output/cert-ctrl-linux-x64.tar.gz /
+COPY --from=0 /output/cert-ctrl-linux-x64.tar.gz.sha256 /
