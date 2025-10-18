@@ -481,7 +481,9 @@ jobs:
               '-DCMAKE_CXX_COMPILER=cl.exe',
               "-DCMAKE_BUILD_TYPE=$effectiveBuildType",
               "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
-              '-DVCPKG_TARGET_TRIPLET=x64-windows-static'
+              '-DVCPKG_TARGET_TRIPLET=x64-windows-static',
+              # Ensure MSVC builds in workflow accept C++20 features (designated initializers etc.)
+              "-DCMAKE_CXX_STANDARD=20"
             )
           } else {
             # Use manual configuration for other build types
@@ -493,7 +495,10 @@ jobs:
               '-DCMAKE_C_COMPILER=cl.exe',
               '-DCMAKE_CXX_COMPILER=cl.exe',
               "-DCMAKE_BUILD_TYPE=$buildType",
-              "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+              "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
+              # Windows (MSVC) sometimes needs an explicit standard override to enable
+              # C++20 language features used in test/util headers (designated initializers).
+              "-DCMAKE_CXX_STANDARD=20"
             )
           }
           
