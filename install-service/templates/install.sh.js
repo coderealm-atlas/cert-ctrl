@@ -539,20 +539,16 @@ verify_installation() {
                                 log_success "Ubuntu $version_id has compatible glibc - update your packages:"
                                 echo "  sudo apt update && sudo apt full-upgrade -y"
                                 ;;
-                            "22.04")
-                                log_warning "Ubuntu 22.04 LTS has glibc 2.35, but cert-ctrl requires glibc 2.36+."
+                            "22.04"|"20.04")
+                                log_error "Ubuntu $version_id is not supported - glibc is too old."
                                 echo ""
-                                log_info "RECOMMENDED: Upgrade to Ubuntu 24.04 LTS (latest stable)"
+                                log_warning "cert-ctrl requires glibc 2.36+ but Ubuntu $version_id only has glibc 2.35."
+                                echo ""
+                                log_info "ONLY SOLUTION: Upgrade to Ubuntu 24.04 LTS"
                                 echo "  sudo do-release-upgrade"
                                 echo ""
-                                log_info "OR try updating current Ubuntu packages (may not work):"
-                                echo "  sudo apt update && sudo apt full-upgrade -y"
-                                ;;
-                            "20.04")
-                                log_error "Ubuntu 20.04 LTS has glibc 2.31, which is too old for cert-ctrl."
-                                echo ""
-                                log_info "RECOMMENDED: Upgrade to Ubuntu 24.04 LTS"
-                                echo "  sudo do-release-upgrade"
+                                log_info "Alternative: Use Docker instead"
+                                echo "  docker run -it cert-ctrl --version"
                                 ;;
                             *)
                                 log_info "Try updating your Ubuntu packages:"

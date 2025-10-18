@@ -76,17 +76,18 @@ public:
 
     auto injector = di::make_injector(
         di::bind<cjj365::ConfigSources>().to(config_sources_),
-    di::bind<cjj365::IIocConfigProvider>()
-      .template to<cjj365::IocConfigProviderFile>(),
-    di::bind<certctrl::ICertctrlConfigProvider>()
-      .template to<certctrl::CertctrlConfigProviderFile>(),
-    di::bind<cjj365::IHttpclientConfigProvider>()
-      .template to<cjj365::HttpclientConfigProviderFile>(),
+
+        di::bind<cjj365::IIocConfigProvider>()
+            .to<cjj365::IocConfigProviderFile>(),
+        di::bind<certctrl::ICertctrlConfigProvider>()
+            .to<certctrl::CertctrlConfigProviderFile>(),
+        di::bind<cjj365::IHttpclientConfigProvider>()
+            .to<cjj365::HttpclientConfigProviderFile>(),
         di::bind<customio::IOutput>().to(output_hub),
         di::bind<certctrl::CliCtx>().to(cli_ctx_),
         // Register all handlers for aggregate injection; DI will convert to
         // vector<unique_ptr<IHandler>>
-  di::bind<certctrl::IHandler []>().template to<certctrl::ConfHandler, certctrl::LoginHandler, certctrl::UpdateHandler, certctrl::UpdatesPollingHandler>());
+        di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::LoginHandler, certctrl::UpdateHandler, certctrl::UpdatesPollingHandler>());
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
@@ -109,8 +110,8 @@ public:
     auto &dispatcher =
         injector.template create<certctrl::HandlerDispatcher &>();
 
-    bool dispatched = dispatcher.dispatch_run(
-        cli_ctx_.params.subcmd, [self](auto r) {
+    bool dispatched =
+        dispatcher.dispatch_run(cli_ctx_.params.subcmd, [self](auto r) {
           if (r.is_err()) {
             self->print_error(r.error());
           } else {
@@ -122,23 +123,22 @@ public:
     if (!dispatched) {
       if (cli_ctx_.params.subcmd.empty()) {
         output_hub_->logger().info()
-            << "No subcommand provided; running default update workflow." << std::endl;
+            << "No subcommand provided; running default update workflow."
+            << std::endl;
 
-        auto update_checker =
-            injector.template create<std::shared_ptr<certctrl::AgentUpdateChecker>>();
-        auto updates_handler =
-            injector.template create<std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+        auto update_checker = injector.template create<
+            std::shared_ptr<certctrl::AgentUpdateChecker>>();
+        auto updates_handler = injector.template create<
+            std::shared_ptr<certctrl::UpdatesPollingHandler>>();
 
-        auto workflow = update_checker->run_once(MYAPP_VERSION)
-                             .catch_then([self, update_checker](monad::Error err) {
-                               self->output_hub_->logger().warning()
-                                   << "Agent update check failed: " << err.what
-                                   << std::endl;
-                               return monad::IO<void>::pure();
-                             })
-                             .then([updates_handler]() {
-                               return updates_handler->start();
-                             });
+        auto workflow =
+            update_checker->run_once(MYAPP_VERSION)
+                .catch_then([self, update_checker](monad::Error err) {
+                  self->output_hub_->logger().warning()
+                      << "Agent update check failed: " << err.what << std::endl;
+                  return monad::IO<void>::pure();
+                })
+                .then([updates_handler]() { return updates_handler->start(); });
 
         workflow.run([self, update_checker, updates_handler](auto r) {
           if (r.is_err()) {
