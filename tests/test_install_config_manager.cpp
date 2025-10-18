@@ -241,13 +241,11 @@ TEST(ImportCaActionTest, CopiesCaIntoOverrideDirectory) {
   customio::ConsoleOutput output(sink);
 
   certctrl::install_actions::InstallActionContext context{
-      .runtime_dir = runtime_dir,
-      .output = output,
-      .ensure_resource_materialized =
-          [](const dto::InstallItem &) -> std::optional<monad::Error> {
+      runtime_dir,
+      output,
+      [](const dto::InstallItem &) -> std::optional<monad::Error> {
         return std::nullopt;
-      },
-  };
+      }};
 
   auto trust_dir = runtime_dir / "trust-anchors";
   ScopedEnvVar dir_env("CERTCTRL_CA_IMPORT_DIR", trust_dir.string());

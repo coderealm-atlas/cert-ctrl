@@ -245,12 +245,12 @@ inline monad::MyVoidResult add_ext(cryptutil::X509_ptr& cert, int nid,
       &X509_EXTENSION_free);
   if (!ex)
     return monad::MyVoidResult::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509V3_EXT_conf_nid failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509V3_EXT_conf_nid failed"));
   if (X509_add_ext(cert.get(), ex.get(), -1) != 1) {
     return monad::MyVoidResult::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_add_ext failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_add_ext failed"));
   }
   return monad::MyVoidResult::Ok();
 }
@@ -264,25 +264,25 @@ inline monad::MyVoidResult write_pem_key_and_cert(
     cryptutil::BIO_ptr bio(BIO_new_file(key_path.c_str(), "w"), &BIO_free);
     if (!bio)
       return monad::MyVoidResult::Err(
-          monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                       .what = "BIO_new_file key failed"});
+          monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                            "BIO_new_file key failed"));
     if (PEM_write_bio_PrivateKey(bio.get(), key.get(), nullptr, nullptr, 0,
                                  nullptr, nullptr) != 1)
       return monad::MyVoidResult::Err(
-          monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                       .what = "PEM_write_bio_PrivateKey failed"});
+          monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                            "PEM_write_bio_PrivateKey failed"));
   }
   // Write certificate
   {
     cryptutil::BIO_ptr bio(BIO_new_file(crt_path.c_str(), "w"), &BIO_free);
     if (!bio)
       return monad::MyVoidResult::Err(
-          monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                       .what = "BIO_new_file cert failed"});
+          monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                            "BIO_new_file cert failed"));
     if (PEM_write_bio_X509(bio.get(), cert.get()) != 1)
       return monad::MyVoidResult::Err(
-          monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                       .what = "PEM_write_bio_X509 failed"});
+          monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                            "PEM_write_bio_X509 failed"));
   }
   return monad::MyVoidResult::Ok();
 }
@@ -303,29 +303,29 @@ inline monad::MyVoidResult set_name_fields(cryptutil::X509_NAME_ptr& name,
   // Add fields; return result for error handling.
   if (!name)
     return monad::MyVoidResult::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_NAME is null"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_NAME is null"));
 
   if (X509_NAME_add_entry_by_txt(name.get(), "C", MBSTRING_ASC,
                                  (const unsigned char*)C.c_str(), -1, -1,
                                  0) != 1)
     return monad::MyVoidResult::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = fmt::format("Add C failed, C is: {}", C)});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              fmt::format("Add C failed, C is: {}", C)));
 
   if (X509_NAME_add_entry_by_txt(name.get(), "O", MBSTRING_ASC,
                                  (const unsigned char*)O.c_str(), -1, -1,
                                  0) != 1)
     return monad::MyVoidResult::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = fmt::format("Add O failed, O is: {}", O)});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              fmt::format("Add O failed, O is: {}", O)));
 
   if (X509_NAME_add_entry_by_txt(name.get(), "CN", MBSTRING_ASC,
                                  (const unsigned char*)CN.c_str(), -1, -1,
                                  0) != 1)
     return monad::MyVoidResult::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = fmt::format("Add CN failed, CN is: {}", CN)});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              fmt::format("Add CN failed, CN is: {}", CN)));
 
   return monad::MyVoidResult::Ok();
 }

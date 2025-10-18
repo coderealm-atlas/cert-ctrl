@@ -868,17 +868,16 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
             .then([](auto ex) -> monad::IO<dto::DeviceInstallConfigDto> {
               if (!ex->response.has_value()) {
                 return monad::IO<dto::DeviceInstallConfigDto>::fail(
-                    monad::Error{
-                        .code = my_errors::NETWORK::READ_ERROR,
-                        .what = "No response for install-config"});
+                    monad::make_error(my_errors::NETWORK::READ_ERROR,
+                                      "No response for install-config"));
               }
 
               int status = ex->response->result_int();
               if (status != 200) {
-                monad::Error err{
-                    .code = my_errors::NETWORK::READ_ERROR,
-        .what = fmt::format(
-          "install-config fetch HTTP status {}", status)};
+                auto err = monad::make_error(
+                    my_errors::NETWORK::READ_ERROR,
+                    fmt::format("install-config fetch HTTP status {}",
+                                status));
                 err.response_status = status;
                 err.params["response_body_preview"] = ex->response->body();
                 return monad::IO<dto::DeviceInstallConfigDto>::fail(

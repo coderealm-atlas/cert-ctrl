@@ -112,52 +112,49 @@ struct DeviceAuthRequestBody {
 
     // Basic sanity by action
     if (!action || action->empty()) {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                       .what = "action is required"});
+      return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT, "action is required"));
     }
     const std::string &a = *action;
     if (a == "device_start") {
       if (interval && *interval < 1) {
-        return monad::MyResult<void>::Err(
-            monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                         .what = "interval must be >= 1"});
+        return monad::MyResult<void>::Err(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT, "interval must be >= 1"));
       }
       if (expires_in && (*expires_in < 30 || *expires_in > 3600)) {
-        return monad::MyResult<void>::Err(
-            monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                         .what = "expires_in must be between 30 and 3600"});
+        return monad::MyResult<void>::Err(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            "expires_in must be between 30 and 3600"));
         if (scopes) {
           for (const auto &s : *scopes) {
             if (s.empty()) {
-              return monad::MyResult<void>::Err(
-                  monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                               .what = "scope entries must be non-empty"});
+              return monad::MyResult<void>::Err(monad::make_error(
+                  my_errors::GENERAL::INVALID_ARGUMENT,
+                  "scope entries must be non-empty"));
             }
           }
         }
       }
     } else if (a == "device_verify") {
       if (!user_code || user_code->empty()) {
-        return monad::MyResult<void>::Err(
-            monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                         .what = "user_code required for device_verify"});
+        return monad::MyResult<void>::Err(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            "user_code required for device_verify"));
       }
       if (!is_valid_user_code(*user_code)) {
-        return monad::MyResult<void>::Err(monad::Error{
-            .code = my_errors::GENERAL::INVALID_ARGUMENT,
-            .what = "user_code must be in format XXXX-XXXX (A-Z0-9)"});
+        return monad::MyResult<void>::Err(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            "user_code must be in format XXXX-XXXX (A-Z0-9)"));
       }
     } else if (a == "device_poll") {
       if (!device_code || device_code->empty()) {
-        return monad::MyResult<void>::Err(
-            monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                         .what = "device_code required for device_poll"});
+        return monad::MyResult<void>::Err(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            "device_code required for device_poll"));
       }
     } else {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                       .what = "unknown action"});
+      return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT, "unknown action"));
     }
     return monad::MyResult<void>::Ok();
   }
@@ -195,9 +192,9 @@ struct StartResp {
   }
   monad::MyResult<void> validate() const {
     if (device_code.empty() || user_code.empty()) {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::UNEXPECTED_RESULT,
-                       .what = "device auth start failed."});
+      return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "device auth start failed."));
     }
     // user_code format and URIs sanity
     auto is_valid_user_code = [](const std::string &s) -> bool {
@@ -219,19 +216,19 @@ struct StartResp {
       return true;
     };
     if (!is_valid_user_code(user_code)) {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::UNEXPECTED_RESULT,
-                       .what = "invalid user_code format from start response"});
+    return monad::MyResult<void>::Err(monad::make_error(
+      my_errors::GENERAL::UNEXPECTED_RESULT,
+      "invalid user_code format from start response"));
     }
     if (verification_uri.empty() || verification_uri_complete.empty()) {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::UNEXPECTED_RESULT,
-                       .what = "missing verification URIs in start response"});
+    return monad::MyResult<void>::Err(monad::make_error(
+      my_errors::GENERAL::UNEXPECTED_RESULT,
+      "missing verification URIs in start response"));
     }
     if (interval <= 0 || expires_in <= 0) {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::UNEXPECTED_RESULT,
-                       .what = "interval and expires_in must be positive"});
+    return monad::MyResult<void>::Err(monad::make_error(
+      my_errors::GENERAL::UNEXPECTED_RESULT,
+      "interval and expires_in must be positive"));
     }
     return monad::MyResult<void>::Ok();
   }
@@ -351,9 +348,8 @@ struct PollResp {
 
   monad::MyResult<void> validate() const {
     if (status.empty()) {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                       .what = "status is required"});
+      return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT, "status is required"));
     }
     auto is_allowed_status = [](const std::string &s) {
       return s == "pending" || s == "authorization_pending" ||
@@ -361,35 +357,35 @@ struct PollResp {
              s == "expired" || s == "ready" || s == "approved";
     };
     if (!is_allowed_status(status)) {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                       .what = "invalid status for PollResp"});
+      return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT,
+          "invalid status for PollResp"));
     }
 
     auto has_tokens = access_token && !access_token->empty();
     if (status == "ready" || status == "approved") {
       if (registration_code && registration_code->empty()) {
-        return monad::MyResult<void>::Err(monad::Error{
-            .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-            .what = "registration_code must not be empty"});
+        return monad::MyResult<void>::Err(monad::make_error(
+            my_errors::GENERAL::UNEXPECTED_RESULT,
+            "registration_code must not be empty"));
       }
       if (has_tokens) {
         if (!refresh_token || refresh_token->empty() || !expires_in ||
             *expires_in <= 0) {
-          return monad::MyResult<void>::Err(monad::Error{
-              .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-              .what = "token response missing refresh_token or expires_in"});
+          return monad::MyResult<void>::Err(monad::make_error(
+              my_errors::GENERAL::UNEXPECTED_RESULT,
+              "token response missing refresh_token or expires_in"));
         }
       }
       if (!has_tokens && !registration_code) {
-        return monad::MyResult<void>::Err(monad::Error{
-            .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-            .what = "ready response requires tokens or registration_code"});
+        return monad::MyResult<void>::Err(monad::make_error(
+            my_errors::GENERAL::UNEXPECTED_RESULT,
+            "ready response requires tokens or registration_code"));
       }
       if (!user_id || user_id->empty()) {
-        return monad::MyResult<void>::Err(monad::Error{
-            .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-            .what = "ready response missing user_id"});
+        return monad::MyResult<void>::Err(monad::make_error(
+            my_errors::GENERAL::UNEXPECTED_RESULT,
+            "ready response missing user_id"));
       }
     }
     return monad::MyResult<void>::Ok();
@@ -422,14 +418,13 @@ struct VerifyResp {
   }
   monad::MyResult<void> validate() const {
     if (status.empty()) {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                       .what = "status is required"});
+      return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT, "status is required"));
     }
     if (status != "approved" && status != "denied" && status != "pending") {
-      return monad::MyResult<void>::Err(
-          monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                       .what = "invalid status for VerifyResp"});
+      return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT,
+          "invalid status for VerifyResp"));
     }
     return monad::MyResult<void>::Ok();
   }

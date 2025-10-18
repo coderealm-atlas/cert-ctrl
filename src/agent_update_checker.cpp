@@ -91,17 +91,16 @@ monad::IO<void> AgentUpdateChecker::run_once(
       .then([output, url_string = url.buffer()](auto ex) -> IO<void> {
         if (!ex->response.has_value()) {
           return IO<void>::fail(
-              monad::Error{.code = my_errors::NETWORK::READ_ERROR,
-                           .what = "No response from update check service"});
+              monad::make_error(my_errors::NETWORK::READ_ERROR,
+                                "No response from update check service"));
         }
         const int status = ex->response->result_int();
         if (status < 200 || status >= 300) {
           output->logger().warning()
               << "Agent update check HTTP " << status << " from "
               << url_string << std::endl;
-          return IO<void>::fail(monad::Error{
-              .code = status,
-              .what = fmt::format("HTTP {} response", status)});
+          return IO<void>::fail(monad::make_error(
+              status, fmt::format("HTTP {} response", status)));
         }
 
         auto parse_result =

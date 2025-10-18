@@ -203,8 +203,8 @@ monad::MyResult<std::string> create_zip_in_memory_monad(
     std::string zip_data = create_zip_in_memory(namevalues);
     return monad::MyResult<std::string>::Ok(zip_data);
   } catch (const std::exception& e) {
-    return monad::MyResult<std::string>::Err(
-        {.code = 1, .what = "Failed to create zip: " + std::string(e.what())});
+  return monad::MyResult<std::string>::Err(monad::make_error(
+    1, "Failed to create zip: " + std::string(e.what())));
   }
 }
 
@@ -297,8 +297,8 @@ monad::MyVoidResult unzip_to_folder_monad(const fs::path& zip_file_path,
     unzip_to_folder(zip_file_path, out_folder_path);
     return monad::MyVoidResult::Ok();
   } catch (const std::exception& e) {
-    return monad::MyVoidResult::Err(
-        {.code = 1, .what = "Failed to unzip: " + std::string(e.what())});
+  return monad::MyVoidResult::Err(monad::make_error(
+    1, "Failed to unzip: " + std::string(e.what())));
   }
 }
 
@@ -457,8 +457,8 @@ monad::MyVoidResult zip_a_folder_monad(const fs::path& folder_path,
     zip_a_folder(folder_path.string(), zip_file_path.string());
     return monad::MyVoidResult::Ok();
   } catch (const std::exception& e) {
-    return monad::MyVoidResult::Err(
-        {.code = 1, .what = "Failed to zip folder: " + std::string(e.what())});
+  return monad::MyVoidResult::Err(monad::make_error(
+    1, "Failed to zip folder: " + std::string(e.what())));
   }
 }
 

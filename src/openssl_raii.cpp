@@ -150,9 +150,8 @@ monad::MyResult<std::string> generate_csr_monad(
     std::string csr = generate_csr(pkey, subject, san_list);
     return MyResult<std::string>::Ok(std::move(csr));
   } catch (const std::exception& e) {
-    return MyResult<std::string>::Err(
-        Error{.code = 1,
-              .what = fmt::format("Failed to generate CSR: {}", e.what())});
+    return MyResult<std::string>::Err(monad::make_error(
+        1, fmt::format("Failed to generate CSR: {}", e.what())));
   }
 }
 
@@ -356,39 +355,39 @@ monad::MyResult<cryptutil::EVP_PKEY_ptr> make_rsa_key(int bits) {
   cryptutil::EVP_PKEY_ptr pkey(EVP_PKEY_new(), &EVP_PKEY_free);
   if (!pkey)
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "EVP_PKEY_new failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "EVP_PKEY_new failed"));
 
   cryptutil::BIGNUM_ptr e(BN_new(), &BN_free);
   if (!e || BN_set_word(e.get(), RSA_F4) != 1)
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "BN_set_word failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "BN_set_word failed"));
 
   cryptutil::EVP_PKEY_CTX_ptr genctx(EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr),
                                      &EVP_PKEY_CTX_free);
   if (!genctx)
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "EVP_PKEY_CTX_new_id failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "EVP_PKEY_CTX_new_id failed"));
 
   if (EVP_PKEY_keygen_init(genctx.get()) != 1) {
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "EVP_PKEY_keygen_init failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "EVP_PKEY_keygen_init failed"));
   }
   if (EVP_PKEY_CTX_set_rsa_keygen_bits(genctx.get(), bits) != 1 ||
       EVP_PKEY_CTX_set1_rsa_keygen_pubexp(genctx.get(), e.get()) != 1) {
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "EVP_PKEY_CTX_set_* failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "EVP_PKEY_CTX_set_* failed"));
   }
 
   EVP_PKEY* raw = nullptr;
   if (EVP_PKEY_keygen(genctx.get(), &raw) != 1) {
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "EVP_PKEY_keygen failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "EVP_PKEY_keygen failed"));
   }
   pkey.reset(raw);
   return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Ok(std::move(pkey));
@@ -397,34 +396,34 @@ monad::MyResult<cryptutil::EVP_PKEY_ptr> make_rsa_key(int bits) {
 monad::MyResult<cryptutil::EVP_PKEY_ptr> make_ec_p256_key() {
   // Use the modern EVP_PKEY approach for ECDSA P-256
   auto e = [](const std::string& message) {
-    return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(monad::Error{
-        .code = my_errors::OPENSSL::UNEXPECTED_RESULT, .what = message});
+  return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT, message));
   };
   cjj365::cryptutil::EVP_PKEY_CTX_ptr pctx(
       EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr), &EVP_PKEY_CTX_free);
   if (!pctx)
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "EVP_PKEY_CTX_new_id failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "EVP_PKEY_CTX_new_id failed"));
 
   if (EVP_PKEY_keygen_init(pctx.get()) <= 0) {
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "EVP_PKEY_keygen_init failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "EVP_PKEY_keygen_init failed"));
   }
 
   if (EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx.get(),
                                              NID_X9_62_prime256v1) <= 0) {
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "EVP_PKEY_CTX_set_ec_paramgen_curve_nid failed"});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "EVP_PKEY_CTX_set_ec_paramgen_curve_nid failed"));
   }
 
   EVP_PKEY* pkey = nullptr;
   if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) {
     return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "EVP_PKEY_keygen failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "EVP_PKEY_keygen failed"));
   }
   return monad::MyResult<cryptutil::EVP_PKEY_ptr>::Ok(
       cryptutil::EVP_PKEY_ptr(pkey, &EVP_PKEY_free));
@@ -573,8 +572,8 @@ monad::MyResult<std::string> evp_pkey_to_der(
   if (!bio_ptr) {
     throw std::runtime_error("Failed to create BIO");
     return monad::MyResult<std::string>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Failed to create BIO"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "Failed to create BIO"));
   }
 
   int result;
@@ -588,8 +587,8 @@ monad::MyResult<std::string> evp_pkey_to_der(
 
   if (result <= 0) {
     return monad::MyResult<std::string>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Failed to convert key to DER format"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "Failed to convert key to DER format"));
   }
 
   // Extract DER data from BIO as a string
@@ -610,15 +609,15 @@ monad::MyResult<std::pair<std::string, std::string>> get_ec_public_key_xy(
   if (EVP_PKEY_get_bn_param(pkey.get(), OSSL_PKEY_PARAM_EC_PUB_X, &raw_x) !=
       1) {
     return monad::MyResult<std::pair<std::string, std::string>>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Failed to get EC public key parameters x."});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "Failed to get EC public key parameters x."));
   }
   x.reset(raw_x);
   if (EVP_PKEY_get_bn_param(pkey.get(), OSSL_PKEY_PARAM_EC_PUB_Y, &raw_y) !=
       1) {
     return monad::MyResult<std::pair<std::string, std::string>>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Failed to get EC public key parameters y."});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "Failed to get EC public key parameters y."));
   }
   y.reset(raw_y);
 
@@ -635,8 +634,8 @@ monad::MyResult<std::pair<std::string, std::string>> get_rsa_public_key_ne(
     bool urlsafe) {
   if (EVP_PKEY_id(privateKey.get()) != EVP_PKEY_RSA) {
     return monad::MyResult<std::pair<std::string, std::string>>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Provided key is not an RSA key."});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "Provided key is not an RSA key."));
   }
   BIGNUM *n_raw = nullptr, *e_raw = nullptr;
   // Bn_raii n, e;
@@ -645,15 +644,15 @@ monad::MyResult<std::pair<std::string, std::string>> get_rsa_public_key_ne(
   if (EVP_PKEY_get_bn_param(privateKey.get(), OSSL_PKEY_PARAM_RSA_N, &n_raw) !=
       1) {
     return monad::MyResult<std::pair<std::string, std::string>>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Failed to get RSA parameters n."});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "Failed to get RSA parameters n."));
   }
   n.reset(n_raw);
   if (EVP_PKEY_get_bn_param(privateKey.get(), OSSL_PKEY_PARAM_RSA_E, &e_raw) !=
       1) {
     return monad::MyResult<std::pair<std::string, std::string>>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Failed to get RSA parameters e."});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "Failed to get RSA parameters e."));
   }
   e.reset(e_raw);
 
@@ -980,36 +979,36 @@ monad::MyResult<cryptutil::X509_ptr> issue_certificate(
   cryptutil::X509_ptr cert(X509_new(), &X509_free);
   if (!cert)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_new failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_new failed"));
 
   // Version = v3 (value 2)
   if (X509_set_version(cert.get(), 2L) != 1)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_set_version failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_set_version failed"));
 
   // Serial: random 64-bit
   cryptutil::ASN1_INTEGER_ptr asn1_serial(ASN1_INTEGER_new(),
                                           &ASN1_INTEGER_free);
   if (!asn1_serial)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "ASN1_INTEGER_new failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "ASN1_INTEGER_new failed"));
   DEBUG_PRINT("PPPPPPPP1");
   if (ASN1_INTEGER_set_uint64(
           asn1_serial.get(), (uint64_t)std::chrono::high_resolution_clock::now()
                                  .time_since_epoch()
                                  .count()) != 1) {
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "ASN1_INTEGER_set failed"});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "ASN1_INTEGER_set failed"));
   }
   DEBUG_PRINT("PPPPPPPP2");
   if (X509_set_serialNumber(cert.get(), asn1_serial.get()) != 1) {
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_set_serialNumber failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_set_serialNumber failed"));
   }
 
   DEBUG_PRINT("PPPPPPPP3");
@@ -1017,8 +1016,8 @@ monad::MyResult<cryptutil::X509_ptr> issue_certificate(
   cryptutil::X509_NAME_ptr subject_name(X509_NAME_new(), &X509_NAME_free);
   if (!subject_name)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_NAME_new failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_NAME_new failed"));
 
   DEBUG_PRINT("PPPPPPPP4");
   auto subject_name_result =
@@ -1033,8 +1032,8 @@ monad::MyResult<cryptutil::X509_ptr> issue_certificate(
   DEBUG_PRINT("PPPPPPPP5");
   if (X509_set_subject_name(cert.get(), subject_name.get()) != 1) {
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_set_subject_name failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_set_subject_name failed"));
   }
 
   DEBUG_PRINT("PPPPPPPP6");
@@ -1042,8 +1041,8 @@ monad::MyResult<cryptutil::X509_ptr> issue_certificate(
   X509_NAME* issuer_name = X509_get_subject_name(ca_cert.get());
   if (X509_set_issuer_name(cert.get(), issuer_name) != 1)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_set_issuer_name failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_set_issuer_name failed"));
 
   DEBUG_PRINT("PPPPPPPP7");
   // Validity
@@ -1051,15 +1050,15 @@ monad::MyResult<cryptutil::X509_ptr> issue_certificate(
       X509_gmtime_adj(X509_getm_notAfter(cert.get()), 60L * 60 * 24 * days) ==
           nullptr)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_gmtime_adj failed"});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "X509_gmtime_adj failed"));
 
   DEBUG_PRINT("PPPPPPPP8");
   // Public key
   if (X509_set_pubkey(cert.get(), cert_key.get()) != 1)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_set_pubkey failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_set_pubkey failed"));
 
   DEBUG_PRINT("PPPPPPPP9");
   // v3 extensions for end-entity certificate
@@ -1099,8 +1098,8 @@ monad::MyResult<cryptutil::X509_ptr> issue_certificate(
   // Sign with CA's private key
   if (X509_sign(cert.get(), ca_key.get(), EVP_sha256()) == 0)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_sign failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_sign failed"));
 
   return monad::MyResult<cryptutil::X509_ptr>::Ok(std::move(cert));
 }
@@ -1112,19 +1111,19 @@ monad::MyResult<cryptutil::X509_ptr> make_self_signed_ca(
       cjj365::cryptutil::X509_ptr(X509_new(), &X509_free);
   if (!cert)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_new failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_new failed"));
 
   if (X509_set_version(cert.get(), 2) != 1)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "set version failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "set version failed"));
   // serial (quick-n-dirty unique-ish)
   cryptutil::ASN1_INTEGER_ptr s(ASN1_INTEGER_new(), &ASN1_INTEGER_free);
   if (!s)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "ASN1_INTEGER_new failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "ASN1_INTEGER_new failed"));
   uint64_t ser = (uint64_t)std::chrono::high_resolution_clock::now()
                      .time_since_epoch()
                      .count();
@@ -1135,8 +1134,8 @@ monad::MyResult<cryptutil::X509_ptr> make_self_signed_ca(
   cryptutil::X509_NAME_ptr name(X509_NAME_new(), &X509_NAME_free);
   if (!name)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_NAME_new failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_NAME_new failed"));
 
   auto add = [&](const char* fld, const std::string& v) {
     return X509_NAME_add_entry_by_txt(name.get(), fld, MBSTRING_ASC,
@@ -1147,28 +1146,28 @@ monad::MyResult<cryptutil::X509_ptr> make_self_signed_ca(
   if (add("C", C) || add("O", O) || add("CN", CN)) {
     DEBUG_PRINT("C: " << C << ", O: " << O << ", CN: " << CN);
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_NAME_add_entry_by_txt failed"});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "X509_NAME_add_entry_by_txt failed"));
   }
   if (X509_set_subject_name(cert.get(), name.get()) != 1 ||
       X509_set_issuer_name(cert.get(), name.get()) != 1) {
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "set name failed"});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "set name failed"));
   }
 
   // validity
   if (!X509_gmtime_adj(X509_getm_notBefore(cert.get()), 0) ||
       !X509_gmtime_adj(X509_getm_notAfter(cert.get()), 60L * 60 * 24 * days))
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "set time failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "set time failed"));
 
   // public key
   if (X509_set_pubkey(cert.get(), pkey.get()) != 1)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_set_pubkey failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_set_pubkey failed"));
 
   // Mark as CA
   auto ext_res1 =
@@ -1192,8 +1191,8 @@ monad::MyResult<cryptutil::X509_ptr> make_self_signed_ca(
   // Self-sign with ECDSA + SHA-256
   if (X509_sign(cert.get(), pkey.get(), EVP_sha256()) == 0)
     return monad::MyResult<cryptutil::X509_ptr>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "X509_sign failed"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "X509_sign failed"));
   return monad::MyResult<cryptutil::X509_ptr>::Ok(std::move(cert));
 }
 
@@ -1201,9 +1200,9 @@ monad::MyResult<cryptutil::X509_ptr> make_self_signed_ca(
 monad::MyResult<std::string> sign_message(
     const std::string& payload, const cryptutil::EVP_PKEY_ptr& private_key) {
   if (!private_key) {
-    return monad::MyResult<std::string>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Private key must not be null"});
+  return monad::MyResult<std::string>::Err(
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "Private key must not be null"));
   }
 
   try {
@@ -1244,9 +1243,9 @@ monad::MyResult<std::string> sign_message(
         std::string(reinterpret_cast<char*>(raw_signature.data()),
                     raw_signature.size()));  // or base64_signature;
   } catch (std::exception& e) {
-  return monad::MyResult<std::string>::Err(
-    {.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-     .what = fmt::format("sign_message: {}", e.what())});
+    return monad::MyResult<std::string>::Err(monad::make_error(
+        my_errors::OPENSSL::UNEXPECTED_RESULT,
+        fmt::format("sign_message: {}", e.what())));
   }
 }
 
@@ -1255,32 +1254,32 @@ monad::MyResult<void> verify_message(
     const cryptutil::EVP_PKEY_ptr& public_key) {
   if (!public_key) {
     return monad::MyResult<void>::Err(
-        {.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-         .what = "Public key must not be null"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "Public key must not be null"));
   }
 
   // Create a new message digest context
   // EVP_MD_CTX* ctx = EVP_MD_CTX_new();
   cryptutil::EVP_MD_CTX_ptr ctx{EVP_MD_CTX_new(), EVP_MD_CTX_free};
   if (!ctx) {
-    return monad::MyResult<void>::Err(
-        {.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-         .what = "Failed to create EVP_MD_CTX"});
+  return monad::MyResult<void>::Err(
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "Failed to create EVP_MD_CTX"));
   }
 
   // Initialize the verification operation
   if (EVP_DigestVerifyInit(ctx.get(), nullptr, EVP_sha256(), nullptr,
                            public_key.get()) != 1) {
-    return monad::MyResult<void>::Err(
-        {.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-         .what = "Failed to initialize verification operation"});
+  return monad::MyResult<void>::Err(
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "Failed to initialize verification operation"));
   }
 
   // Update the context with the payload
   if (EVP_DigestVerifyUpdate(ctx.get(), payload.data(), payload.size()) != 1) {
-    return monad::MyResult<void>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Failed to update digest with payload"});
+  return monad::MyResult<void>::Err(
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "Failed to update digest with payload"));
   }
 
   // Perform the verification
@@ -1291,8 +1290,8 @@ monad::MyResult<void> verify_message(
     return monad::MyResult<void>::Ok();
   }
   return monad::MyResult<void>::Err(
-      monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                   .what = "Signature verification failed"});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+            "Signature verification failed"));
 }
 
 /**
@@ -1303,9 +1302,9 @@ monad::MyResult<std::string> sign_message(const std::string& payload,
   // Sign payload with the private key using OpenSSL
   auto pkey = load_private_key(private_key);
   if (!pkey) {
-    return monad::MyResult<std::string>::Err(monad::Error{
-        .code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-        .what = fmt::format("Failed to load private key: {}", private_key)});
+  return monad::MyResult<std::string>::Err(monad::make_error(
+    my_errors::OPENSSL::UNEXPECTED_RESULT,
+    fmt::format("Failed to load private key: {}", private_key)));
   }
   return sign_message(payload, pkey);
 }
@@ -1448,8 +1447,8 @@ monad::MyResult<std::pair<std::string, std::string>> generate_es256_key_pair() {
   if (!PEM_write_bio_PrivateKey(bio_ptr.get(), pkey_r.value().get(), nullptr,
                                 nullptr, 0, nullptr, nullptr)) {
     return monad::MyResult<std::pair<std::string, std::string>>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Failed to write private key to BIO"});
+    monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+              "Failed to write private key to BIO"));
   }
 
   // Extract private key as a string
@@ -1462,8 +1461,8 @@ monad::MyResult<std::pair<std::string, std::string>> generate_es256_key_pair() {
   cryptutil::BIO_ptr public_bio_ptr(BIO_new(BIO_s_mem()), &BIO_free);
   if (!PEM_write_bio_PUBKEY(public_bio_ptr.get(), pkey_r.value().get())) {
     return monad::MyResult<std::pair<std::string, std::string>>::Err(
-        monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = "Failed to write public key to BIO"});
+        monad::make_error(my_errors::OPENSSL::UNEXPECTED_RESULT,
+                          "Failed to write public key to BIO"));
   }
   char* public_key_data;
   long public_len = BIO_get_mem_data(public_bio_ptr.get(), &public_key_data);

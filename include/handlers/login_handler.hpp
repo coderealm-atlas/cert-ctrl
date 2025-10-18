@@ -92,7 +92,8 @@ public:
       output_hub_.logger().error() << msg << std::endl;
     }
     return monad::IO<void>::fail(
-        {.code = my_errors::GENERAL::SHOW_OPT_DESC, .what = print_opt_desc()});
+        monad::make_error(my_errors::GENERAL::SHOW_OPT_DESC,
+                          print_opt_desc()));
   }
 
   monad::IO<void> start() override;
