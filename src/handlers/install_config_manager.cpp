@@ -445,15 +445,15 @@ InstallConfigManager::refresh_from_remote(
 
     if (!http_client_) {
       return IO<dto::DeviceInstallConfigDto>::fail(
-          Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                .what = "InstallConfigManager: no HTTP client available"});
+          make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                     "InstallConfigManager: no HTTP client available"));
     }
 
     auto token_opt = load_access_token();
     if (!token_opt || token_opt->empty()) {
       return IO<dto::DeviceInstallConfigDto>::fail(
-          Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                .what = "Device access token unavailable"});
+          make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                     "Device access token unavailable"));
     }
 
     const auto &cfg = config_provider_.get();
@@ -471,15 +471,15 @@ InstallConfigManager::refresh_from_remote(
         .then([](auto ex) -> IO<dto::DeviceInstallConfigDto> {
           if (!ex->response.has_value()) {
             return IO<dto::DeviceInstallConfigDto>::fail(
-                Error{.code = my_errors::NETWORK::READ_ERROR,
-                      .what = "No response for install-config"});
+                make_error(my_errors::NETWORK::READ_ERROR,
+                           "No response for install-config"));
           }
 
           int status = ex->response->result_int();
           if (status != 200) {
-            Error err{.code = my_errors::NETWORK::READ_ERROR,
-                      .what = fmt::format(
-                          "install-config fetch HTTP status {}", status)};
+            auto err = make_error(
+                my_errors::NETWORK::READ_ERROR,
+                fmt::format("install-config fetch HTTP status {}", status));
             err.response_status = status;
             err.params["response_body_preview"] = ex->response->body();
             return IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
@@ -593,8 +593,8 @@ InstallConfigManager::persist_config(const dto::DeviceInstallConfigDto &config) 
 
     return ReturnIO::pure();
   } catch (const std::exception &e) {
-    return ReturnIO::fail(Error{.code = my_errors::GENERAL::FILE_READ_WRITE,
-                                .what = e.what()});
+  return ReturnIO::fail(
+    monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, e.what()));
   }
 }
 
@@ -676,15 +676,15 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
   using ResultType = monad::Result<ExchangePtr, monad::Error>;
 
   if (!item.ob_type || !item.ob_id) {
-    return monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                        .what = "Resource reference missing ob_type/ob_id"};
+    return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                             "Resource reference missing ob_type/ob_id");
   }
 
   auto current_dir = resource_current_dir(*item.ob_type, *item.ob_id);
 
   if (runtime_dir_.empty()) {
-    return monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                        .what = "Runtime directory is not configured"};
+    return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                             "Runtime directory is not configured");
   }
 
   bool all_present = true;
@@ -707,20 +707,21 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
   if (resource_fetch_override_) {
     auto override_body = resource_fetch_override_(item);
     if (!override_body) {
-      return monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                          .what = "Resource fetch override returned empty body"};
+  return monad::make_error(
+      my_errors::GENERAL::INVALID_ARGUMENT,
+      "Resource fetch override returned empty body");
     }
     body = std::move(*override_body);
   } else {
     if (!http_client_) {
-      return monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                          .what = "InstallConfigManager requires HTTP client"};
+      return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                               "InstallConfigManager requires HTTP client");
     }
 
     auto token_opt = load_access_token();
     if (!token_opt || token_opt->empty()) {
-      return monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                          .what = "Device access token unavailable"};
+      return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                               "Device access token unavailable");
     }
 
     const auto &cfg = config_provider_.get();
@@ -732,9 +733,9 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
       url = fmt::format("{}/apiv1/devices/self/cas/{}/bundle?pack=download",
                         cfg.base_url, *item.ob_id);
     } else {
-  return monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
-          .what = fmt::format("Unsupported ob_type '{}'",
-                  *item.ob_type)};
+  return monad::make_error(
+      my_errors::GENERAL::INVALID_ARGUMENT,
+      fmt::format("Unsupported ob_type '{}'", *item.ob_type));
     }
 
     namespace http = boost::beast::http;
@@ -766,8 +767,8 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
 
       auto exchange = io_result.value();
       if (!exchange->response.has_value()) {
-        return monad::Error{.code = my_errors::NETWORK::READ_ERROR,
-                            .what = "No response while fetching resource"};
+        return monad::make_error(my_errors::NETWORK::READ_ERROR,
+                                 "No response while fetching resource");
       }
 
       int status = exchange->response->result_int();
@@ -778,8 +779,9 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
         break;
       }
 
-  monad::Error err{.code = my_errors::NETWORK::READ_ERROR,
-           .what = fmt::format("Resource fetch HTTP {}", status)};
+    auto err = monad::make_error(
+      my_errors::NETWORK::READ_ERROR,
+      fmt::format("Resource fetch HTTP {}", status));
       err.response_status = status;
       err.params["response_body_preview"] = body.substr(0, 512);
 
@@ -803,7 +805,7 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
         continue;
       }
 
-      return err;
+  return err;
     }
 
     if (last_error.has_value()) {
@@ -832,10 +834,11 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
               decrypt_private_key_pem(*bundle_data, runtime_dir_, state_dir(),
                                       decrypt_error);
           if (!private_key_pem) {
-            return monad::Error{.code = my_errors::GENERAL::UNEXPECTED_RESULT,
-                                .what = fmt::format(
-                                    "Failed to materialize decrypted private key for cert {}: {}",
-                                    *item.ob_id, decrypt_error)};
+      return monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT,
+        fmt::format(
+          "Failed to materialize decrypted private key for cert {}: {}",
+          *item.ob_id, decrypt_error));
           }
           text_outputs["private.key"] = std::move(*private_key_pem);
           if (auto *pem = bundle_data->if_contains("certificate_pem")) {
@@ -907,8 +910,7 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
         << "Fetched resource " << *item.ob_type << "/" << *item.ob_id
         << " (materials cached)" << std::endl;
   } catch (const std::exception &e) {
-    return monad::Error{.code = my_errors::GENERAL::FILE_READ_WRITE,
-                        .what = e.what()};
+    return monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, e.what());
   }
 
   return std::nullopt;
@@ -919,13 +921,11 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
   install_actions::InstallActionContext context{
-      .runtime_dir = runtime_dir_,
-      .output = output_,
-      .ensure_resource_materialized =
-          [this](const dto::InstallItem &item) {
-            return ensure_resource_materialized_sync(item);
-          },
-  };
+      runtime_dir_,
+      output_,
+      [this](const dto::InstallItem &item) {
+        return ensure_resource_materialized_sync(item);
+      }};
 
   return install_actions::apply_copy_actions(context, config, target_ob_type,
                                              target_ob_id);
@@ -936,13 +936,11 @@ monad::IO<void> InstallConfigManager::apply_import_ca_actions(
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
   install_actions::InstallActionContext context{
-      .runtime_dir = runtime_dir_,
-      .output = output_,
-      .ensure_resource_materialized =
-          [this](const dto::InstallItem &item) {
-            return ensure_resource_materialized_sync(item);
-          },
-  };
+      runtime_dir_,
+      output_,
+      [this](const dto::InstallItem &item) {
+        return ensure_resource_materialized_sync(item);
+      }};
 
   return install_actions::apply_import_ca_actions(context, config,
                                                   target_ob_type,

@@ -16,6 +16,12 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 if(MSVC)
     # Use static runtime for standalone executable (matches x64-windows triplet)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    foreach(flag_var CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_DEBUG
+                     CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+        if(DEFINED ${flag_var})
+            string(REPLACE "/Zi" "/Z7" ${flag_var} "${${flag_var}}")
+        endif()
+    endforeach()
 endif()
 
 project(bbserver LANGUAGES CXX)

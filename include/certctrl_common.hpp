@@ -124,8 +124,9 @@ struct CliCtx {
   // cmd conf set auto_apply_config true
     if (set_pos + 2 >= positionals.size()) {
       return monad::MyResult<std::pair<std::string, std::string>>::Err(
-          {.code = my_errors::GENERAL::SHOW_OPT_DESC,
-           .what = "Both key and value must be provided for set operation."});
+          monad::make_error(
+              my_errors::GENERAL::SHOW_OPT_DESC,
+              "Both key and value must be provided for set operation."));
     }
     return monad::MyResult<std::pair<std::string, std::string>>::Ok(
         {positionals[set_pos + 1], positionals[set_pos + 2]});
@@ -142,8 +143,8 @@ struct CliCtx {
   // cmd conf get auto_apply_config
     if (get_pos + 1 >= positionals.size()) {
       return monad::MyResult<std::string>::Err(
-          {.code = my_errors::GENERAL::SHOW_OPT_DESC,
-           .what = "Key must be provided for get operation."});
+          monad::make_error(my_errors::GENERAL::SHOW_OPT_DESC,
+                            "Key must be provided for get operation."));
     }
     return monad::MyResult<std::string>::Ok(positionals[get_pos + 1]);
   }

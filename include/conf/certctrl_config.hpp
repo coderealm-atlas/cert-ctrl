@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "json_util.hpp"
 #include "my_error_codes.hpp"
@@ -128,9 +129,10 @@ namespace certctrl
         std::ifstream ifs(f);
         if (!ifs)
         {
-          return monad::MyVoidResult::Err(
-              {.code = my_errors::GENERAL::FILE_READ_WRITE,
-               .what = "Unable to open configuration file: " + f.string()});
+          monad::Error err{};
+          err.code = my_errors::GENERAL::FILE_READ_WRITE;
+          err.what = "Unable to open configuration file: " + f.string();
+          return monad::MyVoidResult::Err(std::move(err));
         }
         std::string existing_content((std::istreambuf_iterator<char>(ifs)),
                                      std::istreambuf_iterator<char>());
@@ -138,9 +140,10 @@ namespace certctrl
         jv = json::parse(existing_content);
         if (!jv.is_object())
         {
-          return monad::MyVoidResult::Err(
-              {.code = my_errors::GENERAL::INVALID_ARGUMENT,
-               .what = "Configuration file is not a JSON object: " + f.string()});
+          monad::Error err{};
+          err.code = my_errors::GENERAL::INVALID_ARGUMENT;
+          err.what = "Configuration file is not a JSON object: " + f.string();
+          return monad::MyVoidResult::Err(std::move(err));
         }
         json::object &jo = jv.as_object();
         for (const auto &[key, value] : content)
@@ -155,10 +158,10 @@ namespace certctrl
       std::ofstream ofs(f);
       if (!ofs)
       {
-        return monad::MyVoidResult::Err(
-            {.code = my_errors::GENERAL::FILE_READ_WRITE,
-             .what =
-                 "Unable to open configuration file for writing: " + f.string()});
+        monad::Error err{};
+        err.code = my_errors::GENERAL::FILE_READ_WRITE;
+        err.what = "Unable to open configuration file for writing: " + f.string();
+        return monad::MyVoidResult::Err(std::move(err));
       }
       ofs << content;
       ofs.close();

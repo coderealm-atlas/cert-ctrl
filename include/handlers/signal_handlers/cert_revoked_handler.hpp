@@ -48,11 +48,9 @@ public:
             return monad::IO<void>::pure();
             
         } catch (const std::exception& e) {
-            return monad::IO<void>::fail(
-                monad::Error{
-                    .code = my_errors::GENERAL::INVALID_ARGUMENT,
-                    .what = std::string("Failed to parse signal ref: ") + e.what()
-                });
+            return monad::IO<void>::fail(monad::make_error(
+                my_errors::GENERAL::INVALID_ARGUMENT,
+                std::string("Failed to parse signal ref: ") + e.what()));
         }
     }
 };

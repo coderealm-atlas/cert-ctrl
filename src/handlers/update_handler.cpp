@@ -216,7 +216,9 @@ monad::IO<void> UpdateHandler::perform_update() {
     return monad::IO<void>::pure();
   } catch (const std::exception& e) {
     output_.logger().error() << "Update failed: " << e.what() << std::endl;
-  return monad::IO<void>::fail({.code = my_errors::GENERAL::UPDATE_FAILED, .what = fmt::format("Failed to create backup: {}", e.what())});
+    return monad::IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::UPDATE_FAILED,
+        fmt::format("Failed to create backup: {}", e.what())));
   }
 }
 
@@ -252,8 +254,9 @@ monad::IO<void> UpdateHandler::backup_current_binary() {
     output_.logger().info() << "Backup created successfully." << std::endl;
     return monad::IO<void>::pure();
   } catch (const std::exception& e) {
-    return monad::IO<void>::fail({.code = my_errors::GENERAL::UPDATE_FAILED, 
-                           .what = fmt::format("Failed to create backup: {}", e.what())});
+    return monad::IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::UPDATE_FAILED,
+        fmt::format("Failed to create backup: {}", e.what())));
   }
 }
 

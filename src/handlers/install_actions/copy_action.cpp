@@ -154,11 +154,11 @@ monad::IO<void> apply_copy_actions(
         }
       }
 
-      if (!item.from || item.from->empty()) {
-        return ReturnIO::fail(monad::Error{
-            .code = my_errors::GENERAL::INVALID_ARGUMENT,
-            .what = "copy item missing from entries"});
-      }
+  if (!item.from || item.from->empty()) {
+    return ReturnIO::fail(monad::make_error(
+    my_errors::GENERAL::INVALID_ARGUMENT,
+    "copy item missing from entries"));
+  }
 
       if (!item.to || item.to->empty()) {
         context.output.logger().info()
@@ -167,17 +167,17 @@ monad::IO<void> apply_copy_actions(
         continue;
       }
 
-      if (item.from->size() != item.to->size()) {
-        return ReturnIO::fail(monad::Error{
-            .code = my_errors::GENERAL::INVALID_ARGUMENT,
-            .what = "copy item from/to length mismatch"});
-      }
+  if (item.from->size() != item.to->size()) {
+    return ReturnIO::fail(monad::make_error(
+    my_errors::GENERAL::INVALID_ARGUMENT,
+    "copy item from/to length mismatch"));
+  }
 
-      if (!item.ob_type || !item.ob_id) {
-        return ReturnIO::fail(monad::Error{
-            .code = my_errors::GENERAL::INVALID_ARGUMENT,
-            .what = "copy item missing ob_type/ob_id"});
-      }
+  if (!item.ob_type || !item.ob_id) {
+    return ReturnIO::fail(monad::make_error(
+    my_errors::GENERAL::INVALID_ARGUMENT,
+    "copy item missing ob_type/ob_id"));
+  }
 
       if (auto ensure_err = context.ensure_resource_materialized(item);
           ensure_err.has_value()) {
@@ -195,19 +195,18 @@ monad::IO<void> apply_copy_actions(
         std::filesystem::path dest_path(dest_path_str);
 
         if (!dest_path.is_absolute()) {
-          return ReturnIO::fail(monad::Error{
-              .code = my_errors::GENERAL::INVALID_ARGUMENT,
-              .what = fmt::format(
-                  "Destination path '{}' is not absolute",
-                  dest_path.string())});
+          return ReturnIO::fail(monad::make_error(
+              my_errors::GENERAL::INVALID_ARGUMENT,
+              fmt::format("Destination path '{}' is not absolute",
+                          dest_path.string())));
         }
 
         bool private_material = is_private_material_name(virtual_name);
-        if (auto err = perform_copy_operation(context, source_path, dest_path,
-                                              private_material)) {
-          return ReturnIO::fail(monad::Error{
-              .code = my_errors::GENERAL::FILE_READ_WRITE, .what = *err});
-        }
+    if (auto err = perform_copy_operation(context, source_path, dest_path,
+                        private_material)) {
+      return ReturnIO::fail(monad::make_error(
+        my_errors::GENERAL::FILE_READ_WRITE, *err));
+    }
 
         context.output.logger().info()
             << "Copied '" << source_path << "' -> '" << dest_path
@@ -217,8 +216,8 @@ monad::IO<void> apply_copy_actions(
 
     return ReturnIO::pure();
   } catch (const std::exception &e) {
-    return ReturnIO::fail(monad::Error{
-        .code = my_errors::GENERAL::UNEXPECTED_RESULT, .what = e.what()});
+  return ReturnIO::fail(monad::make_error(
+    my_errors::GENERAL::UNEXPECTED_RESULT, e.what()));
   }
 }
 

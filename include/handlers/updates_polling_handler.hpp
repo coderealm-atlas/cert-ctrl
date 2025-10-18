@@ -326,16 +326,16 @@ private:
 
     auto refresh_token_opt = load_refresh_token_from_state();
     if (!refresh_token_opt || refresh_token_opt->empty()) {
-      return IO<void>::fail(monad::Error{
-          .code = my_errors::GENERAL::INVALID_ARGUMENT,
-          .what = "refresh token unavailable in state"});
+      return IO<void>::fail(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT,
+          "refresh token unavailable in state"));
     }
 
     auto state_dir_opt = resolve_state_dir();
     if (!state_dir_opt) {
-      return IO<void>::fail(monad::Error{
-          .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-          .what = "unable to resolve runtime state directory"});
+      return IO<void>::fail(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "unable to resolve runtime state directory"));
     }
 
     const auto refresh_url =
@@ -364,9 +364,9 @@ private:
                 error_msg += ": " + std::string(ex->response->body());
               }
             }
-            return monad::IO<void>::fail(monad::Error{
-                .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-                .what = std::move(error_msg)});
+      return monad::IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT,
+        std::move(error_msg)));
           }
 
           auto payload_result =
@@ -426,9 +426,9 @@ private:
 
           if (!new_access_token || new_access_token->empty() ||
               !new_refresh_token || new_refresh_token->empty()) {
-            return monad::IO<void>::fail(monad::Error{
-                .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-                .what = "refresh response missing tokens"});
+      return monad::IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT,
+        "refresh response missing tokens"));
           }
 
           auto access_path = state_dir / "access_token.txt";
@@ -569,11 +569,9 @@ private:
       }
     }
 
-    return monad::IO<void>::fail(
-        monad::Error{
-            .code = my_errors::NETWORK::READ_ERROR,
-            .what = fmt::format("HTTP {} response", status)
-        });
+  return monad::IO<void>::fail(monad::make_error(
+    my_errors::NETWORK::READ_ERROR,
+    fmt::format("HTTP {} response", status)));
   }
   
   void save_cursor(const std::string& cursor) {
@@ -608,19 +606,19 @@ private:
     
     auto access_token_opt = load_access_token_from_state();
     if ((!access_token_opt || access_token_opt->empty()) && allow_refresh_retry) {
-      return refresh_access_token()
-          .then([self = this->shared_from_this()]() {
-            return self->poll_once(false);
-          });
+      auto self = shared_from_this();
+      return refresh_access_token().then([self]() {
+        return self->poll_once(false);
+      });
     }
 
     if (!access_token_opt || access_token_opt->empty()) {
       output_hub_.printer().yellow()
           << "No device access token found; please run `cert_ctrl login` first."
           << std::endl;
-      return IO<void>::fail(monad::Error{
-          .code = my_errors::GENERAL::INVALID_ARGUMENT,
-          .what = "device access token not available in state; run cert_ctrl login"});
+    return IO<void>::fail(monad::make_error(
+      my_errors::GENERAL::INVALID_ARGUMENT,
+      "device access token not available in state; run cert_ctrl login"));
     }
     const std::string access_token = *access_token_opt;
     
@@ -657,9 +655,9 @@ private:
         .then(http_request_io<GetStringTag>(http_client_))
         .then([this, allow_refresh_retry](auto ex) -> monad::IO<void> {
           if (!ex->response.has_value()) {
-            return monad::IO<void>::fail(
-                monad::Error{.code = my_errors::NETWORK::READ_ERROR,
-                            .what = "No response received"});
+            return monad::IO<void>::fail(monad::make_error(
+                my_errors::NETWORK::READ_ERROR,
+                "No response received"));
           }
           
           int status = ex->response->result_int();
@@ -675,14 +673,13 @@ private:
             output_hub_.logger().info()
                 << "Received HTTP " << status
                 << " while polling; attempting token refresh." << std::endl;
+            auto self = shared_from_this();
             return refresh_access_token()
-                .then([self = this->shared_from_this()]() {
-                  return self->poll_once(false);
-                })
-                .catch_then([this, ex, status](const monad::Error &err) {
-                  output_hub_.logger().error()
+                .then([self]() { return self->poll_once(false); })
+                .catch_then([self, ex, status](const monad::Error &err) {
+                  self->output_hub_.logger().error()
                       << "Token refresh failed: " << err.what << std::endl;
-                  return handle_error_status(ex, status);
+                  return self->handle_error_status(ex, status);
                 });
           } else {
             // Error response

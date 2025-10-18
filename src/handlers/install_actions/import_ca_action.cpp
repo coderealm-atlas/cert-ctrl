@@ -200,10 +200,6 @@ std::filesystem::path resource_root_for(const InstallActionContext &context,
   return {};
 }
 
-monad::Error make_error(int code, std::string message) {
-  return monad::Error{.code = code, .what = std::move(message)};
-}
-
 bool should_skip_item(const dto::InstallItem &item,
                       const std::optional<std::string> &target_ob_type,
                       std::optional<std::int64_t> target_ob_id) {
@@ -249,7 +245,7 @@ monad::IO<void> apply_import_ca_actions(
       }
 
       if (!item.ob_type || *item.ob_type != "ca" || !item.ob_id) {
-        auto err = make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                               "import_ca item requires ob_type 'ca' and ob_id");
         if (item.continue_on_error) {
           log_warning(context, item, err.what);
@@ -260,7 +256,7 @@ monad::IO<void> apply_import_ca_actions(
 
       auto trust_store = detect_system_trust_store();
       if (!trust_store) {
-        auto err = make_error(my_errors::GENERAL::NOT_IMPLEMENTED,
+        auto err = monad::make_error(my_errors::GENERAL::NOT_IMPLEMENTED,
                               "unable to locate a supported trust store directory; set CERTCTRL_CA_IMPORT_DIR to override");
         if (item.continue_on_error) {
           log_warning(context, item, err.what);
@@ -280,7 +276,7 @@ monad::IO<void> apply_import_ca_actions(
 
       auto resource_root = resource_root_for(context, item);
       if (resource_root.empty()) {
-        auto err = make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                               "unable to resolve resource root for CA");
         if (item.continue_on_error) {
           log_warning(context, item, err.what);
@@ -291,7 +287,7 @@ monad::IO<void> apply_import_ca_actions(
 
       auto ca_pem_path = resource_root / "ca.pem";
       if (!std::filesystem::exists(ca_pem_path)) {
-        auto err = make_error(my_errors::GENERAL::FILE_NOT_FOUND,
+        auto err = monad::make_error(my_errors::GENERAL::FILE_NOT_FOUND,
                               fmt::format("expected CA PEM missing: {}",
                                           ca_pem_path.string()));
         if (item.continue_on_error) {
@@ -306,7 +302,8 @@ monad::IO<void> apply_import_ca_actions(
       auto destination = trust_store->directory / (sanitized + ".crt");
 
       if (auto err = copy_ca_material(ca_pem_path, destination)) {
-        auto error_obj = make_error(my_errors::GENERAL::FILE_READ_WRITE, *err);
+        auto error_obj = monad::make_error(my_errors::GENERAL::FILE_READ_WRITE,
+                                           *err);
         if (item.continue_on_error) {
           log_warning(context, item, error_obj.what);
           continue;
@@ -321,7 +318,7 @@ monad::IO<void> apply_import_ca_actions(
       if (!trust_store->update_command.empty()) {
         int rc = std::system(trust_store->update_command.c_str());
         if (rc != 0) {
-          auto err = make_error(
+          auto err = monad::make_error(
               my_errors::GENERAL::UNEXPECTED_RESULT,
               fmt::format("command '{}' exited with status {}",
                           trust_store->update_command, rc));
@@ -341,8 +338,8 @@ monad::IO<void> apply_import_ca_actions(
 
     return ReturnIO::pure();
   } catch (const std::exception &ex) {
-    return ReturnIO::fail(make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
-                                     ex.what()));
+  return ReturnIO::fail(
+    monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, ex.what()));
   }
 }
 

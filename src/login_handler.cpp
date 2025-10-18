@@ -223,10 +223,10 @@ LoginHandler::refresh_session_with_token(const std::string &refresh_token,
               error_msg += ": " + std::string(ex->response->body());
             }
           }
-          return IO<bool>::fail({.code = static_cast<int>(
-                                    ex->response ? ex->response->result_int()
-                                                 : 500),
-                                 .what = std::move(error_msg)});
+          const int status = static_cast<int>(
+              ex->response ? ex->response->result_int() : 500);
+          return IO<bool>::fail(
+              monad::make_error(status, std::move(error_msg)));
         }
 
         auto payload_result =
@@ -270,10 +270,10 @@ LoginHandler::refresh_session_with_token(const std::string &refresh_token,
 
         if (!new_access_token || new_access_token->empty() ||
             !new_refresh_token || new_refresh_token->empty()) {
-          return IO<bool>::fail({
-              .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-              .what =
-                  "Refresh token response missing required session tokens"});
+          auto err = monad::make_error(
+              my_errors::GENERAL::UNEXPECTED_RESULT,
+              "Refresh token response missing required session tokens");
+          return IO<bool>::fail(std::move(err));
         }
 
         const auto state_dir = out_dir / "state";
@@ -352,9 +352,9 @@ monad::IO<::data::deviceauth::PollResp> LoginHandler::poll_device_once() {
   using ::data::deviceauth::PollResp;
 
   if (!start_resp_) {
-    return monad::IO<PollResp>::fail(
-        {.code = my_errors::GENERAL::INVALID_ARGUMENT,
-         .what = "Device authorization has not been started"});
+  return monad::IO<PollResp>::fail(
+    monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+              "Device authorization has not been started"));
   }
 
   return http_io<PostJsonTag>(device_auth_url_)
@@ -380,8 +380,9 @@ VoidPureIO LoginHandler::poll() {
   using ::data::deviceauth::PollResp;
 
   if (!start_resp_) {
-    return IO<void>::fail({.code = my_errors::GENERAL::INVALID_ARGUMENT,
-                           .what = "Device authorization has not been started"});
+    return IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::INVALID_ARGUMENT,
+        "Device authorization has not been started"));
   }
 
   const int interval_seconds = std::max(1, start_resp_->interval);
@@ -443,9 +444,9 @@ VoidPureIO LoginHandler::register_device() {
   }
 
   if (!poll_resp_) {
-    return IO<void>::fail(
-        {.code = my_errors::GENERAL::INVALID_ARGUMENT,
-         .what = "Device authorization state unavailable"});
+  return IO<void>::fail(monad::make_error(
+    my_errors::GENERAL::INVALID_ARGUMENT,
+    "Device authorization state unavailable"));
   }
 
   const std::string status = poll_resp_->status;
@@ -463,16 +464,15 @@ VoidPureIO LoginHandler::register_device() {
   const bool have_registration_code = !registration_code.empty();
 
   if (!have_access_token && !have_registration_code) {
-    return IO<void>::fail({
-        .code = my_errors::GENERAL::INVALID_ARGUMENT,
-        .what = "Device registration requires access_token or registration_code"});
+  return IO<void>::fail(monad::make_error(
+    my_errors::GENERAL::INVALID_ARGUMENT,
+    "Device registration requires access_token or registration_code"));
   }
 
   if (!poll_resp_->user_id || poll_resp_->user_id->empty()) {
-    return IO<void>::fail({
-        .code = my_errors::GENERAL::UNEXPECTED_RESULT,
-        .what =
-            "Device authorization poll response missing user_id"});
+  return IO<void>::fail(monad::make_error(
+    my_errors::GENERAL::UNEXPECTED_RESULT,
+    "Device authorization poll response missing user_id"));
   }
   const std::string user_id = *poll_resp_->user_id;
 
@@ -491,9 +491,9 @@ VoidPureIO LoginHandler::register_device() {
   try {
     cjj365::cryptutil::sodium_init_or_throw();
   } catch (const std::exception &e) {
-    return IO<void>::fail(
-        {.code = my_errors::GENERAL::UNEXPECTED_RESULT,
-         .what = std::string{"libsodium init failed: "} + e.what()});
+    return IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT,
+        std::string{"libsodium init failed: "} + e.what()));
   }
 
   // Determine output directory: last config source path
@@ -591,10 +591,9 @@ VoidPureIO LoginHandler::register_device() {
         box_kp = cjj365::cryptutil::generate_box_keypair();
         generated_new_keys = true;
       } catch (const std::exception &e) {
-        return IO<void>::fail(
-            {.code = my_errors::GENERAL::UNEXPECTED_RESULT,
-             .what = std::string{"keypair generation failed: "} +
-                         e.what()});
+        return IO<void>::fail(monad::make_error(
+            my_errors::GENERAL::UNEXPECTED_RESULT,
+            std::string{"keypair generation failed: "} + e.what()));
       }
     }
   } else {
@@ -602,9 +601,9 @@ VoidPureIO LoginHandler::register_device() {
       box_kp = cjj365::cryptutil::generate_box_keypair();
       generated_new_keys = true;
     } catch (const std::exception &e) {
-      return IO<void>::fail(
-          {.code = my_errors::GENERAL::UNEXPECTED_RESULT,
-           .what = std::string{"keypair generation failed: "} + e.what()});
+      return IO<void>::fail(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          std::string{"keypair generation failed: "} + e.what()));
     }
   }
 
@@ -676,11 +675,12 @@ VoidPureIO LoginHandler::register_device() {
               error_msg += ": " + std::string(ex->response->body());
             }
           }
-          return IO<void>::fail({
-              .code = static_cast<int>(ex->response
+          return IO<void>::fail(
+                          monad::make_error(
+              static_cast<int>(ex->response
                                            ? ex->response->result_int()
                                            : 500),
-              .what = std::move(error_msg)});
+              std::move(error_msg)));
         }
 
         auto payload_result =
