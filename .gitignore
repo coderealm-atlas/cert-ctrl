@@ -39,3 +39,4 @@ bundle_captures/
 node_modules/
 CMakeUserPresets.json
 .vcpkg-cache/
+.venv/

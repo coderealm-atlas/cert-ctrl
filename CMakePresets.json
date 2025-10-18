@@ -24,7 +24,7 @@
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp17",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
       },
       "environment": {
@@ -47,7 +47,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "ENABLE_ASAN": "OFF",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp17",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_C_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
@@ -91,7 +91,7 @@
       "binaryDir": "${sourceDir}/build/release-compat",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp17",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_CXX_FLAGS": "-O2 -DNDEBUG -static-libgcc -static-libstdc++ -fno-stack-protector -D_GLIBCXX_USE_CXX11_ABI=0",
         "CMAKE_C_FLAGS": "-O2 -DNDEBUG -static-libgcc -fno-stack-protector",

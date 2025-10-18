@@ -4,7 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
-#include <format>
+#include <fmt/format.h>
 #include <optional>
 #include <random>
 #include <string>
@@ -44,7 +44,7 @@ std::string sanitize_label(std::string_view raw_label,
     sanitized.pop_back();
   }
   if (sanitized.empty()) {
-    sanitized = std::format("ca-{}", fallback_id);
+    sanitized = fmt::format("ca-{}", fallback_id);
   }
   return sanitized;
 }
@@ -78,7 +78,7 @@ std::string generate_temp_suffix() {
   std::mt19937_64 gen(rd());
   std::uniform_int_distribution<std::uint64_t> dist;
   std::uint64_t random_part = dist(gen);
-  return std::format("{}.{}", now, random_part);
+  return fmt::format("{}.{}", now, random_part);
 }
 
 std::optional<std::string> copy_ca_material(
@@ -86,7 +86,7 @@ std::optional<std::string> copy_ca_material(
     const std::filesystem::path &destination) {
   try {
     if (!std::filesystem::exists(source)) {
-      return std::format("CA source '{}' not found", source.string());
+      return fmt::format("CA source '{}' not found", source.string());
     }
 
     auto parent = destination.parent_path();
@@ -292,7 +292,7 @@ monad::IO<void> apply_import_ca_actions(
       auto ca_pem_path = resource_root / "ca.pem";
       if (!std::filesystem::exists(ca_pem_path)) {
         auto err = make_error(my_errors::GENERAL::FILE_NOT_FOUND,
-                              std::format("expected CA PEM missing: {}",
+                              fmt::format("expected CA PEM missing: {}",
                                           ca_pem_path.string()));
         if (item.continue_on_error) {
           log_warning(context, item, err.what);
@@ -323,7 +323,7 @@ monad::IO<void> apply_import_ca_actions(
         if (rc != 0) {
           auto err = make_error(
               my_errors::GENERAL::UNEXPECTED_RESULT,
-              std::format("command '{}' exited with status {}",
+              fmt::format("command '{}' exited with status {}",
                           trust_store->update_command, rc));
           if (item.continue_on_error) {
             log_warning(context, item, err.what);

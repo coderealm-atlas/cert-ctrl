@@ -3,7 +3,7 @@
 #include <boost/beast/http/field.hpp>
 #include <boost/json.hpp>
 #include <boost/url/parse.hpp>
-#include <format>
+#include <fmt/format.h>
 #include <optional>
 
 #include "data/agent_update_check.hpp"
@@ -75,7 +75,7 @@ monad::IO<void> AgentUpdateChecker::run_once(
   url.params().set("arch", detect_architecture());
 
   auto user_agent =
-      std::format("cert-ctrl/{} ({}; {})", current_version, detect_platform(),
+      fmt::format("cert-ctrl/{} ({}; {})", current_version, detect_platform(),
                   detect_architecture());
 
   output->logger().info()
@@ -101,7 +101,7 @@ monad::IO<void> AgentUpdateChecker::run_once(
               << url_string << std::endl;
           return IO<void>::fail(monad::Error{
               .code = status,
-              .what = std::format("HTTP {} response", status)});
+              .what = fmt::format("HTTP {} response", status)});
         }
 
         auto parse_result =

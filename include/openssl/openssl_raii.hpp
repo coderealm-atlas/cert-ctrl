@@ -21,7 +21,7 @@
 #include <openssl/x509v3.h>
 #include <stddef.h>
 
-#include <format>
+#include <fmt/format.h>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -311,21 +311,21 @@ inline monad::MyVoidResult set_name_fields(cryptutil::X509_NAME_ptr& name,
                                  0) != 1)
     return monad::MyVoidResult::Err(
         monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = std::format("Add C failed, C is: {}", C)});
+                     .what = fmt::format("Add C failed, C is: {}", C)});
 
   if (X509_NAME_add_entry_by_txt(name.get(), "O", MBSTRING_ASC,
                                  (const unsigned char*)O.c_str(), -1, -1,
                                  0) != 1)
     return monad::MyVoidResult::Err(
         monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = std::format("Add O failed, O is: {}", O)});
+                     .what = fmt::format("Add O failed, O is: {}", O)});
 
   if (X509_NAME_add_entry_by_txt(name.get(), "CN", MBSTRING_ASC,
                                  (const unsigned char*)CN.c_str(), -1, -1,
                                  0) != 1)
     return monad::MyVoidResult::Err(
         monad::Error{.code = my_errors::OPENSSL::UNEXPECTED_RESULT,
-                     .what = std::format("Add CN failed, CN is: {}", CN)});
+                     .what = fmt::format("Add CN failed, CN is: {}", CN)});
 
   return monad::MyVoidResult::Ok();
 }

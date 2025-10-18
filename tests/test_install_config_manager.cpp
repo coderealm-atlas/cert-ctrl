@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <format>
+#include <fmt/format.h>
 #include <random>
 #include <string>
 
@@ -37,7 +37,7 @@ std::filesystem::path make_temp_runtime_dir() {
   auto base = std::filesystem::temp_directory_path();
   std::mt19937_64 gen{std::random_device{}()};
   std::uniform_int_distribution<std::uint64_t> dist;
-  auto dir = base / std::format("certctrl-test-{}", dist(gen));
+  auto dir = base / fmt::format("certctrl-test-{}", dist(gen));
   std::filesystem::create_directories(dir);
   return dir;
 }
