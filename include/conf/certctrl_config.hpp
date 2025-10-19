@@ -32,6 +32,7 @@ namespace certctrl
     std::string base_url{"https://api.cjj365.cc"};
     std::string update_check_url{"https://install.lets-script.com/api/version/check"};
     fs::path runtime_dir{};
+    int interval_seconds{300};
 
     friend CertctrlConfig tag_invoke(const json::value_to_tag<CertctrlConfig> &,
                                      const json::value &jv)
@@ -66,6 +67,11 @@ namespace certctrl
             cc.runtime_dir = fs::path(p->as_string().c_str());
           else
             std::cerr << "runtime_dir not found, using default empty path" << std::endl;
+
+          if( auto *p = jo_p->if_contains("interval_seconds"))
+            cc.interval_seconds = p->to_number<int>();
+          else
+            std::cerr << "interval_seconds not found, using default 300" << std::endl;
           return cc;
         }
         else

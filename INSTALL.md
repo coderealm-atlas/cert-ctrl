@@ -186,7 +186,7 @@ The following package managers are planned for future releases:
 ### Linux
 
 #### Prerequisites
-- **Required**: `curl`, `tar`, `gzip`, `sha256sum`
+- **Required**: `curl`, `tar`, `gzip`, `sha256sum` (or `shasum -a 256` on macOS)
 - **Optional**: `systemctl` (for service management)
 
 #### Installation
@@ -225,13 +225,14 @@ Default configuration locations:
 ### macOS
 
 #### Prerequisites
-- **Required**: `curl`, `tar`, `gzip`
+- **Required**: `curl`, `tar`, `gzip`, `shasum` (bundled) or `sha256sum` (`brew install coreutils`)
 - **Optional**: Homebrew (for dependencies)
 
 #### Installation
 ```bash
-# Install system-wide (requires root)
-sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash
+# Fetch installer (requires root for system service)
+curl -fsSL https://install.lets-script.com/install-macos.sh -o install-macos.sh
+sudo bash install-macos.sh
 
 # Verify installation
 cert-ctrl --version
@@ -239,44 +240,15 @@ cert-ctrl --version
 
 #### Running as Service (launchd)
 ```bash
-# Create launch agent plist
-cat > ~/Library/LaunchAgents/com.certctrl.agent.plist << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.certctrl.agent</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/USERNAME/.local/bin/cert-ctrl</string>
-        <string>--config-dir</string>
-        <string>/Users/USERNAME/.config/certctrl</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/USERNAME/Library/Logs/certctrl.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/USERNAME/Library/Logs/certctrl.error.log</string>
-</dict>
-</plist>
-EOF
-
-# Replace USERNAME with your actual username
-sed -i '' "s/USERNAME/$(whoami)/g" ~/Library/LaunchAgents/com.certctrl.agent.plist
-
-# Load the service
-launchctl load ~/Library/LaunchAgents/com.certctrl.agent.plist
-
-# Start the service
-launchctl start com.certctrl.agent
+# The macOS installer registers a LaunchDaemon automatically.
+# Useful launchctl commands:
+sudo launchctl print system/com.coderealm.certctrl
+sudo launchctl kickstart -k system/com.coderealm.certctrl
+sudo launchctl bootout system /Library/LaunchDaemons/com.coderealm.certctrl.plist
 ```
 
 #### Configuration
-Default configuration location: `~/.config/certctrl/`
+Default configuration location: `/Library/Application Support/certctrl`
 
 ### Windows
 
@@ -350,6 +322,8 @@ curl -fsSL "https://github.com/coderealm-atlas/cert-ctrl/releases/download/${VER
 
 # Verify checksum (optional but recommended)
 curl -fsSL "https://github.com/coderealm-atlas/cert-ctrl/releases/download/${VERSION}/cert-ctrl-${OS}-${ARCH}.tar.gz.sha256" | sha256sum -c
+# macOS alternative:
+# curl ... | shasum -a 256 -c
 
 # Extract
 tar -xzf cert-ctrl.tar.gz
@@ -491,7 +465,8 @@ curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --non-interac
 # The installer automatically verifies checksums when available
 # Manual verification:
 curl -fsSL "https://github.com/coderealm-atlas/cert-ctrl/releases/download/v0.1.0/cert-ctrl-linux-x64.tar.gz.sha256"
-sha256sum cert-ctrl-linux-x64.tar.gz
+# Linux: sha256sum cert-ctrl-linux-x64.tar.gz
+# macOS: shasum -a 256 cert-ctrl-macos-x64.tar.gz
 ```
 
 ### Corporate/Proxy Environments

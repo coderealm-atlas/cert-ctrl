@@ -1,9 +1,12 @@
 #pragma once
 
 #include <algorithm>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "boost/di.hpp"
@@ -41,6 +44,39 @@ template <> struct AppTypeTraits<OneTag> {
 };
 template <> struct AppTypeTraits<TwoTag> {};
 } // namespace type_tags
+
+namespace detail {
+inline std::mutex &shutdown_mutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+inline std::function<void()> &shutdown_handler() {
+  static std::function<void()> handler;
+  return handler;
+}
+
+inline void register_shutdown_handler(std::function<void()> handler) {
+  std::lock_guard<std::mutex> lock(shutdown_mutex());
+  shutdown_handler() = std::move(handler);
+}
+
+inline void clear_shutdown_handler() {
+  std::lock_guard<std::mutex> lock(shutdown_mutex());
+  shutdown_handler() = nullptr;
+}
+
+inline void invoke_shutdown_handler() {
+  std::function<void()> handler;
+  {
+    std::lock_guard<std::mutex> lock(shutdown_mutex());
+    handler = shutdown_handler();
+  }
+  if (handler) {
+    handler();
+  }
+}
+} // namespace detail
 
 template <typename AppTag>
 class App : public std::enable_shared_from_this<App<AppTag>> {
@@ -98,6 +134,12 @@ public:
         &injector.template create<client_async::HttpClientManager &>();
     output_hub_ = &injector.template create<customio::ConsoleOutput &>();
     auto self = this->shared_from_this();
+
+    detail::register_shutdown_handler([weak_self = std::weak_ptr<App>(self)] {
+      if (auto shared = weak_self.lock()) {
+        shared->blocker_.stop();
+      }
+    });
 
     // output the sources
     output_hub_->logger().info() << "Config source directories:" << std::endl;
@@ -216,6 +258,7 @@ public:
           << "Shutdown: stop io_context_manager_" << std::endl;
       self->io_context_manager_->stop();
       self->info("App shutdown completed.");
+      detail::clear_shutdown_handler();
     });
   }
 };
@@ -225,5 +268,7 @@ void launch(cjj365::ConfigSources &config, certctrl::CliCtx &ctx) {
   auto app = std::make_shared<certctrl::App<AppTag>>(config, ctx);
   app->start();
 }
+
+inline void request_shutdown() { detail::invoke_shutdown_handler(); }
 
 } // namespace certctrl

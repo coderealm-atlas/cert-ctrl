@@ -120,6 +120,7 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
     js::object application{
         {"auto_apply_config", false},
         {"verbose", "info"},
+        {"interval_seconds", 300},
         {"url_base", "https://api.cjj365.cc"},
         {"update_check_url", "https://install.lets-script.com/api/version/check"},
         {"runtime_dir", runtime_dir.string()}};
@@ -206,7 +207,7 @@ bool is_running_as_root() {
 
 } // namespace
 
-int main(int argc, char *argv[]) {
+int RunCertCtrlApplication(int argc, char *argv[]) {
   // Early version check - handle version requests before any initialization
   for (int i = 1; i < argc; ++i) {
     std::string arg(argv[i]);
@@ -416,4 +417,17 @@ int main(int argc, char *argv[]) {
     std::cerr << "error catched on main: " << e.what() << std::endl;
     return EXIT_FAILURE;
   }
+}
+
+#ifdef _WIN32
+extern bool run_windows_service_if_available(int argc, char *argv[]);
+#endif
+
+int main(int argc, char *argv[]) {
+#ifdef _WIN32
+  if (run_windows_service_if_available(argc, argv)) {
+    return 0;
+  }
+#endif
+  return RunCertCtrlApplication(argc, argv);
 }

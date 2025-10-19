@@ -24,7 +24,7 @@ CONFIG_DIR="\${CONFIG_DIR:-}"
 INSTALL_SERVICE="\${INSTALL_SERVICE:-}"
 ENABLE_SERVICE="\${ENABLE_SERVICE:-}"
 SERVICE_NAME="\${SERVICE_NAME:-certctrl.service}"
-SERVICE_ACCOUNT="\${SERVICE_ACCOUNT:-certctrl}"
+SERVICE_ACCOUNT="\${SERVICE_ACCOUNT:-root}"
 SERVICE_DESCRIPTION="cert-ctrl certificate management agent"
 NONINTERACTIVE="\${NONINTERACTIVE:-false}"
 CHANNEL="\${CHANNEL:-stable}"
@@ -35,6 +35,15 @@ CONFIG_DIR_PLACEHOLDER="{{CONFIG_DIR}}"
 if [ -z "$CONFIG_DIR" ] && [ -n "$CONFIG_DIR_PLACEHOLDER" ]; then
     CONFIG_DIR="$CONFIG_DIR_PLACEHOLDER"
 fi
+
+STATE_DIR="\${STATE_DIR:-/var/lib/certctrl}"
+STATE_DIR_PLACEHOLDER="{{STATE_DIR}}"
+if [ -z "$STATE_DIR" ] && [ -n "$STATE_DIR_PLACEHOLDER" ]; then
+    STATE_DIR="$STATE_DIR_PLACEHOLDER"
+fi
+STATE_DIR_NAME="$(basename "$STATE_DIR")"
+RESTART_SERVICE_AFTER_INSTALL="false"
+SHA256_CMD=()
 
 # Override with environment or parameters
 INSTALL_DIR="\${INSTALL_DIR:-{{INSTALL_DIR}}}"
@@ -87,9 +96,24 @@ detect_platform() {
 }
 
 # Check dependencies
-check_dependencies() {
-    local deps=("curl" "tar" "gzip" "sha256sum")
+set_checksum_tool() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        SHA256_CMD=(sha256sum)
+        return 0
+    fi
 
+    if command -v shasum >/dev/null 2>&1; then
+        SHA256_CMD=(shasum -a 256)
+        return 0
+    fi
+
+    log_error "Required dependency 'sha256sum' (or 'shasum') is not installed."
+    log_info "macOS: brew install coreutils"
+    exit 1
+}
+
+check_dependencies() {
+    local deps=("curl" "tar" "gzip")
     if [ "$INSTALL_SERVICE" = "true" ]; then
         deps+=("systemctl")
     fi
@@ -101,6 +125,8 @@ check_dependencies() {
         fi
     done
     
+    set_checksum_tool
+
     log_verbose "All dependencies are available"
 }
 
@@ -205,7 +231,8 @@ verify_checksum() {
     log_info "Verifying archive integrity..."
 
     local expected=$(awk 'NF>=1 {print $1; exit}' "$checksum_file")
-    local actual=$(sha256sum "$archive_file" | awk '{print $1}')
+    local actual_output=$("\${SHA256_CMD[@]}" "$archive_file")
+    local actual=\${actual_output%% *}
 
     if [ -z "$expected" ]; then
         log_warning "Checksum file empty; skipping verification"
@@ -292,6 +319,27 @@ ensure_service_account() {
     fi
 }
 
+stop_service_if_running() {
+    # Avoid ETXTBUSY when overwriting the binary while the service is running
+    if [ "$EUID" -ne 0 ]; then
+        return 0
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! systemctl list-unit-files "$SERVICE_NAME" >/dev/null 2>&1; then
+        return 0
+    fi
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        log_info "Stopping $SERVICE_NAME before upgrading binary"
+        if systemctl stop "$SERVICE_NAME"; then
+            RESTART_SERVICE_AFTER_INSTALL="true"
+        else
+            log_warning "Failed to stop $SERVICE_NAME; continuing with installation"
+        fi
+    fi
+}
+
 create_systemd_unit() {
     cat > "/etc/systemd/system/$SERVICE_NAME" << 'EOF'
 [Unit]
@@ -307,7 +355,8 @@ RestartSec=5
 User=@@SERVICE_USER@@
 Group=@@SERVICE_USER@@
 WorkingDirectory=@@CONFIG_DIR@@
-ExecStart=@@BINARY_PATH@@ --config-dirs @@CONFIG_DIR@@
+StateDirectory=@@STATE_DIR_NAME@@
+ExecStart=@@BINARY_PATH@@ --config-dirs @@CONFIG_DIR@@ --keep-running
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cert-ctrl
@@ -318,6 +367,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=@@CONFIG_DIR@@
+ReadWritePaths=@@STATE_DIR@@
 
 [Install]
 WantedBy=multi-user.target
@@ -369,14 +419,22 @@ install_service_unit() {
     sed -i "s|@@CONFIG_DIR@@|$CONFIG_DIR|g" "/etc/systemd/system/$SERVICE_NAME"
     sed -i "s|@@SERVICE_USER@@|$SERVICE_ACCOUNT|g" "/etc/systemd/system/$SERVICE_NAME"
     sed -i "s|@@DESCRIPTION@@|$SERVICE_DESCRIPTION|g" "/etc/systemd/system/$SERVICE_NAME"
+    sed -i "s|@@STATE_DIR_NAME@@|$STATE_DIR_NAME|g" "/etc/systemd/system/$SERVICE_NAME"
+    sed -i "s|@@STATE_DIR@@|$STATE_DIR|g" "/etc/systemd/system/$SERVICE_NAME"
 
     # Ensure config directory exists and has proper permissions
     if [ ! -d "$CONFIG_DIR" ]; then
         log_info "Creating config directory $CONFIG_DIR"
         mkdir -p "$CONFIG_DIR"
     fi
+    if [ ! -d "$STATE_DIR" ]; then
+        log_info "Creating state directory $STATE_DIR"
+        mkdir -p "$STATE_DIR"
+    fi
     chown -R "$SERVICE_ACCOUNT:$SERVICE_ACCOUNT" "$CONFIG_DIR" 2>/dev/null || true
     chmod 755 "$CONFIG_DIR"
+    chown -R "$SERVICE_ACCOUNT:$SERVICE_ACCOUNT" "$STATE_DIR" 2>/dev/null || true
+    chmod 755 "$STATE_DIR"
 
     systemctl daemon-reload
     log_success "Systemd unit installed successfully"
@@ -456,12 +514,26 @@ install_binary() {
     fi
     
     # Install
+    stop_service_if_running
     chmod +x "$binary_path"
     cp "$binary_path" "$INSTALL_DIR/cert-ctrl"
     log_success "Binary installed"
 
     install_config_files "$extract_dir"
     install_service_unit
+
+    if [ "$RESTART_SERVICE_AFTER_INSTALL" = "true" ]; then
+        if [ "$EUID" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
+            log_warning "Service $SERVICE_NAME was stopped but could not be restarted automatically"
+        else
+            log_info "Restarting $SERVICE_NAME after upgrade"
+            if systemctl start "$SERVICE_NAME"; then
+                log_success "Service $SERVICE_NAME restarted"
+            else
+                log_warning "Failed to restart $SERVICE_NAME; start manually with: systemctl start $SERVICE_NAME"
+            fi
+        fi
+    fi
 
     rm -rf "$extract_dir"
 

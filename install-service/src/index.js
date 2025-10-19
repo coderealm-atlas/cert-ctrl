@@ -20,6 +20,7 @@ router.get('/health', healthHandler);
 // Installation script endpoints
 router.get('/install.sh', rateLimiter, installHandler);
 router.get('/install.ps1', rateLimiter, installHandler);
+router.get('/install-macos.sh', rateLimiter, installHandler);
 
 // Version API endpoints
 router.get('/api/version/check', rateLimiter, versionHandler);
@@ -41,6 +42,7 @@ router.get('/', async (request, env) => {
     version: '1.0.0',
     endpoints: {
       'Unix/Linux Install': '/install.sh',
+  'macOS Install': '/install-macos.sh',
       'Windows Install': '/install.ps1',
       'Version Check': '/api/version/check',
       'Latest Version': '/api/version/latest',
@@ -49,6 +51,7 @@ router.get('/', async (request, env) => {
     },
     usage: {
       'Quick Install (Unix)': 'curl -fsSL https://install.lets-script.com/install.sh | bash',
+  'Quick Install (macOS)': 'curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash',
       'Quick Install (Windows)': 'iwr -useb https://install.lets-script.com/install.ps1 | iex',
       'Version Check': 'curl https://install.lets-script.com/api/version/latest'
     }
