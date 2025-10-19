@@ -13,6 +13,49 @@ param(
     [switch]$DryRun
 )
 
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+function Get-SystemArchitecture {
+    try {
+        $runtimeType = [System.Runtime.InteropServices.RuntimeInformation]
+        $property = $runtimeType.GetProperty('OSArchitecture')
+        if ($property) {
+            $value = $property.GetValue($null)
+            if ($value) {
+                return $value.ToString()
+            }
+        }
+    }
+    catch {
+        # Ignore and try alternate mechanisms
+    }
+
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        if ($os.OSArchitecture) {
+            return $os.OSArchitecture
+        }
+    }
+    catch {
+        try {
+            $os = Get-WmiObject Win32_OperatingSystem -ErrorAction Stop
+            if ($os.OSArchitecture) {
+                return $os.OSArchitecture
+            }
+        }
+        catch {
+            # Fall through
+        }
+    }
+
+    if ([Environment]::Is64BitOperatingSystem) {
+        return 'x64'
+    }
+
+    return 'x86'
+}
+
 function Write-Info($Message) {
     Write-Host "[INFO] $Message"
 }
@@ -92,23 +135,39 @@ function Register-CertCtrlService {
 }
 
 $archSlug = "{{ARCHITECTURE}}"
-if (-not $archSlug -or $archSlug -eq "") {
+if ([string]::IsNullOrWhiteSpace($archSlug)) {
     $archSlug = "x64"
 }
 
-switch -regex ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
-    'Arm64' { $archSlug = 'arm64'; break }
-    'Arm' { $archSlug = 'arm'; break }
+$systemArchitecture = Get-SystemArchitecture
+switch -regex ($systemArchitecture) {
+    'arm64|aarch64' { $archSlug = 'arm64'; break }
+    'arm' { $archSlug = 'arm'; break }
+    'x86|x64|amd64|86|64' { $archSlug = 'x64'; break }
     default { $archSlug = 'x64' }
 }
+
+$paramUserInstall = $false
+if ($PSBoundParameters.ContainsKey('UserInstall') -and $UserInstall.IsPresent) {
+    $paramUserInstall = $true
+}
+
+$paramForceInstall = ([bool]$Force) -or ("{{FORCE}}" -eq "true")
 
 
 $installPath = if ($InstallDir) {
     $InstallDir
 } else {
-    "C:\\Program Files\\cert-ctrl"
+    if ($paramUserInstall) {
+        Join-Path $env:LOCALAPPDATA "Programs\\cert-ctrl"
+    } else {
+        "C:\\Program Files\\cert-ctrl"
+    }
 }
-$paramForceInstall = ([bool]$Force) -or ("{{FORCE}}" -eq "true")
+
+if ($paramUserInstall -and -not (Test-Administrator)) {
+    Write-Info "User-mode installation selected; administrator rights are not required."
+}
 
 $mirrorUrl = "{{MIRROR_URL}}"
 if ($mirrorUrl -eq "{{BASE_URL}}/releases/proxy") {
@@ -148,11 +207,32 @@ $serviceInstalled = Register-CertCtrlService -BinaryPath $destinationBinary -IsU
 
 Write-Success "cert-ctrl installed at $destinationBinary"
 Write-Info "Binary directory: $installPath"
-Write-Info "Add $installPath to your PATH if not already present."
+$normalizedInstallPath = $installPath.TrimEnd('\\')
+$pathEntries = $env:PATH -split ';'
+$pathPresent = $pathEntries | Where-Object { $_.TrimEnd('\\') -ieq $normalizedInstallPath }
+if (-not $pathPresent) {
+    $originalPath = $env:PATH
+    if (-not ($env:PATH -like "*$normalizedInstallPath*")) {
+        $env:PATH = $originalPath + ';' + $installPath
+        Write-Info "Added $installPath to PATH for this PowerShell session."
+        Write-Info "Verify now with: where.exe cert-ctrl"
+    }
+    $persistCommand = 'setx PATH "' + ($originalPath + ';' + $installPath) + '"'
+    Write-Info "Persist for future sessions with: $persistCommand"
+    if (Test-Administrator) {
+        $machineCommand = '[Environment]::SetEnvironmentVariable("PATH", "' + ($originalPath + ';' + $installPath) + '", [EnvironmentVariableTarget]::Machine)'
+        Write-Info "Machine-wide (requires admin): $machineCommand"
+    }
+    Write-Info "Open a new PowerShell window after applying persistent PATH changes."
+}
 if ($serviceInstalled) {
     Write-Info "Windows service '$serviceName' is running. Manage it with: Get-Service $serviceName"
 } elseif (-not $paramUserInstall) {
     $manualCommand = "sc create $serviceName binPath=\"" + $destinationBinary + "\" " + $serviceArgs
     Write-Info "Register later as a service with: $manualCommand"
 }
+$statusCommand = 'Get-Service ' + $serviceName
+$logCommand = "Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'cert-ctrl' } -MaxEvents 20 | Format-List TimeCreated, Message"
+Write-Info "Service status: $statusCommand"
+Write-Info "Latest service logs: $logCommand"
 `;

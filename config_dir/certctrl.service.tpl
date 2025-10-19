@@ -5,11 +5,11 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/apps/certctrl
-ExecStart=/opt/apps/certctrl/certctrl --config /opt/apps/certctrl/config.json
+ExecStart=/opt/apps/certctrl/certctrl --config /opt/apps/certctrl/config.json --keep-running
 EnvironmentFile=/opt/apps/certctrl/app.env
 Restart=on-failure
-User=jianglibo
-Group=jianglibo
+User=root
+Group=root
 
 [Install]
 WantedBy=multi-user.target

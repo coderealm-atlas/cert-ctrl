@@ -9,6 +9,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(CERTCTRL_FORCE_LEGACY_GLIBCXX_ABI "Use libstdc++ dual ABI in legacy (pre-C++11) mode" OFF)
+if(CERTCTRL_FORCE_LEGACY_GLIBCXX_ABI)
+    add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0)
+endif()
+
 # Fix RPATH issues with Ninja generator
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 
@@ -40,7 +45,6 @@ target_compile_definitions(di_config INTERFACE BOOST_DI_CFG_CTOR_LIMIT_SIZE=16)
 # Add compatibility flags for broader glibc/libstdc++ support
 if(UNIX AND NOT APPLE AND NOT WIN32)
     # Target older glibc and libstdc++ for better compatibility
-    add_compile_options(-D_GLIBCXX_USE_CXX11_ABI=1)  # Use newer C++11 ABI but compatible
     add_link_options(-static-libgcc -static-libstdc++)  # Static link runtime libraries
     
     # Try to use older symbol versions when possible

@@ -10,10 +10,19 @@ export async function installHandler(request, env) {
     const pathname = url.pathname;
 
     // Determine script type from URL
-    const scriptType = pathname.endsWith('.ps1') ? 'powershell' : 'bash';
+  let scriptType;
+  if (pathname.endsWith('.ps1')) {
+    scriptType = 'powershell';
+  } else if (pathname.endsWith('install-macos.sh')) {
+    scriptType = 'macos';
+  } else {
+    scriptType = 'bash';
+  }
     
     // Extract platform information
-    const platform = detectPlatform(userAgent, scriptType);
+    const platform = scriptType === 'macos'
+      ? 'macos'
+      : detectPlatform(userAgent, scriptType);
     const architecture = detectArchitecture(userAgent);
     
     // Get query parameters

@@ -121,11 +121,11 @@ public:
     if (cli_ctx_.vm.count("limit")) {
       options_.limit = cli_ctx_.vm["limit"].as<std::size_t>();
     }
-    if (cli_ctx_.vm.count("interval")) {
-      interval_ms_ = cli_ctx_.vm["interval"].as<int>();
-      if (interval_ms_ < 10)
-        interval_ms_ = 10; // safety floor
-    }
+    // if (cli_ctx_.vm.count("interval")) {
+    //   interval_ms_ = cli_ctx_.vm["interval"].as<int>();
+    //   if (interval_ms_ < 10)
+        interval_ms_ = certctrl_config_provider_.get().interval_seconds * 1000;
+    // }
     output_hub_.logger().trace()
         << "UpdatesPollingHandler initialized with options: " << opt_desc_
         << std::endl;
@@ -191,8 +191,8 @@ public:
           // long-polling
           if (!self->options_.long_poll) {
             int delay_ms = self->server_override_delay_ms_.value_or(self->interval_ms_);
-            if (delay_ms < 10) {
-              delay_ms = 10;
+            if (delay_ms < 10000) {
+              delay_ms = 10000;
             }
             self->server_override_delay_ms_.reset();
             return monad::delay_for<void>(self->ioc_, std::chrono::milliseconds(delay_ms))
