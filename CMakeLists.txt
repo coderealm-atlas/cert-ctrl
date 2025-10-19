@@ -21,6 +21,7 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 if(MSVC)
     # Use static runtime for standalone executable (matches x64-windows triplet)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
     foreach(flag_var CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_DEBUG
                      CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_RELWITHDEBINFO)
         if(DEFINED ${flag_var})
@@ -424,9 +425,15 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(CMAKE_CXX_FLAGS_DEBUG "-O1 -g1")  # Minimal optimization and debug info
         set(CMAKE_C_FLAGS_DEBUG "-O1 -g1")
     elseif(MSVC)
-        # Use MSVC defaults or set /Od /Zi if needed
-        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Zi /Od")
-        set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /Zi /Od")
+        # Favor embedded debug info to avoid external PDB lookups
+        foreach(_flag_var CMAKE_CXX_FLAGS_DEBUG CMAKE_C_FLAGS_DEBUG)
+            if(DEFINED ${_flag_var})
+                string(REGEX REPLACE "/Z[0-9I]" "" ${_flag_var} "${${_flag_var}}")
+                string(STRIP "${${_flag_var}}" ${_flag_var})
+            endif()
+        endforeach()
+        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Z7 /Od")
+        set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /Z7 /Od")
     endif()
     # option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
     

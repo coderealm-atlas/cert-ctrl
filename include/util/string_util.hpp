@@ -25,7 +25,6 @@
 #include <type_traits>
 #include <vector>
 #include <cctype>
-#include <compare>
 #include <exception>
 #include <functional>
 #include <iterator>
