@@ -424,6 +424,8 @@ jobs:
             # Use the release-compat preset on Linux only (preset defines its own build directory)
             cmake_args=(
               --preset=release-compat
+              -D CMAKE_C_COMPILER=clang
+              -D CMAKE_CXX_COMPILER=clang++
             )
           elif [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "macOS" ]; then
             # Manual configuration for macOS compatibility builds (no static libgcc/libstdc++)
