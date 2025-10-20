@@ -256,7 +256,7 @@ Version: $deb_version
 Section: utils
 Priority: optional
 Architecture: amd64
-Maintainer: CertCtrl Team <info@cert-ctrl.com>
+Maintainer: CertCtrl Team <info@lets-script.com>
 Description: Certificate control and management utility
  A comprehensive tool for certificate management, validation, and control
  operations. Supports various certificate formats and provides automated
@@ -335,7 +335,7 @@ chmod +x %{buildroot}%{_bindir}/cert-ctrl
 %{_bindir}/cert-ctrl
 
 %changelog
-* $(date +'%a %b %d %Y') CertCtrl Team <info@cert-ctrl.com> - $rpm_version-1
+* $(date +'%a %b %d %Y') CertCtrl Team <info@lets-script.com> - $rpm_version-1
 - Release $rpm_version
 EOF
     

@@ -589,7 +589,7 @@ nslookup install.lets-script.com
    cert-ctrl doctor
    ```
 
-3. **Documentation**: Visit [our documentation site](https://docs.cert-ctrl.com)
+3. **Documentation**: Visit [our documentation site](https://docs.lets-script.com)
 4. **Support**: Create an issue at [GitHub Issues](https://github.com/coderealm-atlas/cert-ctrl/issues)
 
 ## Uninstallation
@@ -651,4 +651,4 @@ For detailed build instructions, see [BUILD.md](BUILD.md).
 - Regularly update to the latest version for security patches
 - Verify checksums when downloading manually
 
-For security questions, contact security@cert-ctrl.com.
+For security questions, contact security@lets-script.com.

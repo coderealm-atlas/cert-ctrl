@@ -23,16 +23,16 @@ scripts/
 
 **One-line installation:**
 ```bash
-curl -fsSL https://install.cert-ctrl.com/install.sh | bash
+curl -fsSL https://install.lets-script.com/install.sh | bash
 ```
 
 **With options:**
 ```bash
 # Specific version
-curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --version v1.2.3
+curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --version v1.2.3
 
 # Custom directory
-curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --install-dir /opt/cert-ctrl
+curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --install-dir /opt/cert-ctrl
 ```
 
 **Features:**
@@ -49,19 +49,19 @@ curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --install-dir /
 
 **One-line installation:**
 ```powershell
-iwr -useb https://install.cert-ctrl.com/install.ps1 | iex
+iwr -useb https://install.lets-script.com/install.ps1 | iex
 ```
 
 **With options:**
 ```powershell
 # User installation (no Administrator required)
-iwr -useb https://install.cert-ctrl.com/install.ps1 | iex; Install-CertCtrl -UserInstall
+iwr -useb https://install.lets-script.com/install.ps1 | iex; Install-CertCtrl -UserInstall
 
 # Specific version
-iwr -useb https://install.cert-ctrl.com/install.ps1 | iex; Install-CertCtrl -Version "v1.2.3"
+iwr -useb https://install.lets-script.com/install.ps1 | iex; Install-CertCtrl -Version "v1.2.3"
 
 # Custom path
-iwr -useb https://install.cert-ctrl.com/install.ps1 | iex; Install-CertCtrl -InstallPath "C:\Tools\CertCtrl"
+iwr -useb https://install.lets-script.com/install.ps1 | iex; Install-CertCtrl -InstallPath "C:\Tools\CertCtrl"
 ```
 
 **Features:**
@@ -199,7 +199,7 @@ GPG_KEY_ID=your-key-id ./scripts/package/package.sh --sign --all-platforms
 ```yaml
 - name: Install cert-ctrl
   run: |
-    sudo curl -fsSL https://install.cert-ctrl.com/install.sh | sudo bash
+    sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash
 
 - name: Update cert-ctrl
   run: |
@@ -211,7 +211,7 @@ GPG_KEY_ID=your-key-id ./scripts/package/package.sh --sign --all-platforms
 **Docker Integration:**
 ```dockerfile
 FROM ubuntu:22.04
-RUN curl -fsSL https://install.cert-ctrl.com/install.sh | bash
+RUN curl -fsSL https://install.lets-script.com/install.sh | bash
 COPY . /app
 WORKDIR /app
 CMD ["cert-ctrl"]
@@ -257,7 +257,7 @@ end
 **Permission Denied:**
 ```bash
 # Linux/macOS: Use user installation
-sudo curl -fsSL https://install.cert-ctrl.com/install.sh | sudo bash
+sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash
 
 # Windows: Run PowerShell as Administrator
 ```
@@ -289,7 +289,7 @@ Enable verbose output for troubleshooting:
 
 ```bash
 # Installation
-curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --verbose
+curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --verbose
 
 # Updates
 ./scripts/update/update.sh --verbose
