@@ -130,6 +130,22 @@ bool should_process(const DeviceUpdateSignal& signal) const override {
 }
 ```
 
+**Processing Flow (current implementation):**
+1. `SignalDispatcher` deduplicates the `install.updated` signal and consults `should_process()` on `InstallUpdatedHandler` to skip stale versions.
+2. `InstallUpdatedHandler::handle()` logs the signal payload and forwards it to `InstallConfigManager::apply_copy_actions_for_signal()`.
+3. `InstallConfigManager::ensure_config_version()` reloads the cached payload from disk when possible, or fetches the requested version + hash from `/apiv1/devices/self/install-config`.
+4. On success the manager applies copy actions (and CA imports) through `install_actions::*`, which materialise referenced resources before touching the filesystem.
+
+**Disk Persistence & Version Tracking:**
+- `InstallConfigManager::persist_config()` performs atomic writes of the latest JSON payload to `state/install_config.json` and mirrors the numeric version in `state/install_version.txt`.
+- The manager keeps an in-memory `local_version_` that is populated during construction via `load_from_disk()`, keeping version checks fast and side-effect free for `should_process()`.
+- Resource bundles referenced by install actions are cached under `runtime_dir/resources/<type>/<id>/current/` so subsequent runs can reuse local copies instead of re-downloading.
+
+- **Manual Approval Mode (`auto_apply_config`):**
+    - `CertctrlConfig::auto_apply_config` (toggled via `cert-ctrl conf set auto_apply_config <true|false>`) gates whether freshly fetched plans are applied immediately.
+    - When the flag is `true`, the flow remains unchanged: fetch, persist, run copy/import actions.
+    - When the flag is `false` (current default) the dispatcher still fetches and persists the latest payload, but `InstallConfigManager::apply_copy_actions_for_signal()` short-circuits after staging. Operators can then promote the cached version on demand with `cert-ctrl install apply`, which reuses the same action pipeline against the staged JSON. Only the most recently fetched plan is retained in manual mode; fetching a newer revision overwrites the staged copy.
+
 #### Certificate Renewed Handler
 
 **Responsibilities:**
@@ -325,6 +341,7 @@ Future: cert.revoked > cert.renewed > install.updated
 - Cursor management
 - Adaptive backoff
 - Forward compatibility (unknown signals)
+- Manual install plan approval workflow (`auto_apply_config=false` staging + `cert-ctrl install apply` promotion)
 
 ⚠️ **Partially Complete:**
 - Handler implementations (placeholder logic)

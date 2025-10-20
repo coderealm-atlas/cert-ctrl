@@ -57,6 +57,8 @@ public:
   monad::IO<void> apply_copy_actions_for_signal(
     const ::data::DeviceUpdateSignal &signal);
 
+  std::shared_ptr<dto::DeviceInstallConfigDto> cached_config_snapshot();
+
   void clear_cache();
 
 private:
