@@ -1,6 +1,6 @@
 # install.ps1 - Windows PowerShell installer for cert-ctrl
-# Usage: iwr -useb https://install.cert-ctrl.com/install.ps1 | iex
-# Or: iwr -useb https://install.cert-ctrl.com/install.ps1 | iex; Install-CertCtrl -Version "v1.0.0" -UserInstall
+# Usage: iwr -useb https://install.lets-script.com/install.ps1 | iex
+# Or: iwr -useb https://install.lets-script.com/install.ps1 | iex; Install-CertCtrl -Version "v1.0.0" -UserInstall
 
 param(
     [string]$Version = "latest",
@@ -492,7 +492,7 @@ EXAMPLES
     Install-CertCtrl -InstallPath "C:\Tools\CertCtrl"
 
     # One-liner installation
-    iwr -useb https://install.cert-ctrl.com/install.ps1 | iex
+    iwr -useb https://install.lets-script.com/install.ps1 | iex
 
 "@
     

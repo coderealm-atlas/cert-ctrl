@@ -1,7 +1,7 @@
 #!/bin/bash
 # install.sh - Universal installer for cert-ctrl
-# Usage: curl -fsSL https://install.cert-ctrl.com/install.sh | bash
-# Or: sudo curl -fsSL https://install.cert-ctrl.com/install.sh | sudo bash -s -- --version=v1.0.0
+# Usage: curl -fsSL https://install.lets-script.com/install.sh | bash
+# Or: sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash -s -- --version=v1.0.0
 
 set -euo pipefail
 
@@ -52,7 +52,7 @@ detect_platform() {
         Darwin*)    platform="macos" ;;
         CYGWIN*|MINGW*|MSYS*) 
             log_error "Windows detected. Please use the PowerShell installer instead:"
-            log_error "iwr -useb https://install.cert-ctrl.com/install.ps1 | iex"
+            log_error "iwr -useb https://install.lets-script.com/install.ps1 | iex"
             exit 1
             ;;
         *)          
