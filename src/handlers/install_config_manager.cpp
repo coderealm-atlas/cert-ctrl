@@ -383,6 +383,18 @@ InstallConfigManager::InstallConfigManager(
 
 void InstallConfigManager::clear_cache() { cached_config_.reset(); }
 
+std::shared_ptr<dto::DeviceInstallConfigDto>
+InstallConfigManager::cached_config_snapshot() {
+  if (!cached_config_) {
+    if (auto disk_config = load_from_disk()) {
+      cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(
+          std::move(disk_config.value()));
+      local_version_ = cached_config_->version;
+    }
+  }
+  return cached_config_;
+}
+
 monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
 InstallConfigManager::ensure_cached_config() {
   using ReturnIO = monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>;
@@ -962,6 +974,13 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
 
     return ensure_config_version(expected_version, expected_hash)
         .then([this](auto config_ptr) {
+          using ReturnIO = monad::IO<void>;
+          if (!config_provider_.get().auto_apply_config) {
+            output_.logger().info()
+                << "auto_apply_config disabled; staged install-config version "
+                << config_ptr->version << " for manual approval." << std::endl;
+            return ReturnIO::pure();
+          }
           return apply_copy_actions(*config_ptr, std::nullopt, std::nullopt);
         });
   }
