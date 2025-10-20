@@ -1,6 +1,6 @@
-#include "cert_ctrl_entry.hpp"
-
 #ifdef _WIN32
+
+#include "cert_ctrl_entry.hpp"
 
 #include <windows.h>
 

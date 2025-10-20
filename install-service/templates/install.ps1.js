@@ -213,26 +213,53 @@ $pathPresent = $pathEntries | Where-Object { $_.TrimEnd('\\') -ieq $normalizedIn
 if (-not $pathPresent) {
     $originalPath = $env:PATH
     if (-not ($env:PATH -like "*$normalizedInstallPath*")) {
-        $env:PATH = $originalPath + ';' + $installPath
+        $env:PATH = ($originalPath.TrimEnd(';')) + ';' + $installPath
         Write-Info "Added $installPath to PATH for this PowerShell session."
         Write-Info "Verify now with: where.exe cert-ctrl"
     }
-    $persistCommand = 'setx PATH "' + ($originalPath + ';' + $installPath) + '"'
-    Write-Info "Persist for future sessions with: $persistCommand"
-    if (Test-Administrator) {
-        $machineCommand = '[Environment]::SetEnvironmentVariable("PATH", "' + ($originalPath + ';' + $installPath) + '", [EnvironmentVariableTarget]::Machine)'
-        Write-Info "Machine-wide (requires admin): $machineCommand"
+
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", [EnvironmentVariableTarget]::User)
+    if ([string]::IsNullOrWhiteSpace($userPath)) {
+        $userPath = $originalPath
     }
-    Write-Info "Open a new PowerShell window after applying persistent PATH changes."
+    $userEntries = $userPath -split ';'
+    $userHasPath = $userEntries | Where-Object { $_.TrimEnd('\\') -ieq $normalizedInstallPath }
+    if (-not $userHasPath) {
+        $newUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) {
+            $installPath
+        } else {
+            ($userPath.TrimEnd(';')) + ';' + $installPath
+        }
+        [Environment]::SetEnvironmentVariable("PATH", $newUserPath, [EnvironmentVariableTarget]::User)
+        Write-Info "Persisted install directory to current user's PATH."
+    }
+
+    if (Test-Administrator) {
+        $machinePath = [Environment]::GetEnvironmentVariable("PATH", [EnvironmentVariableTarget]::Machine)
+        if ([string]::IsNullOrWhiteSpace($machinePath)) {
+            $machinePath = $originalPath
+        }
+        $machineEntries = $machinePath -split ';'
+        $machineHasPath = $machineEntries | Where-Object { $_.TrimEnd('\\') -ieq $normalizedInstallPath }
+        if (-not $machineHasPath) {
+            $newMachinePath = if ([string]::IsNullOrWhiteSpace($machinePath)) {
+                $installPath
+            } else {
+                ($machinePath.TrimEnd(';')) + ';' + $installPath
+            }
+            [Environment]::SetEnvironmentVariable("PATH", $newMachinePath, [EnvironmentVariableTarget]::Machine)
+            Write-Info "Persisted install directory to machine PATH."
+        }
+    } else {
+        Write-Info "Re-open PowerShell to use cert-ctrl without specifying the full path."
+    }
 }
 if ($serviceInstalled) {
-    Write-Info "Windows service '$serviceName' is running. Manage it with: Get-Service $serviceName"
+    Write-Info "Windows service '$serviceName' is running."
 } elseif (-not $paramUserInstall) {
     $manualCommand = "sc create $serviceName binPath=\"" + $destinationBinary + "\" " + $serviceArgs
     Write-Info "Register later as a service with: $manualCommand"
 }
 $statusCommand = 'Get-Service ' + $serviceName
-$logCommand = "Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'cert-ctrl' } -MaxEvents 20 | Format-List TimeCreated, Message"
 Write-Info "Service status: $statusCommand"
-Write-Info "Latest service logs: $logCommand"
 `;
