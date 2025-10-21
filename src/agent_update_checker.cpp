@@ -4,7 +4,6 @@
 #include <boost/json.hpp>
 #include <boost/url/parse.hpp>
 #include <fmt/format.h>
-#include <optional>
 
 #include "data/agent_update_check.hpp"
 #include "my_error_codes.hpp"
@@ -145,16 +144,24 @@ monad::IO<void> AgentUpdateChecker::run_once(
                 << "Minimum supported version: "
                 << *response.minimum_supported_version << std::endl;
           }
-          if (!response.download_urls.empty()) {
+          if (response.changelog_url.has_value()) {
+            output->logger().info()
+                << "Changelog: " << *response.changelog_url << std::endl;
+          }
+          if (!response.install_commands.empty()) {
+            output->printer().green()
+                << "Recommended installation commands:" << std::endl;
+            for (const auto &[platform, command] :
+                 response.install_commands) {
+              output->printer().green()
+                  << "  " << platform << ": " << command << std::endl;
+            }
+          } else if (!response.download_urls.empty()) {
             output->logger().info() << "Download URLs:" << std::endl;
             for (const auto &[key, value] : response.download_urls) {
               output->logger().info()
                   << "  " << key << ": " << value << std::endl;
             }
-          }
-          if (response.changelog_url.has_value()) {
-            output->logger().info()
-                << "Changelog: " << *response.changelog_url << std::endl;
           }
         } else {
           output->logger().info()

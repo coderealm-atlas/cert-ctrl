@@ -202,8 +202,43 @@ if (-not (Test-Path $binaryPath)) {
 }
 
 $destinationBinary = Join-Path $installPath 'cert-ctrl.exe'
+
+$serviceWasRunning = $false
+if (-not $paramUserInstall) {
+    try {
+        $existingService = Get-Service -Name $serviceName -ErrorAction Stop
+        if ($existingService.Status -eq 'Running') {
+            Write-Info "Stopping Windows service '$serviceName' before updating binary..."
+            Stop-Service -Name $serviceName -Force -ErrorAction Stop
+            try {
+                $existingService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
+            }
+            catch {
+                Write-WarningMessage "Timed out waiting for '$serviceName' to stop"
+            }
+            $serviceWasRunning = $true
+        }
+    }
+    catch [System.InvalidOperationException] {
+        # Service not installed; nothing to stop
+    }
+    catch {
+        Write-WarningMessage "Unable to inspect or stop service '$serviceName': $($_.Exception.Message)"
+    }
+}
+
 Copy-Item -Path $binaryPath -Destination $destinationBinary -Force
 $serviceInstalled = Register-CertCtrlService -BinaryPath $destinationBinary -IsUserInstall:$paramUserInstall -ForceInstall:$paramForceInstall
+
+if (-not $paramUserInstall -and $serviceWasRunning -and -not $serviceInstalled) {
+    try {
+        Start-Service -Name $serviceName -ErrorAction Stop
+        Write-Info "Restarted Windows service '$serviceName'."
+    }
+    catch {
+        Write-WarningMessage "Failed to restart service '$serviceName': $($_.Exception.Message)"
+    }
+}
 
 Write-Success "cert-ctrl installed at $destinationBinary"
 Write-Info "Binary directory: $installPath"

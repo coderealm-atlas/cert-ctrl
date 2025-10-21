@@ -328,7 +328,7 @@ private:
     if (!refresh_token_opt || refresh_token_opt->empty()) {
       return IO<void>::fail(monad::make_error(
           my_errors::GENERAL::INVALID_ARGUMENT,
-          "refresh token unavailable in state"));
+          "Refresh token not found. Run 'cert-ctrl login' to authenticate before continuing."));
     }
 
     auto state_dir_opt = resolve_state_dir();

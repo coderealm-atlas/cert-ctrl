@@ -4,7 +4,6 @@
 #include <boost/json.hpp>
 #include <boost/url/parse.hpp>
 #include <fmt/format.h>
-#include <fstream>
 #include <filesystem>
 #include <iostream>
 #include <algorithm>
@@ -19,7 +18,6 @@
 #include <unistd.h>
 #endif
 
-#include "data/agent_update_check.hpp"
 #include "my_error_codes.hpp"
 #include "version.h"
 
@@ -100,36 +98,28 @@ std::string UpdateHandler::generate_backup_path() {
 monad::IO<void> UpdateHandler::start() {
   using namespace monad;
 
-  output_.logger().info() << "Starting application update process..." << std::endl;
+  output_.logger().info()
+    << "cert-ctrl does not perform self-updates automatically yet." << std::endl;
+  output_.logger().info()
+    << "Use the installer script for your platform to upgrade to the latest build:" << std::endl;
 
-  std::string current_version = MYAPP_VERSION;
-  output_.logger().info() << "Current version: " << current_version << std::endl;
+  const auto platform = detect_platform();
+  if (platform == "windows") {
+  output_.logger().info()
+    << "  Windows: irm https://install.lets-script.com/install.ps1 | iex" << std::endl;
+  } else if (platform == "macos") {
+  output_.logger().info()
+    << "  macOS: curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash" << std::endl;
+  } else {
+  output_.logger().info()
+    << "  Linux: curl -fsSL https://install.lets-script.com/install.sh | sudo bash" << std::endl;
+  }
 
-  return check_for_updates(current_version)
-    .then([this](bool update_available) -> monad::IO<void> {
-      if (!update_available) {
-        output_.logger().info() << "No updates available. You are running the latest version." << std::endl;
-        return monad::IO<void>::pure();
-      }
-
-      // Check for --yes flag to skip confirmation  
-      bool auto_confirm = cli_ctx_.params.confirm_update;
-
-      if (auto_confirm) {
-        output_.logger().info() << "Auto-confirming update due to --yes flag." << std::endl;
-        return perform_update();
-      } else {
-        return confirm_update()
-          .then([this](bool confirmed) -> monad::IO<void> {
-            if (confirmed) {
-              return perform_update();
-            } else {
-              output_.logger().info() << "Update cancelled by user." << std::endl;
-              return monad::IO<void>::pure();
-            }
-          });
-      }
-    });
+  output_.logger().info()
+    << "Add --version <tag> if you need to pin a specific release." << std::endl;
+  output_.logger().info()
+    << "The installer stops the running service, replaces the binary, updates PATH, and restarts when applicable." << std::endl;
+  return monad::IO<void>::pure();
 }
 
 monad::IO<bool> UpdateHandler::check_for_updates(const std::string& current_version) {
