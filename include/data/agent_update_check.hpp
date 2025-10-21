@@ -21,6 +21,7 @@ struct AgentUpdateCheckResponse {
   std::optional<std::string> update_urgency;
   std::vector<std::string> deprecation_warnings;
   std::map<std::string, std::string> download_urls;
+  std::map<std::string, std::string> install_commands;
 };
 
 inline AgentUpdateCheckResponse tag_invoke(
@@ -80,6 +81,16 @@ inline AgentUpdateCheckResponse tag_invoke(
       for (const auto& [key, value] : map_obj) {
         if (value.is_string()) {
           resp.download_urls.emplace(key, value.as_string().c_str());
+        }
+      }
+    }
+  }
+  if (auto* p = obj.if_contains("install_commands")) {
+    if (p->is_object()) {
+      const auto& map_obj = p->as_object();
+      for (const auto& [key, value] : map_obj) {
+        if (value.is_string()) {
+          resp.install_commands.emplace(key, value.as_string().c_str());
         }
       }
     }

@@ -69,6 +69,7 @@ async function handleLatestVersion(request, env) {
       draft: releaseData.draft,
       download_urls: extractDownloadUrls(releaseData.assets),
       changelog_url: releaseData.html_url,
+      install_commands: buildInstallCommands(),
       body: releaseData.body
     };
 
@@ -134,6 +135,7 @@ async function handleVersionCheck(request, env) {
       platform: platform,
       architecture: arch,
       download_urls: latestData.download_urls,
+      install_commands: latestData.install_commands || buildInstallCommands(),
       changelog_url: latestData.changelog_url,
       security_update: await isSecurityUpdate(latestData.body),
       minimum_supported_version: await getMinimumSupportedVersion(env),
@@ -170,6 +172,9 @@ function extractDownloadUrls(assets) {
   
   assets.forEach(asset => {
     const name = asset.name.toLowerCase();
+    if (name.endsWith('.sha256') || name.endsWith('.sig')) {
+      return;
+    }
     
     if (name.includes('linux') && name.includes('x64')) {
       urls['linux-x64'] = asset.browser_download_url;
@@ -187,19 +192,94 @@ function extractDownloadUrls(assets) {
   return urls;
 }
 
-function compareVersions(version1, version2) {
-  // Remove 'v' prefix if present
-  const v1 = version1.replace(/^v/, '').split('.').map(Number);
-  const v2 = version2.replace(/^v/, '').split('.').map(Number);
-  
-  for (let i = 0; i < Math.max(v1.length, v2.length); i++) {
-    const a = v1[i] || 0;
-    const b = v2[i] || 0;
-    
-    if (a > b) return 1;
-    if (a < b) return -1;
+function buildInstallCommands() {
+  return {
+    linux: 'curl -fsSL https://install.lets-script.com/install.sh | sudo bash',
+    macos: 'curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash',
+    windows: 'irm https://install.lets-script.com/install.ps1 | iex'
+  };
+}
+
+function compareVersions(version1 = '', version2 = '') {
+  const normalize = (raw) => {
+    const cleaned = raw.trim().replace(/^v/i, '');
+    const [core, ...rest] = cleaned.split('-');
+
+    const toTokens = (segment) =>
+      segment
+        .split('.')
+        .filter((token) => token.length > 0)
+        .map((token) => {
+          const numeric = Number(token);
+          return Number.isNaN(numeric) ? token : numeric;
+        });
+
+    return {
+      core: toTokens(core),
+      qualifiers: rest.flatMap(toTokens)
+    };
+  };
+
+  const a = normalize(version1);
+  const b = normalize(version2);
+
+  const maxCoreLength = Math.max(a.core.length, b.core.length);
+  for (let i = 0; i < maxCoreLength; i++) {
+    const lhs = a.core[i] ?? 0;
+    const rhs = b.core[i] ?? 0;
+
+    if (typeof lhs === 'number' && typeof rhs === 'number') {
+      if (lhs > rhs) return 1;
+      if (lhs < rhs) return -1;
+    } else {
+      const lhsStr = String(lhs);
+      const rhsStr = String(rhs);
+      if (lhsStr > rhsStr) return 1;
+      if (lhsStr < rhsStr) return -1;
+    }
   }
-  
+
+  const aHasQualifiers = a.qualifiers.length > 0;
+  const bHasQualifiers = b.qualifiers.length > 0;
+
+  if (!aHasQualifiers && !bHasQualifiers) {
+    return 0;
+  }
+  if (!aHasQualifiers && bHasQualifiers) {
+    return 1;
+  }
+  if (aHasQualifiers && !bHasQualifiers) {
+    return -1;
+  }
+
+  const maxQualifierLength = Math.max(a.qualifiers.length, b.qualifiers.length);
+  for (let i = 0; i < maxQualifierLength; i++) {
+    const lhs = a.qualifiers[i];
+    const rhs = b.qualifiers[i];
+
+    if (lhs === undefined) return -1;
+    if (rhs === undefined) return 1;
+
+    const lhsIsNumber = typeof lhs === 'number';
+    const rhsIsNumber = typeof rhs === 'number';
+
+    if (lhsIsNumber && rhsIsNumber) {
+      if (lhs > rhs) return 1;
+      if (lhs < rhs) return -1;
+      continue;
+    }
+
+    if (lhsIsNumber !== rhsIsNumber) {
+      return lhsIsNumber ? -1 : 1;
+    }
+
+    const lhsStr = String(lhs);
+    const rhsStr = String(rhs);
+
+    if (lhsStr > rhsStr) return 1;
+    if (lhsStr < rhsStr) return -1;
+  }
+
   return 0;
 }
 

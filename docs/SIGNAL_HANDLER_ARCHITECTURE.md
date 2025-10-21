@@ -1,375 +1,104 @@
-# Signal Handler Architecture - Implementation Summary
+# Signal Handler Architecture
 
 ## Overview
 
-We have designed and partially implemented a modular signal handler architecture for processing device update signals from the polling endpoint. The architecture follows clean separation of concerns with distinct handler classes for each signal type.
+The `cert-ctrl` agent processes device update signals emitted by the polling endpoint through a synchronous dispatcher/handler pipeline. This document reflects the implementation on `main` (October 2025) and aligns with `docs/CLIENT_AGENT_POLLING.md`.
 
-## Architecture Design
+Goals:
+- Keep the updates poller straightforward and single-threaded.
+- Deduplicate signals so cursor replays do not redo work.
+- Stage install configuration changes while honouring `auto_apply_config`.
+- Reuse a single `InstallConfigManager` instance for caching and resource materialisation.
 
-### File Structure
+## File Layout
 
 ```
 include/handlers/
-├── signal_dispatcher.hpp               # Central dispatcher with deduplication
-├── signal_handlers/
-│   ├── signal_handler_base.hpp        # Base interface for all handlers
-│   ├── install_updated_handler.hpp    # Handle install.updated signals
-│   ├── cert_renewed_handler.hpp       # Handle cert.renewed signals
-│   └── cert_revoked_handler.hpp       # Handle cert.revoked signals
-└── updates_polling_handler.hpp         # Main polling orchestrator
-
-src/
-└── handlers/
-    └── (corresponding .cpp files when needed)
+├── updates_polling_handler.hpp     # Poll loop wiring
+├── signal_dispatcher.hpp           # Dedup + routing
+└── signal_handlers/
+    ├── signal_handler_base.hpp     # Common interface
+    ├── install_updated_handler.hpp # install.updated handler
+    ├── cert_renewed_handler.hpp    # cert.renewed handler
+    └── cert_revoked_handler.hpp    # cert.revoked handler (logging only)
 ```
 
-### Core Components
+`UpdatesPollingHandler` constructs the dispatcher with the runtime directory (last entry in `ConfigSources.paths_`) and registers the three handlers using a shared `InstallConfigManager`.
 
-#### 1. Base Handler Interface (`signal_handler_base.hpp`)
+## Runtime Flow
 
-```cpp
-class ISignalHandler {
-public:
-    virtual ~ISignalHandler() = default;
-    virtual std::string signal_type() const = 0;
-    virtual monad::IO<void> handle(const data::DeviceUpdateSignal& signal) = 0;
-    virtual bool should_process(const data::DeviceUpdateSignal& signal) const {
-        return true;
-    }
-};
-```
+1. `poll_once()` issues `GET {base_url}/apiv1/devices/self/updates` with the cached access token.
+2. A `200 OK` response is parsed into `DeviceUpdatesResponse`; the cursor is written to `state/last_cursor.txt` and each signal is forwarded to the dispatcher.
+3. `SignalDispatcher::dispatch()` generates a deduplication ID (`type:ts_ms`), checks it against the in-memory set, and skips duplicates. Unknown types are logged and ignored.
+4. When a handler returns successfully, the dispatcher records the ID in `state/processed_signals.json` (keeping the newest 1000 entries within a seven-day window). Failures are logged but not persisted, enabling retry if the cursor rewinds.
 
-**Responsibilities:**
-- Defines contract for all signal handlers
-- `signal_type()`: Returns signal type string (e.g., "install.updated")
-- `handle()`: Processes the signal synchronously
-- `should_process()`: Optional filtering (e.g., skip stale versions)
+## Dispatcher Details
 
-#### 2. Signal Dispatcher (`signal_dispatcher.hpp`)
+- **Registry:** `std::unordered_map<std::string, std::shared_ptr<ISignalHandler>>` for O(1) lookups.
+- **Deduplication store:** `processed_signals_` populated from disk on construction. Persistence uses a temp file + rename pattern with `0600` permissions.
+- **Error isolation:** Handler errors are caught and downgraded to log messages so the polling loop continues.
 
-```cpp
-class SignalDispatcher {
-private:
-    std::unordered_map<std::string, std::shared_ptr<ISignalHandler>> handlers_;
-    std::unordered_set<std::string> processed_signals_;  // Deduplication
-    std::filesystem::path state_dir_;
+Because deduplication relies on the backend timestamp, identical `type`/`ts_ms` pairs are treated as the same signal.
 
-public:
-    void register_handler(std::shared_ptr<ISignalHandler> handler);
-    monad::IO<void> dispatch(const data::DeviceUpdateSignal& signal);
-};
-```
+## Handler Responsibilities
 
-**Key Features:**
-- **Registry Pattern**: Maps signal types to handlers (O(1) lookup)
-- **Deduplication**: Tracks processed signals by `type:timestamp_ms`
-- **Persistence**: Saves processed signals to `state/processed_signals.json`
-- **Retention**: Keeps last 1000 signals or 7 days worth
-- **Forward Compatibility**: Unknown signal types logged and ignored
-- **Error Recovery**: Handler failures logged but don't block polling
+### InstallUpdatedHandler
 
-#### 3. Updates Polling Handler (`updates_polling_handler.hpp`)
+- Calls `InstallConfigManager::ensure_config_version(expected_version, expected_hash)` which fetches `/apiv1/devices/self/install-config` when the version/hash does not match the cached copy.
+- Persists the payload to `state/install_config.json` and updates `state/install_version.txt` atomically.
+- When `auto_apply_config` is `true`, immediately invokes `apply_copy_actions()` to execute all copy/import directives and materialise resources under `runtime_dir/resources/{certs|cas}/<id>/current/`.
+- When `auto_apply_config` is `false` (default), logs that the new plan has been staged and returns without executing actions. Operators promote staged configs via `cert-ctrl install apply`.
 
-**Enhanced with:**
-- Signal dispatcher integration
-- Adaptive backoff tracking (`consecutive_204_count_`, `backoff_level_`)
-- Three response handlers:
-  - `handle_no_content()`: Process 204 responses, extract ETag cursor
-  - `handle_ok_with_signals()`: Process 200 responses, dispatch signals
-  - `handle_error_status()`: Handle error responses (401/403/429/5xx)
+### CertRenewedHandler
 
-**Key Implementation:**
+- Ensures the cached install configuration is available (fetching it if necessary) and reruns `apply_copy_actions()` for the targeted certificate ID.
+- Reuses the same resource cache as the install handler, guaranteeing decrypted keys, PEM chains, DER files, and PFX bundles stay in sync.
 
-```cpp
-monad::IO<void> poll_once() {
-    return http_io<GetStringTag>(url)
-        .then(http_request_io<GetStringTag>(http_client_))
-        .then([this](auto ex) {
-            int status = ex->response.result_int();
-            
-            if (status == 204) return handle_no_content(ex);
-            else if (status == 200) return handle_ok_with_signals(ex);
-            else return handle_error_status(ex, status);
-        });
-}
+### CertRevokedHandler
 
-monad::IO<void> handle_ok_with_signals(auto ex) {
-    return parseJsonDataResponse<DeviceUpdatesResponse>()
-        .map([this](DeviceUpdatesResponse resp) {
-            cursor_ = resp.data.cursor;
-            save_cursor(cursor_);
-            
-            consecutive_204_count_ = 0;  // Reset backoff
-            backoff_level_ = 0;
-            
-            for (const auto& signal : resp.data.signals) {
-                signal_dispatcher_->dispatch(signal).run(ioc_);
-            }
-        });
-}
-```
+- Logs that the certificate was revoked and returns success.
+- No automatic cleanup yet; a TODO remains in the source so operators know the current limitation.
 
-### Handler Implementations
+## InstallConfigManager Integration
 
-#### Install Updated Handler
+The dispatcher and handlers share a single `InstallConfigManager` instance to:
+- Cache the latest install configuration on disk and in memory.
+- Download certificate/CA bundles, decrypt private keys, and write outputs with secure permissions.
+- Provide the manual promotion path via `cached_config_snapshot()` used by `InstallConfigApplyHandler`.
 
-**Responsibilities:**
-- Fetches full install configuration from API
-- Compares versions to avoid re-applying old configs
-- Updates local version tracking (`state/install_version.txt`)
-- Applies configuration changes
+Key files under the runtime directory:
+- `state/install_config.json`
+- `state/install_version.txt`
+- `state/processed_signals.json`
+- `resources/{certs|cas}/<id>/current/`
 
-**Version Management:**
-```cpp
-bool should_process(const DeviceUpdateSignal& signal) const override {
-    if (signal.ref.contains("version")) {
-        int64_t remote_version = signal.ref.at("version").as_int64();
-        return remote_version > local_version_;
-    }
-    return true;
-}
-```
+Removing these files clears local state; the next poll will refetch and rebuild caches.
 
-**Processing Flow (current implementation):**
-1. `SignalDispatcher` deduplicates the `install.updated` signal and consults `should_process()` on `InstallUpdatedHandler` to skip stale versions.
-2. `InstallUpdatedHandler::handle()` logs the signal payload and forwards it to `InstallConfigManager::apply_copy_actions_for_signal()`.
-3. `InstallConfigManager::ensure_config_version()` reloads the cached payload from disk when possible, or fetches the requested version + hash from `/apiv1/devices/self/install-config`.
-4. On success the manager applies copy actions (and CA imports) through `install_actions::*`, which materialise referenced resources before touching the filesystem.
+## Manual Approval Workflow
 
-**Disk Persistence & Version Tracking:**
-- `InstallConfigManager::persist_config()` performs atomic writes of the latest JSON payload to `state/install_config.json` and mirrors the numeric version in `state/install_version.txt`.
-- The manager keeps an in-memory `local_version_` that is populated during construction via `load_from_disk()`, keeping version checks fast and side-effect free for `should_process()`.
-- Resource bundles referenced by install actions are cached under `runtime_dir/resources/<type>/<id>/current/` so subsequent runs can reuse local copies instead of re-downloading.
+- The dispatcher always stages the latest install plan, overwriting any previous version.
+- With `auto_apply_config=false`, the handler logs that the plan is ready for manual promotion. `cert-ctrl install apply` loads the staged JSON, runs the same copy/import actions, and reports success per version.
+- With `auto_apply_config=true`, staged plans are applied immediately and no manual intervention is required.
 
-- **Manual Approval Mode (`auto_apply_config`):**
-    - `CertctrlConfig::auto_apply_config` (toggled via `cert-ctrl conf set auto_apply_config <true|false>`) gates whether freshly fetched plans are applied immediately.
-    - When the flag is `true`, the flow remains unchanged: fetch, persist, run copy/import actions.
-    - When the flag is `false` (current default) the dispatcher still fetches and persists the latest payload, but `InstallConfigManager::apply_copy_actions_for_signal()` short-circuits after staging. Operators can then promote the cached version on demand with `cert-ctrl install apply`, which reuses the same action pipeline against the staged JSON. Only the most recently fetched plan is retained in manual mode; fetching a newer revision overwrites the staged copy.
+## Limitations & Future Work
 
-#### Certificate Renewed Handler
+- `cert.revoked` handling is informational only.
+- No adaptive backoff lives in the dispatcher; the poller enforces a minimum 10-second delay and honours server `Retry-After` hints.
+- All work is synchronous. If install actions become expensive we will need background workers or a task queue.
+- Deduplication depends on backend timestamps; if the upstream system emits duplicate `ts_ms` values, signals may be dropped.
 
-**Responsibilities:**
-- Checks if certificate is in use locally (`state/local_certs.json`)
-- Fetches updated certificate material from API
-- Installs certificate files with proper permissions
-- Reloads affected services (nginx, apache, etc.)
+Potential enhancements:
+- Automated cleanup for revoked certificates.
+- Richer metrics (dispatch counts, handler durations, failure rates).
+- Optional asynchronous execution for long-running handlers.
 
-#### Certificate Revoked Handler
+## Testing Recommendations
 
-**Responsibilities:**
-- Removes certificate from active configuration
-- Stops services using the certificate
-- Moves certificate files to revoked directory for audit
-- Updates local certificate tracking
+Current automated coverage is minimal. Recommended additions:
+- Dispatcher deduplication round-trip (load → dispatch → persist).
+- `InstallUpdatedHandler` tests for staging vs auto-apply using a stubbed `InstallConfigManager`.
+- `CertRenewedHandler` test verifying selective copy behaviour for a specific certificate ID.
 
-## Data Flow
+## Documentation Alignment
 
-```mermaid
-sequenceDiagram
-    participant Poller as UpdatesPollingHandler
-    participant Dispatcher as SignalDispatcher
-    participant Handler as Signal Handler
-    participant Disk as State Files
-    
-    Poller->>Poller: poll_once()
-    alt 204 No Content
-        Poller->>Poller: handle_no_content()
-        Poller->>Disk: save_cursor(ETag)
-        Poller->>Poller: ++consecutive_204_count
-    else 200 OK with signals
-        Poller->>Poller: handle_ok_with_signals()
-        Poller->>Disk: save_cursor(data.cursor)
-        Poller->>Poller: Reset backoff
-        loop For each signal
-            Poller->>Dispatcher: dispatch(signal)
-            Dispatcher->>Disk: Check processed_signals
-            alt Not processed
-                Dispatcher->>Handler: should_process(signal)?
-                alt Should process
-                    Dispatcher->>Handler: handle(signal)
-                    Handler->>Handler: Fetch resources, apply changes
-                    Handler-->>Dispatcher: Success
-                    Dispatcher->>Disk: Mark as processed
-                else Skip
-                    Dispatcher->>Disk: Mark as processed (skip)
-                end
-            else Already processed
-                Dispatcher->>Dispatcher: Skip (deduplicated)
-            end
-        end
-    end
-```
-
-## Adaptive Backoff Strategy
-
-Based on consecutive 204 responses:
-
-| Consecutive 204s | Backoff Level | Interval |
-|-----------------|---------------|----------|
-| 0-2 | 0 | 5s (base) |
-| 3+ | 1 | 5m |
-| 6+ | 2 | 15m |
-| 9+ | 3 | 1h |
-| 12+ | 4 | 6h |
-| 15+ | 5 | 24h (cap) |
-
-Reset to base interval on 200 response with signals.
-
-## State Persistence
-
-### Files Managed
-
-| File | Purpose | Format |
-|------|---------|--------|
-| `state/last_cursor.txt` | Last polling cursor | Plain text |
-| `state/processed_signals.json` | Deduplication | JSON array of signal IDs |
-| `state/install_version.txt` | Current install config version | Integer |
-| `state/local_certs.json` | Certificates in use | JSON array of cert IDs |
-| `state/access_token.txt` | Current access token | Plain text (mode 600) |
-| `state/refresh_token.txt` | Refresh token | Plain text (mode 600) |
-
-### Atomic Writes
-
-All state files use atomic write pattern:
-```cpp
-void save_cursor(const std::string& cursor) {
-    auto temp_file = state_dir / ".last_cursor.txt.tmp";
-    
-    std::ofstream ofs(temp_file);
-    ofs << cursor;
-    ofs.close();
-    
-    std::filesystem::rename(temp_file, cursor_file);  // Atomic
-    std::filesystem::permissions(cursor_file, 0600);
-}
-```
-
-## Error Handling
-
-### Handler Level
-- All handler errors caught by dispatcher
-- Logged with full context
-- Polling continues (non-blocking)
-- Failed signals NOT marked as processed (may retry on cursor reset)
-
-### Dispatcher Level
-```cpp
-return handler->handle(signal)
-    .then([](){ /* Mark as processed */ })
-    .catch_then([](monad::Error e) {
-        LOG_ERROR << "Handler failed: " << e.what;
-        return IO<void>::pure();  // Continue polling
-    });
-```
-
-### Polling Level
-- Network errors: Exponential backoff
-- 401 Unauthorized: Trigger token refresh
-- 409 Conflict (cursor expired): Clear cursor, restart
-- 429 Rate Limited: Respect retry_after header
-- 5xx errors: Exponential backoff up to 5 minutes
-
-## Testing Strategy
-
-### Unit Tests
-- Each handler tested in isolation
-- Mock signal dispatcher
-- Verify version comparison logic
-- Test deduplication
-
-### Integration Tests
-- Full poll cycle with real server responses
-- 204 → 200 transitions
-- Signal dispatch and processing
-- Cursor management and persistence
-- Adaptive backoff behavior
-
-### Test Fixtures
-```cpp
-TEST(UpdatesPollingHandler, HandlesNoContentResponse) {
-    // Mock 204 response with ETag
-    // Verify cursor extracted and saved
-    // Verify consecutive_204_count incremented
-}
-
-TEST(UpdatesPollingHandler, HandlesSignalsResponse) {
-    // Mock 200 response with signals
-    // Verify each signal dispatched
-    // Verify cursor saved
-    // Verify backoff reset
-}
-
-TEST(SignalDispatcher, DeduplicatesSignals) {
-    // Dispatch same signal twice
-    // Verify handler called only once
-    // Verify both marked as processed
-}
-```
-
-## Future Enhancements
-
-###1. Async Signal Processing
-Current: Synchronous processing blocks polling
-Future: Queue signals, process in background worker threads
-
-### 2. Retry Logic for Failed Signals
-Current: Failed signals not retried (except on cursor reset)
-Future: Exponential backoff retry queue with max attempts
-
-### 3. Priority Queues
-Current: FIFO processing
-Future: cert.revoked > cert.renewed > install.updated
-
-### 4. Metrics and Monitoring
-- Signal processing latency by type
-- Handler success/failure rates
-- Queue depth over time
-- Cursor age
-
-### 5. Configuration Validation
-- Verify install configs before applying
-- Checksum validation
-- Rollback on failure
-
-## Implementation Status
-
-✅ **Completed:**
-- Signal handler base interface
-- Signal dispatcher with deduplication
-- State persistence infrastructure
-- 204/200 response handling
-- Cursor management
-- Adaptive backoff
-- Forward compatibility (unknown signals)
-- Manual install plan approval workflow (`auto_apply_config=false` staging + `cert-ctrl install apply` promotion)
-
-⚠️ **Partially Complete:**
-- Handler implementations (placeholder logic)
-- Actual API resource fetching
-- Certificate installation
-- Service reloading
-
-❌ **Not Started:**
-- Async processing queues
-- Retry logic for failed signals
-- Priority queues
-- Comprehensive metrics
-- Configuration validation
-
-## Conclusion
-
-The signal handler architecture provides a solid foundation for processing device updates:
-
-- **Modular**: Each signal type has dedicated handler
-- **Extensible**: Easy to add new signal types
-- **Resilient**: Deduplication, error recovery, persistence
-- **Efficient**: Status-code based branching, adaptive backoff
-- **Forward Compatible**: Unknown signals gracefully ignored
-
-The design separates concerns cleanly:
-- **Polling**: Updates polling handler
-- **Routing**: Signal dispatcher
-- **Processing**: Individual signal handlers
-- **Persistence**: Atomic state management
-
-This architecture aligns with the CLIENT_AGENT_POLLING.md specification and provides a maintainable foundation for the cert-ctrl agent's update processing functionality.
+Whenever handler behaviour changes (new signals, resource paths, manual promotion semantics), update this note alongside `docs/CLIENT_AGENT_POLLING.md` so operator-facing instructions remain accurate.

@@ -6,9 +6,9 @@ This guide provides comprehensive installation instructions for the cert-ctrl ce
 
 ### Automated Installer
 
-#### Unix-like Systems (Linux, macOS, WSL)
+#### Linux & WSL
 
-For most users, the easiest installation method is our automated installer:
+For most Linux distributions (including WSL), use the unified shell installer:
 
 ```bash
 curl -fsSL https://install.lets-script.com/install.sh | sudo bash
@@ -25,11 +25,35 @@ sudo bash install.sh
 ```
 
 This will automatically:
-- Detect your platform and architecture
+- Detect your Linux distribution and architecture
 - Download the latest release
 - Install to `/usr/local/bin` (requires root)
-- Set up systemd service (Linux only)
+- Set up the systemd service when supported
 - Verify the installation
+
+#### macOS
+
+macOS uses a dedicated installer script that configures launchd and mac-specific paths:
+
+```bash
+curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash
+```
+
+or, to review first:
+
+```bash
+curl -fsSL https://install.lets-script.com/install-macos.sh -o install-macos.sh
+# Inspect the script before execution
+cat install-macos.sh
+sudo bash install-macos.sh
+```
+
+The macOS installer:
+- Detects Apple Silicon vs Intel automatically
+- Installs to `/usr/local/bin` (creates the directory when needed)
+- Generates the launchd plist and loads the daemon
+- Writes defaults under `/Library/Application Support/certctrl`
+- Performs basic verification after setup
 
 #### Windows (PowerShell)
 
@@ -63,7 +87,7 @@ The installer automatically detects:
 
 ## Installation Options
 
-### Unix-like Systems (Linux, macOS, WSL)
+### Linux & WSL
 
 #### System-wide Installation (Default)
 
@@ -82,11 +106,26 @@ curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --install-dir
 #### Service Installation
 
 ```bash
-# Install binary and systemd service (Linux)
+# Install binary and systemd service
 curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --service
 
 # Install binary only, skip service
 curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --no-service
+```
+
+### macOS
+
+The macOS installer script exposes similar toggles via long options. Some common examples:
+
+```bash
+# Install for all users (requires sudo)
+curl -fsSL https://install.lets-script.com/install-macos.sh | bash
+
+# Install to a custom directory
+curl -fsSL https://install.lets-script.com/install-macos.sh | bash -s -- --install-dir /usr/local/cert-ctrl
+
+# Skip launchd registration
+curl -fsSL https://install.lets-script.com/install-macos.sh | bash -s -- --no-service
 ```
 
 ### Windows
