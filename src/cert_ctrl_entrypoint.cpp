@@ -118,7 +118,7 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
 
   try {
     js::object application{
-        {"auto_apply_config", false},
+        {"auto_apply_config", true},
         {"verbose", "info"},
         {"interval_seconds", 300},
         {"url_base", "https://api.cjj365.cc"},
