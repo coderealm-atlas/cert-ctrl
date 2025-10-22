@@ -66,7 +66,7 @@ public:
              certctrl_config_provider_.get().base_url)),
         opt_desc_("misc subcommand options") {
     exec_ = boost::asio::make_strand(ioc_);
-    boost::program_options::options_description create_opts("conf Options");
+    boost::program_options::options_description create_opts("Login Options");
     opt_desc_.add(create_opts);
     po::parsed_options parsed = po::command_line_parser(cli_ctx_.unrecognized)
                                     .options(opt_desc_)

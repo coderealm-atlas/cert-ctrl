@@ -1,6 +1,7 @@
 #include "handlers/install_config_manager.hpp"
 #include "handlers/install_actions/copy_action.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
+#include "handlers/install_actions/exec_action.hpp"
 
 #include <boost/beast/http.hpp>
 #include <boost/json.hpp>
@@ -943,8 +944,23 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
         return ensure_resource_materialized_sync(item);
       }};
 
+  // First perform copy actions
   return install_actions::apply_copy_actions(context, config, target_ob_type,
-                                             target_ob_id);
+                                             target_ob_id)
+      .then([this, &config, &target_ob_type, target_ob_id]() {
+        // After copy actions, always run exec items (cmd/cmd_argv) that may be
+        // present regardless of item.type. Limit exec targets to the same
+        // target_ob_type/target_ob_id when specified.
+        std::optional<std::vector<std::string>> allowed_types = std::nullopt;
+        if (target_ob_type) {
+          allowed_types = std::vector<std::string>{*target_ob_type};
+        }
+        return install_actions::apply_exec_actions({runtime_dir_, output_,
+                                                   [this](const dto::InstallItem &item) {
+                                                     return ensure_resource_materialized_sync(item);
+                                                   }},
+                                                  config, allowed_types);
+      });
 }
 
 monad::IO<void> InstallConfigManager::apply_import_ca_actions(
@@ -960,7 +976,18 @@ monad::IO<void> InstallConfigManager::apply_import_ca_actions(
 
   return install_actions::apply_import_ca_actions(context, config,
                                                   target_ob_type,
-                                                  target_ob_id);
+                                                  target_ob_id)
+      .then([this, &config, &target_ob_type, target_ob_id]() {
+        std::optional<std::vector<std::string>> allowed_types = std::nullopt;
+        if (target_ob_type) {
+          allowed_types = std::vector<std::string>{*target_ob_type};
+        }
+        return install_actions::apply_exec_actions({runtime_dir_, output_,
+                                                   [this](const dto::InstallItem &item) {
+                                                     return ensure_resource_materialized_sync(item);
+                                                   }},
+                                                  config, allowed_types);
+      });
 }
 
 monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
@@ -983,6 +1010,8 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
             output_.logger().info()
                 << "auto_apply_config disabled; staged install-config version "
                 << config_ptr->version << " for manual approval." << std::endl;
+            output_.logger().info()
+                << "To apply staged changes (including any cmd/cmd_argv updates), run: cert-ctrl install-config apply" << std::endl;
             return ReturnIO::pure();
           }
           return apply_copy_actions(*config_ptr, std::nullopt, std::nullopt);

@@ -238,6 +238,26 @@ certctrl_use_static_atomic(test_install_config_manager)
 
 gtest_discover_tests(test_install_config_manager DISCOVERY_TIMEOUT 30)
 
+add_executable(test_exec_action
+  test_exec_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/exec_action.cpp
+)
+target_compile_features(test_exec_action PRIVATE cxx_std_17)
+target_include_directories(test_exec_action PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+)
+target_link_libraries(test_exec_action PRIVATE
+  GTest::gtest_main
+  Boost::program_options
+  Boost::json
+  certctrl_libatomic
+)
+
+certctrl_use_static_atomic(test_exec_action)
+
+gtest_discover_tests(test_exec_action DISCOVERY_TIMEOUT 20)
+
 add_executable(test_updates_polling_handler
   test_updates_polling_handler.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_config_manager.cpp

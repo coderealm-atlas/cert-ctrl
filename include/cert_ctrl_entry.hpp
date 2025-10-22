@@ -125,7 +125,7 @@ public:
         di::bind<certctrl::CliCtx>().to(cli_ctx_),
         // Register all handlers for aggregate injection; DI will convert to
         // vector<unique_ptr<IHandler>>
-  di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::InstallConfigApplyHandler, certctrl::InstallConfigHandler, certctrl::LoginHandler, certctrl::UpdateHandler, certctrl::UpdatesPollingHandler>());
+  di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::InstallConfigHandler, certctrl::LoginHandler, certctrl::UpdateHandler, certctrl::UpdatesPollingHandler>());
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
@@ -148,6 +148,25 @@ public:
     for (const auto &source : config_sources_.paths_) {
       output_hub_->logger().info() << " - " << source << std::endl;
     }
+    // If auto_apply_config is disabled (the default), make a conspicuous
+    // reminder on stdout so operators running the tool interactively
+    // immediately notice that staged install configs are not automatically
+    // applied.
+    // clang-format off
+      if (!certctrl_config_->auto_apply_config) {
+        std::cerr << "\n";
+        std::cerr << "/**************************************************************" << std::endl;
+        std::cerr << "* IMPORTANT: auto_apply_config = false (default)              *" << std::endl;
+        std::cerr << "* Staged install configurations are NOT applied automatically.*" << std::endl;
+        std::cerr << "* To apply staged changes run:                                *" << std::endl;
+        std::cerr << "*                                                             *" << std::endl;
+        std::cerr << "*    cert-ctrl install-config apply                           *" << std::endl;
+        std::cerr << "*                                                             *" << std::endl;
+        std::cerr << "* Inspect staged plan before applying:                        *" << std::endl;
+        std::cerr << "*    cert-ctrl install-config show --raw                      *" << std::endl;
+        std::cerr << "**************************************************************/" << std::endl;
+      }
+    // clang-format on
 
     // Use dispatcher injected with all handlers (as
     // vector<unique_ptr<IHandler>>)
