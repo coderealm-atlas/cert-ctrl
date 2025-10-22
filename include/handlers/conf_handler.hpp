@@ -47,7 +47,7 @@ public:
         certctrl_config_provider_(certctrl_config_provider),
         output_hub_(output_hub), cli_ctx_(cli_ctx),
         opt_desc_("misc subcommand options") {
-    boost::program_options::options_description create_opts("conf Options");
+    boost::program_options::options_description create_opts("Conf Options");
     opt_desc_.add(create_opts);
     po::parsed_options parsed = po::command_line_parser(cli_ctx_.unrecognized)
                                     .options(opt_desc_)

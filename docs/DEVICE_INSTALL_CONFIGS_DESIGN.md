@@ -89,11 +89,12 @@ Mapping from virtual filenames
 
 ## Action items (JSON contract v0)
 
-Top‑level is an array; each element is one action. Minimal set: `copy` and `exec`.
+Top‑level is an array; each element is one action. Minimal set: `copy`, `exec`, and `import_ca`.
 
 Common fields
 - `id`: string (recommended; used for ordering, audit, depends_on)
-- `type`: `"copy" | "exec"`
+- `type`: `"copy" | "exec" | "import_ca"`
+- `enabled`?: boolean (default `true`; when `false`, the agent skips the item but keeps it visible for operators)
 - `continue_on_error`?: boolean (default false)
 - `depends_on`?: string[] (ids of prior items)
 - `tags`?: string[] (optional grouping)
@@ -103,7 +104,7 @@ Common fields
 
 Copy
 - `from`: string[] — array of agent standard virtual filenames (e.g., `"private.key"`, `"fullchain.pem"`, `"ca.pem"`, `"bundle.pfx"`)
-- `to`: string[] — array of absolute destination paths; MUST have the same length as `from` and pair 1:1
+- `to`: string[] — array of absolute destination paths; MUST have the same length as `from` and pair 1:1 (empty strings denote “unset” destinations in templates)
 
 Notes
  - No per-file options (mode/owner/group/atomic/backup) in the contract. The agent applies safe defaults: create dirs, atomic write+rename, single backup, sane permissions based on file type (e.g., 0600 for private keys, 0644 for public certs/chain), and idempotent behavior.
@@ -113,6 +114,52 @@ Notes
 - `env`?: object (k/v strings)
 - `verify`?: `{ "type": "command", "cmd": string | string[] }`
 
+Exec semantics (agent behavior)
+
+- `cmd` (string) — executed via the platform shell by default:
+  - POSIX: `/bin/sh -c "<cmd>"`
+  - Windows: `cmd.exe /C "<cmd>"`
+  - This form preserves shell features (pipes, redirection, backgrounding). Use with care: shell interpretation may allow complex behavior or backgrounded processes to outlive the apply step.
+- `cmd_argv` (array) — executed directly (argv form) using the OS process APIs (no shell). This is the safer, preferred form for production workloads and for invoking specific executables such as PowerShell:
+  - Example: `"cmd_argv": ["C:\\Program Files\\PowerShell\\7\\pwsh.exe","-File","C:\\opt\\scripts\\hook.ps1"]`
+- Agent behavior details:
+  - Output capture: the agent captures both stdout and stderr from executed commands and writes the combined output to the agent log (truncated if very large). This aids troubleshooting and audit.
+  - Timeouts: `timeout_ms` controls how long the agent waits before killing the command (default 30s).
+  - Environment: when `env` is provided, the child process receives only the specified environment variables (the agent clears and sets these). When `env` is absent, the child inherits the agent process environment.
+  - run_as: on POSIX systems the agent attempts to switch to the named user (setgid/setuid) before executing the command. This requires the agent to run with privileges allowing uid/gid changes (typically root). On Windows `run_as` is not performed in v0.
+  - continue_on_error: if true, a failing exec logs and processing continues; otherwise the apply fails and the error is reported.
+  - Backgrounded commands: if `cmd` uses shell backgrounding (e.g., `&`), the shell may return before the backgrounded child finishes; the agent treats the shell exit status as the command result. Use explicit services / supervisors for long-running workloads.
+
+Security and recommendations
+
+- Prefer `cmd_argv` for safety and determinism when you control the server that emits install plans.
+- If you must use `cmd` strings (for quick operations or complex shell pipelines), prefer quoting and validate inputs that are injected into command strings on the server-side.
+- For PowerShell on Windows prefer `cmd_argv` with the full executable path, or call PowerShell via `cmd` explicitly if you need shell features.
+
+Examples (exec items)
+
+- Shell/string form (convenient, shell semantics):
+  ```json
+  { "id":"run", "type":"exec", "cmd":"python xx.py", "timeout_ms":120000 }
+  ```
+
+- Argv form (recommended for production):
+  ```json
+  { "id":"run", "type":"exec", "cmd_argv":["/usr/bin/python3","/opt/certs/xx.py"], "timeout_ms":120000 }
+  ```
+
+- PowerShell on Windows (argv form recommended):
+  ```json
+  { "id":"run-ps", "type":"exec", "cmd_argv":["C:\\Program Files\\PowerShell\\7\\pwsh.exe","-File","C:\\opt\\scripts\\hook.ps1"] }
+  ```
+
+Import CA
+- `import_ca` items orchestrate platform trust-store imports for self CAs.
+- Must include `ob_type: "ca"` and a valid `ob_id`.
+- Recommended `from`: `["ca.pem"]` so the agent stages the PEM prior to import; `to` MAY be empty or provide optional filesystem destinations.
+- Agent behavior: fetch the CA resource, ensure the PEM is accessible, perform the platform-specific trust-store import, and log the outcome distinctly from normal copy operations.
+- If `enabled` is `false`, the agent skips both the import and any optional copy work.
+
 ### Example (server → agent)
 
 ```json
@@ -120,25 +167,27 @@ Notes
   {
     "id": "copy-key",
     "type": "copy",
+    "enabled": true,
     "ob_type": "cert",
     "ob_id": 12345,
     "ob_name": "api.example.com",
-    "from": ["private.key"],
-    "to": ["/opt/cert/private.key"]
+    "from": ["private.key", "certificate.pem"],
+    "to": ["/opt/cert/private.key", "/opt/cert/certificate.pem"]
   },
   {
-    "id": "copy-fullchain",
-    "type": "copy",
-    "ob_type": "cert",
-    "ob_id": 12345,
-    "from": ["fullchain.pem"],
-    "to": ["/opt/cert/fullchain.pem"],
-    "verify": { "type": "cert_fingerprint" },
-    "depends_on": ["copy-key"]
+    "id": "trust-store",
+    "type": "import_ca",
+    "ob_type": "ca",
+    "ob_id": 6789,
+    "ob_name": "corp-root",
+    "from": ["ca.pem"],
+    "tags": ["ca-install"],
+    "enabled": false
   },
   {
     "id": "reload-service",
     "type": "exec",
+    "enabled": true,
     "cmd": ["bash", "-lc", "systemctl reload nginx"],
     "timeout_ms": 15000,
     "depends_on": ["copy-fullchain"],
@@ -156,6 +205,7 @@ Notes
 - Idempotency: run fast verifications; skip if already in desired state.
 - Safety: create dirs, write atomically, set permissions, backup old, rollback on failure.
 - Emit per‑item results with status, exit codes, durations, and truncated logs.
+- For `import_ca`, log explicit import success/failure with platform details so operators can audit trust-store updates.
 
 ## Server responsibilities
 
@@ -188,7 +238,6 @@ Notes
 
 ## Future extensions (non‑breaking)
 
-- Optional `import_ca` action (agent maps to OS trust stores) — can be modeled as `exec` initially.
 - `variables` map for simple templating of destinations and commands.
 - `object` pinning options beyond `ob_id` (e.g., by label/version rules).
 - Plan versioning and group bindings (per device or device group) for rollouts.
@@ -207,7 +256,8 @@ Notes
       "required": ["type"],
       "properties": {
         "id": { "type": "string" },
-        "type": { "enum": ["copy", "exec"] },
+  "type": { "enum": ["copy", "exec", "import_ca"] },
+  "enabled": { "type": "boolean" },
         "continue_on_error": { "type": "boolean" },
         "depends_on": { "type": "array", "items": { "type": "string" } },
         "tags": { "type": "array", "items": { "type": "string" } },
@@ -236,7 +286,16 @@ Notes
           }
         },
         { "if": { "properties": { "type": { "const": "exec" } } },
-          "then": { "required": ["cmd"] } }
+          "then": { "required": ["cmd"] } },
+        { "if": { "properties": { "type": { "const": "import_ca" } } },
+          "then": {
+            "required": ["ob_type", "ob_id"],
+            "properties": {
+              "ob_type": { "const": "ca" },
+              "from": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
         }
       ]
     },

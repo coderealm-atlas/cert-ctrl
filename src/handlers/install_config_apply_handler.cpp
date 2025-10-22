@@ -28,7 +28,7 @@ monad::IO<void> InstallConfigApplyHandler::start() {
 
   if (cli_ctx_.positionals.size() < 2 || cli_ctx_.positionals[1] != "apply") {
     output_.logger().error()
-        << "Usage: cert-ctrl install apply" << std::endl;
+        << "Usage: cert-ctrl install-config apply" << std::endl;
     return ReturnIO::pure();
   }
 
