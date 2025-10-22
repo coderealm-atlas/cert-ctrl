@@ -19,6 +19,12 @@ The spec integrates installation changes from `device_install_configs` so device
 Auth: Device access token (JWT) containing `sub` (user id) and `device_id` claim. Reject if token missing/invalid or `device_id` absent.
 Timeouts: By default (`wait` omitted or 0) the server returns immediately (no blocking). A client MAY supply `wait=<seconds>` (max 30) to long-poll; the server may then hold the request up to that duration to coalesce updates, returning 204 if no new signals.
 
+Access tokens minted through `/auth/device` can embed the required
+`device_id` claim by including a matching `device_id` field in the
+`device_poll` request body. The handler validates ownership before attaching
+the claim; if the lookup fails, the poll request returns an error instead of
+issuing a token with a forged or revoked device reference.
+
 ### Request
 Query (all optional)
 - `cursor=<string>` — last seen cursor; same semantics as `If-None-Match` (header takes precedence)
@@ -26,11 +32,6 @@ Query (all optional)
 - `wait=<int>` — optional long-poll seconds (default 0 = no block, min 0, max 30)
 
 Removed legacy: `device_id` query parameter (now derived exclusively from token claim).
-
-Query (all optional)
-- `cursor=<string>` — last seen cursor; same semantics as `If-None-Match` (header takes precedence)
-- `limit=<int>` — max number of signals to return (default 20, min 1, max 100)
-- `wait=<int>` — optional long-poll seconds (default 0 = no block, min 0, max 30)
 
 ### Responses
 
@@ -98,20 +99,44 @@ Currently defined types:
     - `config_id` (int64)
     - `version` (int)
     - `installs_hash_b64` (string, base64 of BLOB; optional if NULL in DB)
-  - Action: Client should fetch the current install config via its normal endpoint.
+  - Action: Client should fetch the current install config from `GET /apiv1/devices/self/install-config`.
 
 - cert.renewed
   - Meaning: A certificate used by this device has been renewed/rotated.
   - ref fields:
     - `cert_id` (int64)
     - `serial` (string, optional)
-  - Action: Client may refetch material as needed or wait until deployment instructions arrive via config.
+  - Action: Client may refetch material from `GET /apiv1/devices/self/certificates/:certificate_id/bundle` or wait until deployment instructions arrive via config.
 
 - cert.revoked
   - Meaning: A certificate used by this device has been revoked or removed.
   - ref fields:
     - `cert_id` (int64)
-  - Action: Remove local usage, rely on config for follow-up.
+  - Action: Remove local usage; rely on install config follow-ups. If needed, validate absence via `GET /apiv1/devices/self/certificates/:certificate_id/bundle`.
+
+- cert.wrap_ready
+  - Meaning: Per-device wrapped data key for a certificate is now available (the pending sentinel is cleared). This is emitted when `cert_record_devices.enc_data_key` transitions from the 48-byte zero sentinel to a real wrapped key for this device.
+  - ref fields:
+    - `cert_id` (int64)
+    - `device_keyfp_b64` (string, base64 of `cert_record_devices.device_keyfp`)
+    - `wrap_alg` (string, e.g., `x25519`)
+  - Action: Device should fetch the certificate bundle via `GET /apiv1/devices/self/certificates/:certificate_id/bundle`. If the server returns `409 WRAP_PENDING`, back off and retry later.
+
+- ca.assigned
+  - Meaning: A self-managed CA has been assigned to this device.
+  - ref fields:
+    - `ca_id` (int64)
+    - `serial` (string, CA serial number)
+    - `ca_name` (string, display name)
+  - Action: Device should fetch the CA bundle via `GET /apiv1/devices/self/cas/:ca_id/bundle` to ensure trust stores are updated.
+
+- ca.unassigned
+  - Meaning: A previously assigned self-managed CA has been removed from this device.
+  - ref fields:
+    - `ca_id` (int64)
+    - `serial` (string, CA serial number)
+    - `ca_name` (string, display name)
+  - Action: Device should remove the CA from local trust stores if present. The device can confirm absence via `GET /apiv1/devices/self/cas/:ca_id/bundle`.
 
 Note: The set is extensible; clients must ignore unknown `type` values gracefully.
 
@@ -137,12 +162,59 @@ Where to emit:
 
 Implementation notes:
 - Emit after transactional commit to avoid race conditions with rollbacks
-- If using Redis Streams per device (recommended):
-  - Stream key: `device:updates:<user_device_id>`
-  - Entry fields: `type`, `ts_ms`, plus `ref.*`
-  - Use MAXLEN ~1000 per device with approximate trim to control memory
-- If not using Redis:
-  - Use an outbox table (`device_update_outbox`) written within the same transaction; a dispatcher moves rows to the delivery medium and marks them delivered
+- Delivery backend options:
+  - **Redis Streams (direct write)** — handler writes straight to the stream while still inside the transaction boundary (legacy path, no longer the default)
+  - **Outbox + dispatcher (current default)** — write a durable row to `device_update_outbox` inside the DB transaction, then let the background dispatcher move it to Redis
+- For the outbox flow the enqueue call serializes a JSON payload shaped exactly as the signal and stores it alongside metadata (device id, event kind, attempt counters)
+- The dispatcher trims streams to MAXLEN ~1000 (approximate) once the entry lands in Redis so in-flight reconnects do not blow up memory
+
+## Integrating certificate wrap readiness (enc_data_key)
+
+Emit a `cert.wrap_ready` signal when a device’s per-cert wrapping becomes available. This typically occurs after background issuance/rotation completes and `cert_record_devices.enc_data_key` is updated from the pending sentinel (48 zero bytes) to a real wrapped key.
+
+Where to emit:
+- After a successful update in certificate persistence paths (e.g., `AcmeStoreMysql::update_cert(...)`) when upserting `cert_record_devices` rows for each device
+- Only emit for rows whose `enc_data_key` transitioned from sentinel → non-sentinel for that device
+
+Reference payload shape:
+```json
+{
+  "type": "cert.wrap_ready",
+  "ts_ms": <now_ms>,
+  "ref": {
+    "cert_id": <cert_record_devices.cert_record_id>,
+    "device_keyfp_b64": <base64(cert_record_devices.device_keyfp)>,
+    "wrap_alg": <cert_record_devices.wrap_alg>
+  }
+}
+```
+
+Notes:
+- The signal is per-device and should be pushed to that device’s stream/log only.
+- If the same cert is wrapped for multiple devices, each device receives an independent `cert.wrap_ready` with its own fingerprint.
+
+## Delivery backend (outbox dispatcher)
+
+The production backend uses a durable outbox + dispatcher pattern so that HTTP handlers never block on Redis availability.
+
+Pipeline overview:
+1. **Emitters (stores/services)** call `DeviceUpdateOutboxStore::enqueue_*` helpers inside the same MySQL transaction that mutates business state. Each row records the `device_id`, `event_kind`, serialized `payload` (JSON), attempt counter, and timestamps.
+2. **Outbox rows** remain in `PENDING` status until a worker claims them. If the process crashes before commit, no row is written; if Redis is down, rows accumulate for replay.
+3. **Dispatcher** (`bbdb::sql::DeviceUpdateOutboxDispatcher`) claims small batches via `claim_batch(dispatcher_id, lease_ttl, batch_size)`. Claiming sets `claimed_by`, `claimed_at`, and `lock_expires_at` to prevent duplicate delivery while the worker processes the batch.
+4. For each row the dispatcher calls `DeviceUpdatePublisher::publish_envelope(device_id, payload_object)` which pushes an entry to `device:updates:<device_id>` with `MAXLEN ~` 1000 (approximate trimming). On success the row id is queued for `mark_delivered`; on failure the dispatcher collects retry metadata.
+5. **Failure handling**: transient failures increment `attempts`, set `next_attempt_at = now + retry_delay`, and release the row back to `PENDING`. Exponential backoff is bounded by dispatcher options (`base_retry_delay`, `max_retry_delay`, `max_attempts`). Permanent failures set status `FAILED` and keep the last error message for diagnostics.
+6. **Runner** (`bbserver::DeviceUpdateOutboxRunner`) lives inside `bbserver` and drives the dispatcher. It uses the shared `IIoContextManager` to schedule `run_once()` on an `asio::steady_timer`. After any successful delivery it immediately schedules another tick (`delay=0`) to drain the backlog; when no work was found it waits `interval_seconds` (default 5) before polling again.
+7. **Configuration** comes from `outbox::UpdateOutboxConfigProvider`. Options include poll interval, batch size, lease TTL, retry timings, and dispatcher id prefix. Tunables live in `apps/bbserver/config_dir/update_outbox_config.*`.
+
+Operational visibility:
+- `DeviceUpdateOutboxRunner` logs to Boost.Log with prefix `[device-outbox]`. Successful batches appear at `info`, transient failures at `error`, timer cancellations at `debug`.
+- MySQL table `device_update_outbox` retains `status`, `attempts`, `failure_reason`, and timestamps; use it to investigate stuck rows.
+- Redis keys follow `device:updates:<device_id>`; delivered entries should appear immediately after a dispatcher pass. Stream IDs double as cursors the API returns.
+
+Runbook hints:
+- If the runner is down, rows pile up with `status='PENDING'` and `lock_expires_at` NULL. Restarting `bbserver` (or the dispatcher worker binary) should resume delivery.
+- If rows sit with `status='FAILED'`, inspect `failure_reason` (truncated to 255 chars). Common causes: Redis auth/connection issues or payload parse errors. After fixing the root cause, operators can manually reset `status='PENDING'`, `attempts=0`, clear failure fields, and the dispatcher will retry.
+- If Redis becomes unavailable mid-run, expect multiple retries with the exponential delay; `max_attempts` defaults to 10 after which the row goes `FAILED`.
 
 ## Server implementation sketch
 
@@ -153,15 +225,25 @@ Implementation notes:
 - Rate limit: Per device (e.g., 1 request per second burst, token bucket). On exceed: 429 with `Retry-After`.
 - Error handling: Use monadic error propagation and standard error JSON body.
 
+Production hint:
+- Sources that should enqueue signals include: device install config upserts/restores (`install.updated`) and certificate issuance/rotation/wrap completion (`cert.renewed`, `cert.wrap_ready`).
+  - Self CA assignments/removals should enqueue `ca.assigned` / `ca.unassigned` respectively.
+
+### Related device self routes (from the server route table)
+- Install config fetch: `GET /apiv1/devices/self/install-config`
+- Certificate bundle: `GET /apiv1/devices/self/certificates/:certificate_id/bundle`
+- CA bundle: `GET /apiv1/devices/self/cas/:ca_id/bundle`
+
 ## Client guidance
 
 - Always send your last cursor via `If-None-Match`. Persist the `ETag` returned on both 200 and 204.
 - For very low update frequency (weeks / months) prefer periodic non-blocking polling (`wait=0`) at your heartbeat interval (e.g. every few minutes). This keeps implementation simple and avoids holding idle connections.
 - Optionally escalate to long-poll (`wait` 10–25) only during high-interest windows requiring lower latency (e.g. active rollout). Revert to `wait=0` afterwards.
-- Poll on a fixed cadence (default 5 s) so that certificate delivery remains predictable; only defer longer when the server explicitly returns `Retry-After`.
+- Consider adaptive backoff on repeated 204s (e.g. 5m → 15m → 1h → 6h → 24h cap) resetting after any 200.
 - On 409 (cursor expired), clear cursor and retry; optionally perform a state resync.
 - Handle unknown `type` values by ignoring them.
 - For `install.updated`: refetch install config; compare `version` or `installs_hash_b64` if needed.
+- For `cert.wrap_ready`: call the certificate bundle self endpoint to retrieve the AEAD materials. If a 409 WRAP_PENDING is still returned, treat it as a race; back off and retry.
 
 ## Examples
 
@@ -197,6 +279,15 @@ Implementation notes:
               "cert_id": 9981,
               "serial": "04:ab:..."
             }
+          },
+          {
+            "type": "cert.wrap_ready",
+            "ts_ms": 1736900124800,
+            "ref": {
+              "cert_id": 9981,
+              "device_keyfp_b64": "wJK...2g==",
+              "wrap_alg": "x25519"
+            }
           }
         ]
       }
@@ -214,6 +305,9 @@ Implementation notes:
 - `device_install_configs.id` -> `ref.config_id`
 - `device_install_configs.version` -> `ref.version`
 - `device_install_configs.installs_hash` -> `ref.installs_hash_b64` (base64-encoded; omit or set null if DB is NULL)
+- `cert_record_devices.cert_record_id` -> `ref.cert_id` (for `cert.wrap_ready`)
+- `cert_record_devices.device_keyfp` -> `ref.device_keyfp_b64` (base64; for `cert.wrap_ready`)
+- `cert_record_devices.wrap_alg` -> `ref.wrap_alg` (string; for `cert.wrap_ready`)
 
 ## Open points (non-blocking)
 
@@ -227,4 +321,5 @@ Acceptance criteria
 - Endpoint returns 204 with ETag when idle
 - Endpoint returns 200 with `data.cursor` and `data.signals[]`
 - `install.updated` is emitted on install config changes and contains `config_id`, `version`, and `installs_hash_b64`
+- `cert.wrap_ready` is emitted when a per-device wrap becomes available and contains `cert_id`, `device_keyfp_b64`, and `wrap_alg`
 - Clients can resume using the opaque cursor without data loss or duplication
