@@ -483,7 +483,7 @@ private:
   template <typename ExchangePtr>
   monad::IO<void> handle_ok_with_signals(ExchangePtr ex) {
     auto parse_result =
-        ex->template parseJsonDataResponse<::data::DeviceUpdatesResponse>();
+        ex->template parseJsonResponse<::data::DeviceUpdatesResponse>();
 
     if (parse_result.is_err()) {
       return monad::IO<void>::from_result(
