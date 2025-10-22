@@ -27,6 +27,7 @@
 #include "openssl/openssl_raii.hpp"
 #include "util/secret_util.hpp"
 #include "util/user_key_crypto.hpp"
+#include "util/my_logging.hpp"
 
 namespace certctrl {
 

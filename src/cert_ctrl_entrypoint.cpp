@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <optional>
 
 namespace po = boost::program_options;
@@ -253,6 +254,11 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
          "offset") //
         ("limit", po::value<size_t>(&cli_params.limit)->default_value(10),
          "limit") //
+        ("url-base", po::value<std::string>()->value_name("URL")
+                          ->notifier([&](const std::string &value) {
+                            cli_params.url_base_override = value;
+                          }),
+         "override the API base URL for this run without persisting") //
         ("keep-running",
          po::bool_switch(&cli_params.keep_running)->default_value(false),
          "keep running after processing the command.") //
@@ -363,8 +369,16 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
     cli_params.config_dirs = ordered_config_dirs;
     cli_params.runtime_dir = resolved_runtime_dir;
 
+    std::map<std::string, std::string> cli_overrides;
+    if (cli_params.url_base_override && !cli_params.url_base_override->empty()) {
+      cli_overrides.emplace("url_base", *cli_params.url_base_override);
+      std::cerr << "Using runtime URL base override: "
+                << *cli_params.url_base_override << std::endl;
+    }
+
     static cjj365::ConfigSources config_sources(cli_params.config_dirs,
-                                                cli_params.profiles);
+                                                cli_params.profiles,
+                                                std::move(cli_overrides));
     {
       auto log_config_result = config_sources.json_content("log_config");
       if (log_config_result.is_err()) {

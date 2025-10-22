@@ -12,6 +12,7 @@
 #include "data/install_config_dto.hpp"
 #include "http_client_manager.hpp"
 #include "io_monad.hpp"
+#include "util/my_logging.hpp"
 
 namespace certctrl {
 
@@ -94,6 +95,7 @@ private:
   mutable std::optional<std::string> cached_access_token_;
   mutable std::optional<std::filesystem::file_time_type>
       cached_access_token_mtime_;
+  logsrc::severity_logger<trivial::severity_level> lg;
 };
 
 } // namespace certctrl

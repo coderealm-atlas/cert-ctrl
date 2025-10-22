@@ -8,6 +8,7 @@
 #include <boost/program_options.hpp>
 #include <filesystem>
 #include <string>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -49,6 +50,7 @@ struct CliParams {
   size_t limit = 10;
   bool allow_non_root = false;
   bool confirm_update = false; // --yes flag for auto-confirming updates
+  std::optional<std::string> url_base_override;
 };
 
 struct CliCtx {
