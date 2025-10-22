@@ -47,7 +47,7 @@ Because deduplication relies on the backend timestamp, identical `type`/`ts_ms` 
 - Calls `InstallConfigManager::ensure_config_version(expected_version, expected_hash)` which fetches `/apiv1/devices/self/install-config` when the version/hash does not match the cached copy.
 - Persists the payload to `state/install_config.json` and updates `state/install_version.txt` atomically.
 - When `auto_apply_config` is `true`, immediately invokes `apply_copy_actions()` to execute all copy/import directives and materialise resources under `runtime_dir/resources/{certs|cas}/<id>/current/`.
-- When `auto_apply_config` is `false` (default), logs that the new plan has been staged and returns without executing actions. Operators promote staged configs via `cert-ctrl install apply`.
+- When `auto_apply_config` is `false` (default), logs that the new plan has been staged and returns without executing actions. Operators promote staged configs via `cert-ctrl install-config apply` (or the legacy `cert-ctrl install apply`).
 
 ### CertRenewedHandler
 
@@ -77,8 +77,11 @@ Removing these files clears local state; the next poll will refetch and rebuild 
 ## Manual Approval Workflow
 
 - The dispatcher always stages the latest install plan, overwriting any previous version.
-- With `auto_apply_config=false`, the handler logs that the plan is ready for manual promotion. `cert-ctrl install apply` loads the staged JSON, runs the same copy/import actions, and reports success per version.
-- With `auto_apply_config=true`, staged plans are applied immediately and no manual intervention is required.
+- With `auto_apply_config=false`, the handler logs that the plan is ready for manual promotion. Operators can:
+    - Run `cert-ctrl install-config pull` to refresh the staged plan on demand (without waiting for another `install.updated` signal).
+    - Run `cert-ctrl install-config apply` (or `cert-ctrl install apply`) to load the staged JSON, execute copy/import actions, and report results per target.
+    - Use `cert-ctrl install-config show [--raw]` to inspect the cached plan before applying and `cert-ctrl install-config clear-cache` to reset the local state if corruption is suspected.
+- With `auto_apply_config=true`, staged plans are applied immediately and no manual intervention is required; the `install-config apply` and `install apply` commands warn and exit to prevent duplicate work.
 
 ## Limitations & Future Work
 
