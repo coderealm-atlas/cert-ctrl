@@ -382,7 +382,10 @@ InstallConfigManager::InstallConfigManager(
   }
 }
 
-void InstallConfigManager::clear_cache() { cached_config_.reset(); }
+void InstallConfigManager::clear_cache() {
+  cached_config_.reset();
+  local_version_.reset();
+}
 
 std::shared_ptr<dto::DeviceInstallConfigDto>
 InstallConfigManager::cached_config_snapshot() {

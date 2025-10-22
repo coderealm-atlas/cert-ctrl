@@ -7,14 +7,14 @@ The `cert-ctrl` agent polls the control plane for device-specific updates after 
 - Default startup (`cert-ctrl` with no subcommand) performs an update check and, when `--keep-running` is present, enters the updates polling loop.
 - `cert-ctrl updates [--keep-running]` runs the polling handler directly, skipping the update check.
 - A valid device session (access + refresh token pair produced by `cert-ctrl login`) is required before polling can succeed.
-- Install configuration updates are staged automatically and applied immediately only when `auto_apply_config` is enabled.
+- Install configuration updates are staged automatically. Operators promote them with `cert-ctrl install-config apply` (or the legacy `cert-ctrl install apply`) unless `auto_apply_config` is enabled.
 
 ## Runtime Topology
 
 ### Execution Modes
 
 - **Service mode** – run `cert-ctrl --keep-running` under systemd, launchd, Windows Service, or similar supervision. The loop keeps rescheduling itself using `interval_seconds` and any server-provided back-off hints.
-- **Interactive mode** – invoke targeted commands (`cert-ctrl updates`, `cert-ctrl install apply`, `cert-ctrl conf ...`). Without `--keep-running` the polling handler issues a single request and exits.
+- **Interactive mode** – invoke targeted commands (`cert-ctrl updates`, `cert-ctrl install-config ...`, `cert-ctrl install apply`, `cert-ctrl conf ...`). Without `--keep-running` the polling handler issues a single request and exits.
 
 ### Configuration vs Runtime Directories
 
@@ -60,7 +60,7 @@ Run the login handler to initiate the OAuth 2.0 Device Authorization Grant. The 
 
 | Key | Default | Effect |
 |-----|---------|--------|
-| `auto_apply_config` | `false` | When `false`, install configs fetched via signals are staged only; operators must run `cert-ctrl install apply`. When `true`, copy/import actions run immediately. |
+| `auto_apply_config` | `false` | When `false`, install configs fetched via signals are staged only; operators promote them via `cert-ctrl install-config apply` (or `cert-ctrl install apply`). When `true`, copy/import actions run immediately. |
 | `interval_seconds` | `300` | Base delay between poll attempts when not long-polling; enforced minimum sleep is 10 seconds. |
 | `url_base` | `https://api.cjj365.cc` | Prefix for device APIs such as `/apiv1/devices/self/updates`. |
 | `update_check_url` | `https://install.lets-script.com/api/version/check` | Consumed by the update checker executed in the default workflow. |
@@ -107,7 +107,7 @@ Cursor expiry (`409 Conflict`) is surfaced as an error; manually deleting `state
 
 1. `InstallUpdatedHandler::should_process` skips signals that do not advance the local version recorded in `state/install_version.txt`.
 2. `InstallConfigManager::ensure_config_version()` fetches `GET {base_url}/apiv1/devices/self/install-config`, caches it under `state/install_config.json`, and updates `state/install_version.txt` atomically.
-3. When `auto_apply_config` is `true`, `apply_copy_actions()` executes copy/import directives immediately. Otherwise the config stays staged and operators promote it via `cert-ctrl install apply`.
+3. When `auto_apply_config` is `true`, `apply_copy_actions()` executes copy/import directives immediately. Otherwise the config stays staged until operators run `cert-ctrl install-config apply` (or the legacy `cert-ctrl install apply`).
 4. Resource bundles referenced by install items are cached under `resources/{certs|cas}/<id>/current/`. Certificates include decrypted private keys, PEM/DER material, `fullchain.pem`, optional PFX, and `meta.json` for traceability.
 
 ### cert.renewed
@@ -130,15 +130,16 @@ Cursor expiry (`409 Conflict`) is surfaced as an error; manually deleting `state
 - Downstream automation for quarantining or deleting the cached materials is still TODO.
 - Operators should remove or replace the certificate manually until handler support lands.
 
-## Manual Promotion (`cert-ctrl install apply`)
+## Manual Promotion & Recovery (`cert-ctrl install-config ...`)
 
-`InstallConfigApplyHandler` provides a CLI-controlled promotion path when `auto_apply_config` is disabled or when operators prefer explicit approval. The command:
+Use the `install-config` subcommands when `auto_apply_config` is disabled or when you need to recover a device that missed signals:
 
-1. Loads the staged configuration from `state/install_config.json` (via `InstallConfigManager::cached_config_snapshot()`).
-2. Applies copy/import actions to all targets.
-3. Logs the version installed and surfaces any file errors from the install-action helpers.
+- `cert-ctrl install-config pull` fetches the latest plan from the control plane and stages it locally without waiting for a poll signal.
+- `cert-ctrl install-config apply` promotes the staged configuration (equivalent to `cert-ctrl install apply`). It loads the cached plan, runs copy/import actions, and reports per-target errors.
+- `cert-ctrl install-config show [--raw]` prints a summary of the staged plan (or the raw JSON) so operators can confirm contents before applying.
+- `cert-ctrl install-config clear-cache` removes the staged install configuration and materialised resources. The next poll (or `pull`) rebuilds the cache.
 
-If `auto_apply_config` remains enabled, the command prints a warning and exits without changes to prevent duplicate work.
+`cert-ctrl install apply` remains available for backwards compatibility and delegates to the same apply handler. If `auto_apply_config` is enabled, both apply commands warn and exit to prevent duplicate work.
 
 ## Cursor and Token Persistence
 
@@ -165,7 +166,11 @@ If `auto_apply_config` remains enabled, the command prints a warning and exits w
 |---------|---------|
 | `cert-ctrl login` | Device authorization flow; persists access + refresh tokens. |
 | `cert-ctrl updates [--keep-running] [--limit N] [--wait S]` | Run a single poll or a continuous loop when `--keep-running` is supplied. |
-| `cert-ctrl install apply` | Promote the staged install configuration when manual approval is desired. |
+| `cert-ctrl install-config pull` | Force a fetch of the latest install configuration and stage it locally. |
+| `cert-ctrl install-config apply` | Promote the staged install configuration (same behaviour as `cert-ctrl install apply`). |
+| `cert-ctrl install-config show [--raw]` | Inspect the staged plan; `--raw` prints the JSON. |
+| `cert-ctrl install-config clear-cache` | Remove cached install configs and materialised resources; a subsequent poll or `pull` repopulates them. |
+| `cert-ctrl install apply` | Legacy alias for `install-config apply`; kept for compatibility with older runbooks. |
 | `cert-ctrl conf get <key>` / `cert-ctrl conf set <key> <value>` | Inspect or change supported configuration keys (`auto_apply_config`, `verbose`). |
 | `cert-ctrl update` | Prints platform-specific installer commands; no self-update yet. |
 

@@ -309,11 +309,11 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
 
     auto showUsage = [&]() {
       std::cerr << generic_desc << std::endl;
-      std::cerr << "Subcommands:" << std::endl;
-      std::cerr << "  login          Login the device." << std::endl;
-      std::cerr << "  conf           Configure the device." << std::endl;
-      std::cerr << "  update         Check for and install application updates." << std::endl
-                << std::endl;
+  std::cerr << "Subcommands:" << std::endl;
+  std::cerr << "  login          Login the device." << std::endl;
+  std::cerr << "  conf           Configure the device." << std::endl;
+  std::cerr << "  install-config Manage install configuration (pull/apply/show/clear-cache)." << std::endl
+        << std::endl;
       std::cerr << "Default behavior:" << std::endl;
       std::cerr << "  No subcommand -> agent update check followed by a device "
                    "updates poll."
