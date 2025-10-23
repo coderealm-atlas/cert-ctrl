@@ -192,6 +192,7 @@ add_executable(test_install_config_manager
   test_install_config_manager.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_config_manager.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/copy_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/exec_action.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
@@ -262,6 +263,7 @@ add_executable(test_updates_polling_handler
   test_updates_polling_handler.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_config_manager.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/copy_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/exec_action.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
