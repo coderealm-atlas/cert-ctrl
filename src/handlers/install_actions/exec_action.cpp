@@ -16,6 +16,9 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#endif
 #endif
 
 #include "my_error_codes.hpp"
@@ -268,8 +271,25 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
 
     // Apply env overrides if provided
     if (item.env) {
-      // Clear existing environment then set new variables
+      // Clear existing environment then set new variables. macOS lacks clearenv.
+#if defined(__APPLE__)
+      auto environ_ptr = *_NSGetEnviron();
+      if (environ_ptr != nullptr) {
+        std::vector<std::string> existing_keys;
+        for (char **entry = environ_ptr; entry != nullptr && *entry != nullptr; ++entry) {
+          std::string kv(*entry);
+          auto pos = kv.find('=');
+          if (pos != std::string::npos) {
+            existing_keys.emplace_back(kv.substr(0, pos));
+          }
+        }
+        for (const auto &key : existing_keys) {
+          ::unsetenv(key.c_str());
+        }
+      }
+#else
       ::clearenv();
+#endif
       for (const auto &kv : *item.env) {
         ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
       }
