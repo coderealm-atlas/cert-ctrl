@@ -6,6 +6,9 @@
 #include "handlers/install_actions/install_action_context.hpp"
 
 #include <sstream>
+#include <cstdlib>
+#include <filesystem>
+#include <mutex>
 
 using namespace certctrl::install_actions;
 
@@ -53,7 +56,12 @@ TEST(ExecActionTest, RunsShellCmdAndCapturesSuccess) {
   dto::InstallItem it;
   it.id = "t1";
   it.type = "exec";
-  it.cmd = std::string("/bin/echo hello-from-test");
+  it.cmd =
+#ifndef _WIN32
+  "/bin/echo hello-from-test";
+#else
+  "echo hello-from-test";
+#endif
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
@@ -76,7 +84,12 @@ TEST(ExecActionTest, TimesOutOnLongSleep) {
   dto::InstallItem it;
   it.id = "t2";
   it.type = "exec";
-  it.cmd = std::string("/bin/sleep 5");
+  it.cmd =
+#ifndef _WIN32
+  "/bin/sleep 5";
+#else
+  "ping -n 6 127.0.0.1 >nul";
+#endif
   it.timeout_ms = 1000; // 1s
   cfg.installs.push_back(it);
 
@@ -115,6 +128,16 @@ TEST(ExecActionTest, RunsCmdArgvDirectly) {
 }
 
 #ifdef _WIN32
+namespace {
+
+bool command_exists(const std::string &exe_name) {
+  std::string check_cmd = "where " + exe_name + " >nul 2>&1";
+  int rc = std::system(check_cmd.c_str());
+  return rc == 0;
+}
+
+}
+
 TEST(ExecActionTest, WindowsShellCmdRunsUnderCmdExe) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
@@ -132,6 +155,63 @@ TEST(ExecActionTest, WindowsShellCmdRunsUnderCmdExe) {
   // cmd form on Windows uses the platform shell (cmd.exe /C)
   it.cmd = std::string("echo hello-windows-test");
   it.timeout_ms = 2000;
+  cfg.installs.push_back(it);
+
+  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+    EXPECT_TRUE(result.is_ok());
+  });
+}
+
+TEST(ExecActionTest, WindowsPwshCmdArgvRunsWhenAvailable) {
+  if (!command_exists("pwsh")) {
+    GTEST_SKIP() << "pwsh not available on PATH";
+  }
+
+  TestOutput iout;
+  customio::ConsoleOutput cout(iout);
+
+  certctrl::install_actions::InstallActionContext ctx{
+      std::filesystem::current_path(), cout,
+      [](const dto::InstallItem &) -> std::optional<monad::Error> {
+        return std::nullopt;
+      }};
+
+  dto::DeviceInstallConfigDto cfg;
+  dto::InstallItem it;
+  it.id = "t5";
+  it.type = "exec";
+  it.cmd_argv = std::vector<std::string>{
+      "pwsh", "-NoLogo", "-NoProfile", "-Command", "Write-Output pwsh-test"};
+  it.timeout_ms = 5000;
+  cfg.installs.push_back(it);
+
+  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+    EXPECT_TRUE(result.is_ok());
+  });
+}
+
+TEST(ExecActionTest, WindowsPowerShellCmdArgvRunsWhenAvailable) {
+  if (!command_exists("powershell")) {
+    GTEST_SKIP() << "Windows PowerShell not available on PATH";
+  }
+
+  TestOutput iout;
+  customio::ConsoleOutput cout(iout);
+
+  certctrl::install_actions::InstallActionContext ctx{
+      std::filesystem::current_path(), cout,
+      [](const dto::InstallItem &) -> std::optional<monad::Error> {
+        return std::nullopt;
+      }};
+
+  dto::DeviceInstallConfigDto cfg;
+  dto::InstallItem it;
+  it.id = "t6";
+  it.type = "exec";
+  it.cmd_argv = std::vector<std::string>{
+      "powershell", "-NoLogo", "-NonInteractive", "-Command",
+      "Write-Output powershell-test"};
+  it.timeout_ms = 5000;
   cfg.installs.push_back(it);
 
   apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {

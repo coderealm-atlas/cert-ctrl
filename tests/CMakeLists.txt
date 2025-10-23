@@ -8,6 +8,10 @@ if(NOT BUILD_TESTING)
   return()
 endif()
 
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 find_package(GTest CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options json asio url uuid process iostreams log log_setup system filesystem thread chrono date_time container)
 find_package(fmt CONFIG REQUIRED)
