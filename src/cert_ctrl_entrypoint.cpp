@@ -290,13 +290,6 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
     po::store(parsed, vm);
     po::notify(vm);
 
-    if (!cli_params.allow_non_root && !is_running_as_root()) {
-      std::cerr
-          << "Warning: cert-ctrl is not running with root privileges. "
-          << "For full functionality, re-run as root or pass --no-root to "
-          << "acknowledge running without elevated privileges." << std::endl;
-      return EXIT_FAILURE;
-    }
 
     std::vector<std::string> positionals =
         vm["positionals"].as<std::vector<std::string>>();
@@ -329,6 +322,14 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
     if (vm.count("version")) {
       std::cout << MYAPP_VERSION << std::endl;
       return 0;
+    }
+
+    if (!cli_params.allow_non_root && !is_running_as_root()) {
+      std::cerr
+          << "Warning: cert-ctrl is not running with root privileges. "
+          << "For full functionality, re-run as root or pass --no-root to "
+          << "acknowledge running without elevated privileges." << std::endl;
+      return EXIT_FAILURE;
     }
 
     const DefaultPaths defaults = resolve_default_paths();

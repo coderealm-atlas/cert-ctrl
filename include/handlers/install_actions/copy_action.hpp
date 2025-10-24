@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include "util/my_logging.hpp"
 
 #include "handlers/install_actions/install_action_context.hpp"
 

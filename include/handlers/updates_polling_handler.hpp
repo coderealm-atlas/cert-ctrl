@@ -474,8 +474,7 @@ private:
       save_cursor(cursor_);
     }
 
-    output_hub_.logger().debug()
-        << "204 No Content, cursor=" << cursor_ << std::endl;
+    BOOST_LOG_SEV(lg, trivial::trace) << "204 No Content, cursor=" << cursor_;
 
     return monad::IO<void>::pure();
   }
@@ -496,8 +495,8 @@ private:
     cursor_ = resp.data.cursor;
     save_cursor(cursor_);
 
-    output_hub_.logger().info() << "200 OK, " << resp.data.signals.size()
-                                << " signals, cursor=" << cursor_ << std::endl;
+    BOOST_LOG_SEV(lg, trivial::debug) << "200 OK, " << resp.data.signals.size()
+                                      << " signals, cursor=" << cursor_;
 
     // Store response
     last_updates_ = std::move(resp);
@@ -526,9 +525,9 @@ private:
   template <typename ExchangePtr>
   monad::IO<void> handle_error_status(ExchangePtr ex, int status) {
     std::string body = ex->response->body();
-    output_hub_.logger().error()
+    BOOST_LOG_SEV(lg, trivial::error)
         << "HTTP " << status << " error on " << last_request_url_ << ": "
-        << body.substr(0, 200) << std::endl;
+        << body.substr(0, 200);
 
     // Parse JSON error if available
     parse_error_ = body;
@@ -603,8 +602,8 @@ private:
                                    std::filesystem::perms::owner_read |
                                        std::filesystem::perms::owner_write);
     } catch (const std::exception &e) {
-      output_hub_.logger().error()
-          << "Failed to save cursor: " << e.what() << std::endl;
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "Failed to save cursor: " << e.what();
     }
   }
 
