@@ -153,18 +153,28 @@ public:
     // immediately notice that staged install configs are not automatically
     // applied.
     // clang-format off
-      if (!certctrl_config_->auto_apply_config) {
+      if (certctrl_config_->auto_apply_config) {
+        std::cerr << "\n";
+        std::cerr << "/**************************************************************" << std::endl;
+        std::cerr << "* IMPORTANT: auto_apply_config = true                         *" << std::endl;
+        std::cerr << "* Server side configurations are applied automatically.       *" << std::endl;
+        std::cerr << "* Include the cmd and cmd_args,they could do arbitrary things.*" << std::endl;
+        std::cerr << "* If you don't change install-config frequently,              *" << std::endl;
+        std::cerr << "* BETTER to set it to false                                   *" << std::endl;
+        std::cerr << "**************************************************************/" << std::endl;
+      } else {
         std::cerr << "\n";
         std::cerr << "/**************************************************************" << std::endl;
         std::cerr << "* IMPORTANT: auto_apply_config = false (default)              *" << std::endl;
         std::cerr << "* Staged install configurations are NOT applied automatically.*" << std::endl;
         std::cerr << "* To apply staged changes run:                                *" << std::endl;
         std::cerr << "*                                                             *" << std::endl;
-        std::cerr << "*    cert-ctrl install-config apply                           *" << std::endl;
+        std::cerr << "*    cert-ctrl install-config pull/apply                      *" << std::endl;
         std::cerr << "*                                                             *" << std::endl;
         std::cerr << "* Inspect staged plan before applying:                        *" << std::endl;
         std::cerr << "*    cert-ctrl install-config show --raw                      *" << std::endl;
         std::cerr << "**************************************************************/" << std::endl;
+
       }
     // clang-format on
 

@@ -72,10 +72,8 @@ std::filesystem::perms desired_permissions(bool private_material) {
 }
 
 std::optional<std::string> perform_copy_operation(
-    const InstallActionContext &context,
-    const std::filesystem::path &source,
-    const std::filesystem::path &destination,
-    bool private_material) {
+    const InstallActionContext &context, const std::filesystem::path &source,
+    const std::filesystem::path &destination, bool private_material) {
   try {
     if (!std::filesystem::exists(source)) {
       return fmt::format("Source file '{}' not found", source.string());
@@ -94,8 +92,8 @@ std::optional<std::string> perform_copy_operation(
     temp_dest += ".tmp-";
     temp_dest += generate_temp_suffix();
 
-    std::filesystem::copy_file(source, temp_dest,
-                               std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(
+        source, temp_dest, std::filesystem::copy_options::overwrite_existing);
 
 #ifndef _WIN32
     std::filesystem::permissions(temp_dest,
@@ -132,11 +130,11 @@ std::optional<std::string> perform_copy_operation(
 
 } // namespace
 
-monad::IO<void> apply_copy_actions(
-    const InstallActionContext &context,
-    const dto::DeviceInstallConfigDto &config,
-    const std::optional<std::string> &target_ob_type,
-    std::optional<std::int64_t> target_ob_id) {
+monad::IO<void>
+apply_copy_actions(const InstallActionContext &context,
+                   const dto::DeviceInstallConfigDto &config,
+                   const std::optional<std::string> &target_ob_type,
+                   std::optional<std::int64_t> target_ob_id) {
   using ReturnIO = monad::IO<void>;
 
   try {
@@ -154,11 +152,11 @@ monad::IO<void> apply_copy_actions(
         }
       }
 
-  if (!item.from || item.from->empty()) {
-    return ReturnIO::fail(monad::make_error(
-    my_errors::GENERAL::INVALID_ARGUMENT,
-    "copy item missing from entries"));
-  }
+      if (!item.from || item.from->empty()) {
+        return ReturnIO::fail(
+            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                              "copy item missing from entries"));
+      }
 
       if (!item.to || item.to->empty()) {
         context.output.logger().info()
@@ -167,17 +165,17 @@ monad::IO<void> apply_copy_actions(
         continue;
       }
 
-  if (item.from->size() != item.to->size()) {
-    return ReturnIO::fail(monad::make_error(
-    my_errors::GENERAL::INVALID_ARGUMENT,
-    "copy item from/to length mismatch"));
-  }
+      if (item.from->size() != item.to->size()) {
+        return ReturnIO::fail(
+            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                              "copy item from/to length mismatch"));
+      }
 
-  if (!item.ob_type || !item.ob_id) {
-    return ReturnIO::fail(monad::make_error(
-    my_errors::GENERAL::INVALID_ARGUMENT,
-    "copy item missing ob_type/ob_id"));
-  }
+      if (!item.ob_type || !item.ob_id) {
+        return ReturnIO::fail(
+            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                              "copy item missing ob_type/ob_id"));
+      }
 
       if (auto ensure_err = context.ensure_resource_materialized(item);
           ensure_err.has_value()) {
@@ -191,6 +189,13 @@ monad::IO<void> apply_copy_actions(
         const auto &virtual_name = item.from->at(i);
         const auto &dest_path_str = item.to->at(i);
 
+        if(dest_path_str.empty()) {
+          context.output.logger().info()
+              << "Skipping copy of '" << virtual_name
+              << "' due to empty destination path" << std::endl;
+          continue;
+        }
+
         std::filesystem::path source_path = resource_root / virtual_name;
         std::filesystem::path dest_path(dest_path_str);
 
@@ -202,22 +207,21 @@ monad::IO<void> apply_copy_actions(
         }
 
         bool private_material = is_private_material_name(virtual_name);
-    if (auto err = perform_copy_operation(context, source_path, dest_path,
-                        private_material)) {
-      return ReturnIO::fail(monad::make_error(
-        my_errors::GENERAL::FILE_READ_WRITE, *err));
-    }
+        if (auto err = perform_copy_operation(context, source_path, dest_path,
+                                              private_material)) {
+          return ReturnIO::fail(
+              monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, *err));
+        }
 
-        context.output.logger().info()
-            << "Copied '" << source_path << "' -> '" << dest_path
-            << "'" << std::endl;
+        context.output.logger().info() << "Copied '" << source_path << "' -> '"
+                                       << dest_path << "'" << std::endl;
       }
     }
 
     return ReturnIO::pure();
   } catch (const std::exception &e) {
-  return ReturnIO::fail(monad::make_error(
-    my_errors::GENERAL::UNEXPECTED_RESULT, e.what()));
+    return ReturnIO::fail(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, e.what()));
   }
 }
 
