@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <boost/di.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
@@ -30,6 +31,11 @@ namespace fs = std::filesystem;
 namespace json = boost::json;
 
 namespace {
+
+bool real_server_tests_enabled() {
+  const char *flag = std::getenv("CERTCTRL_REAL_SERVER_TESTS");
+  return flag && *flag;
+}
 
 std::string make_unique_dir_name() {
   auto now = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -73,6 +79,10 @@ protected:
   int64_t user_id_{};
 
   void SetUp() override {
+    if (!real_server_tests_enabled()) {
+      GTEST_SKIP() << "Set CERTCTRL_REAL_SERVER_TESTS=1 to enable real server end-to-end tests.";
+    }
+
     base_url_ = testutil::url_base();
 
   json::object app_json{{"auto_apply_config", false},

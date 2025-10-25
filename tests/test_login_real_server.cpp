@@ -1,6 +1,7 @@
 #include <boost/di.hpp>
 #include <boost/json.hpp>
 #include <boost/url.hpp>
+#include <cstdlib>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <memory>
@@ -19,6 +20,15 @@ namespace di = boost::di;
 namespace fs = std::filesystem;
 namespace json = boost::json;
 
+namespace {
+
+bool real_server_tests_enabled() {
+  const char *flag = std::getenv("CERTCTRL_REAL_SERVER_TESTS");
+  return flag && *flag;
+}
+
+} // namespace
+
 class RealServerLoginFixture : public ::testing::Test {
 protected:
   client_async::HttpClientManager *http_client_mgr_;
@@ -30,6 +40,10 @@ protected:
   std::string session_cookie_;
 
   void SetUp() override {
+    if (!real_server_tests_enabled()) {
+      GTEST_SKIP() << "Set CERTCTRL_REAL_SERVER_TESTS=1 to enable real server end-to-end tests.";
+    }
+
     // Minimal inline config provider using a temp directory config file pattern
     // similar to existing tests We'll create a temporary directory with
     // httpclient_config.json if needed.
