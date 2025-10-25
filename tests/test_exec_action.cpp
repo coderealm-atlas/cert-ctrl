@@ -127,6 +127,78 @@ TEST(ExecActionTest, RunsCmdArgvDirectly) {
   });
 }
 
+#ifndef _WIN32
+TEST(ExecActionTest, SuppliesAdditionalEnvironmentFromContext) {
+  constexpr const char *kExpectedSecret = "SecretPass123";
+
+  TestOutput iout;
+  customio::ConsoleOutput cout(iout);
+
+  certctrl::install_actions::InstallActionContext ctx{
+      std::filesystem::current_path(), cout,
+      [](const dto::InstallItem &) -> std::optional<monad::Error> {
+        return std::nullopt;
+      },
+      [expected = std::string(kExpectedSecret)](
+          const dto::InstallItem &)
+          -> std::optional<std::unordered_map<std::string, std::string>> {
+        std::unordered_map<std::string, std::string> env;
+        env.emplace("CERTCTRL_PFX_PASSWORD", expected);
+        return env;
+      }};
+
+  dto::DeviceInstallConfigDto cfg;
+  dto::InstallItem it;
+  it.id = "t-env";
+  it.type = "exec";
+  it.cmd_argv = std::vector<std::string>{
+      "/bin/sh", "-c",
+      std::string("if [ \"$CERTCTRL_PFX_PASSWORD\" = \"") + kExpectedSecret +
+          "\" ]; then exit 0; else exit 9; fi"};
+  it.timeout_ms = 2000;
+  cfg.installs.push_back(it);
+
+  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+    ASSERT_TRUE(result.is_ok());
+  });
+}
+
+TEST(ExecActionTest, MergesItemEnvWithContextEnv) {
+  constexpr const char *kExpectedSecret = "SecretPass123";
+
+  TestOutput iout;
+  customio::ConsoleOutput cout(iout);
+
+  certctrl::install_actions::InstallActionContext ctx{
+      std::filesystem::current_path(), cout,
+      [](const dto::InstallItem &) -> std::optional<monad::Error> {
+        return std::nullopt;
+      },
+      [expected = std::string(kExpectedSecret)](
+          const dto::InstallItem &)
+          -> std::optional<std::unordered_map<std::string, std::string>> {
+        std::unordered_map<std::string, std::string> env;
+        env.emplace("CERTCTRL_PFX_PASSWORD", expected);
+        return env;
+      }};
+
+  dto::DeviceInstallConfigDto cfg;
+  dto::InstallItem it;
+  it.id = "t-env-merge";
+  it.type = "exec";
+  it.env = std::unordered_map<std::string, std::string>{{"KEEP", "yes"}};
+  it.cmd_argv = std::vector<std::string>{
+      "/bin/sh", "-c",
+      "if [ \"$KEEP\" = \"yes\" ] && [ -n \"$CERTCTRL_PFX_PASSWORD\" ]; then exit 0; else exit 7; fi"};
+  it.timeout_ms = 2000;
+  cfg.installs.push_back(it);
+
+  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+    ASSERT_TRUE(result.is_ok());
+  });
+}
+#endif
+
 #ifdef _WIN32
 namespace {
 
@@ -216,6 +288,41 @@ TEST(ExecActionTest, WindowsPowerShellCmdArgvRunsWhenAvailable) {
 
   apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
+  });
+}
+
+TEST(ExecActionTest, WindowsMergesItemEnvWithContextEnv) {
+  constexpr const char *kExpectedSecret = "SecretPass123";
+
+  TestOutput iout;
+  customio::ConsoleOutput cout(iout);
+
+  certctrl::install_actions::InstallActionContext ctx{
+      std::filesystem::current_path(), cout,
+      [](const dto::InstallItem &) -> std::optional<monad::Error> {
+        return std::nullopt;
+      },
+      [expected = std::string(kExpectedSecret)](
+          const dto::InstallItem &)
+          -> std::optional<std::unordered_map<std::string, std::string>> {
+        std::unordered_map<std::string, std::string> env;
+        env.emplace("CERTCTRL_PFX_PASSWORD", expected);
+        return env;
+      }};
+
+  dto::DeviceInstallConfigDto cfg;
+  dto::InstallItem it;
+  it.id = "t-env-merge-win";
+  it.type = "exec";
+  it.env = std::unordered_map<std::string, std::string>{{"KEEP", "yes"}};
+  it.cmd_argv = std::vector<std::string>{
+      "cmd.exe", "/C",
+      "if \"%KEEP%\"==\"yes\" (if not \"%CERTCTRL_PFX_PASSWORD%\"==\"\" exit 0 else exit 7) else exit 7"};
+  it.timeout_ms = 4000;
+  cfg.installs.push_back(it);
+
+  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+    ASSERT_TRUE(result.is_ok());
   });
 }
 #endif

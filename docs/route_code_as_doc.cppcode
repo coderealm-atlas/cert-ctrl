@@ -1,0 +1,397 @@
+#pragma once
+
+#include <array>
+#include <memory>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#include "boost/di.hpp"
+#include "http_handlers/device_registration_handler.hpp"
+#include "http_handlers/device_updates_handler.hpp"
+#include "http_handlers/health_handler.hpp"
+#include "http_handlers/permissions_catalog_handler.hpp"
+#include "http_handlers/refresh_token_handler.hpp"
+#include "http_request_handler_base.hpp"  // RequestHandlerDescHolder
+
+namespace di = boost::di;
+
+// Forward declare namespaces/types referenced (include real headers prior to
+// including this builder in production code)
+namespace httphandler {
+template <class PlainOrSSL>
+class LoginHandler;
+template <class PlainOrSSL>
+class WebAuthnHandler;
+template <class PlainOrSSL>
+class MePageHandlerMonad;
+template <class PlainOrSSL>
+class WeixinLoginHandler;
+template <class PlainOrSSL>
+class GithubLoginHandler;
+template <class PlainOrSSL>
+class SolanaLoginHandler;
+template <class PlainOrSSL>
+class ApikeysHandler;
+template <class PlainOrSSL>
+class DeviceAuthHandler;
+template <class PlainOrSSL>
+class DeviceRegistrationHandler;
+template <class PlainOrSSL>
+class CertificatesHandler;
+template <class PlainOrSSL>
+class AcmeAccountsHandler;
+template <class PlainOrSSL>
+class DevicesHandler;
+template <class PlainOrSSL>
+class GitRequestHandler;
+template <class PlainOrSSL>
+class GitreposHandler;
+template <class PlainOrSSL>
+class CaHandler;
+template <class PlainOrSSL>
+class HealthHandler;
+template <class PlainOrSSL>
+class RefreshTokenHandler;
+template <class PlainOrSSL>
+class DeviceUpdatesHandler;
+template <class PlainOrSSL>
+class DeviceSelfCertsHandler;
+template <class PlainOrSSL>
+class DeviceSelfCasHandler;
+template <class PlainOrSSL>
+class DeviceSelfInstallConfigHandler;
+template <class PlainOrSSL>
+class WalletsHandlerDi;
+template <class PlainOrSSL>
+class PaymentQuotesHandlerDi;
+template <class PlainOrSSL>
+class PaymentsHandlerDi;
+template <class PlainOrSSL>
+class PermissionsCatalogHandler;
+template <class PlainOrSSL>
+class IroiroHandler;
+template <class PlainOrSSL>
+class TxtAsUrlRespHandler;
+}  // namespace httphandler
+
+namespace bbserver {
+
+// 1. Metadata trait each handler must specialize (partial specialization for
+// its template on Session type). Provide: static constexpr std::string_view
+// name; static constexpr std::array<std::string_view, N> paths; Example
+// specialization is provided below for concrete handlers.
+
+template <class Handler>
+struct handler_meta;  // (to be specialized)
+
+// Helper concept (C++20) or fallback bool to ensure meta exists
+#if defined(__cpp_concepts)
+template <class H>
+concept HasHandlerMeta = requires {
+  handler_meta<H>::name;
+  handler_meta<H>::paths;
+};
+#else
+template <class H, class = void>
+struct has_handler_meta : std::false_type {};
+
+template <class H>
+struct has_handler_meta<H, std::void_t<decltype(handler_meta<H>::name),
+                                       decltype(handler_meta<H>::paths)>>
+    : std::true_type {};
+
+template <class H>
+inline constexpr bool HasHandlerMeta = has_handler_meta<H>::value;
+#endif
+
+// 2. Build route module from list of handler class templates (template
+// templates taking Session). Usage: make_route_module<Session,
+// LoginHandler, MePageHandlerMonad, ...>() Each handler template must
+// have a handler_meta specialization instantiated with <Handler<Session>>.
+
+template <class Session, template <class> class... HandlerTpls>
+auto make_route_module() {
+  // Injector that binds RequestHandlerDescHolder<Session> and each handler with
+  // unique scope.
+  return di::make_injector(
+      di::bind<httphandler::RequestHandlerDescHolder<Session>>.to([](const auto&
+                                                                         inj) {
+        std::vector<std::shared_ptr<httphandler::RequestHandlerDesc<Session>>>
+            vec;
+        vec.reserve(sizeof...(HandlerTpls));
+        // Fold expression to populate descriptors
+        (
+            [&]() {
+              using Handler = HandlerTpls<Session>;
+      // static assert presence of handler_meta specialization
+#if defined(__cpp_concepts)
+              static_assert(
+                  HasHandlerMeta<Handler>,
+                  "handler_meta<> specialization missing for handler");
+#else
+              static_assert(
+                  HasHandlerMeta<Handler>,
+                  "handler_meta<> specialization missing for handler");
+#endif
+              const auto& paths_arr = handler_meta<Handler>::paths;
+              std::vector<std::string_view> paths(paths_arr.begin(),
+                                                  paths_arr.end());
+              vec.push_back(
+                  std::make_shared<httphandler::RequestHandlerDesc<Session>>(
+                      handler_meta<Handler>::name, std::move(paths), [&inj]() {
+                        return inj.template create<std::shared_ptr<Handler>>();
+                      }));
+            }(),
+            ...);
+        return httphandler::RequestHandlerDescHolder<Session>(std::move(vec));
+      }),
+      // Bind each handler itself with unique (explicit) scope
+      di::bind<HandlerTpls<Session>>.in(di::unique)...);
+}
+
+// 3. Example handler_meta specializations (adjust names and include headers as
+// needed) You may move these to the individual handler headers if preferred.
+
+// LoginHandler
+template <class S>
+struct handler_meta<httphandler::LoginHandler<S>> {
+  static constexpr std::string_view name = "LoginHandler";
+  static constexpr std::array<std::string_view, 5> paths{
+      "/auth/general",
+      "/auth/status",
+      "/auth/logout",
+      "/auth/profile",
+      "/auth/third-party-bindings",
+  };
+};
+
+// MePageHandlerMonad
+// template <class S>
+// struct handler_meta<httphandler::MePageHandlerMonad<S>> {
+//   static constexpr std::string_view name = "MePageHandler";
+//   static constexpr std::array<std::string_view, 1> paths{"/me/*"};
+// };
+
+// WeixinLoginHandler
+template <class S>
+struct handler_meta<httphandler::WeixinLoginHandler<S>> {
+  static constexpr std::string_view name = "WeixinLoginHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/auth/weixin/callback", "/auth/weixin"};
+};
+
+// GithubLoginHandler
+template <class S>
+struct handler_meta<httphandler::GithubLoginHandler<S>> {
+  static constexpr std::string_view name = "GithubLoginHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/auth/github/callback", "/auth/github"};
+};
+
+// SolanaLoginHandler
+template <class S>
+struct handler_meta<httphandler::SolanaLoginHandler<S>> {
+  static constexpr std::string_view name = "SolanaLoginHandler";
+  static constexpr std::array<std::string_view, 1> paths{"/auth/solana"};
+};
+
+// ApikeysHandler
+template <class S>
+struct handler_meta<httphandler::ApikeysHandler<S>> {
+  static constexpr std::string_view name = "ApikeysHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/apiv1/users/:user_id/apikeys/:apikey_id",
+      "/apiv1/users/:user_id/apikeys"};
+};
+
+template <class S>
+struct handler_meta<httphandler::PermissionsCatalogHandler<S>> {
+  static constexpr std::string_view name = "PermissionsCatalogHandler";
+  static constexpr std::array<std::string_view, 1> paths{
+      "/apiv1/permissions/catalog"};
+};
+
+template <class S>
+struct handler_meta<httphandler::DeviceRegistrationHandler<S>> {
+  static constexpr std::string_view name = "DeviceRegistrationHandler";
+  static constexpr std::array<std::string_view, 1> paths{
+      "/apiv1/device/registration"};
+};
+
+// DeviceAuthHandler
+template <class S>
+struct handler_meta<httphandler::DeviceAuthHandler<S>> {
+  static constexpr std::string_view name = "DeviceAuthHandler";
+  static constexpr std::array<std::string_view, 1> paths{"/auth/device"};
+};
+
+// CertificatesHandler
+template <class S>
+struct handler_meta<httphandler::CertificatesHandler<S>> {
+  static constexpr std::string_view name = "CertificatesHandler";
+  static constexpr std::array<std::string_view, 5> paths{
+      "/apiv1/users/:user_id/certificates",
+      "/apiv1/users/:user_id/acme-accounts/:acme_account_id/certificates",
+      "/apiv1/users/:user_id/certificates/:certificate_id",
+      "/apiv1/users/:user_id/certificates/:certificate_id/issues",
+      "/apiv1/users/:user_id/certificates/:certificate_id/export"};
+};
+// AcmeAccountsHandler
+template <class S>
+struct handler_meta<httphandler::AcmeAccountsHandler<S>> {
+  static constexpr std::string_view name = "AcmeAccountsHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/apiv1/users/:user_id/acme-accounts",
+      "/apiv1/users/:user_id/acme-accounts/:acme_account_id"};
+};
+
+// DevicesHandler
+template <class S>
+struct handler_meta<httphandler::DevicesHandler<S>> {
+  static constexpr std::string_view name = "DevicesHandler";
+  static constexpr std::array<std::string_view, 11> paths{
+      "/apiv1/users/:user_id/devices",
+      "/apiv1/users/:user_id/devices/:device_id",
+      "/apiv1/users/:user_id/devices/:device_id/certificates",
+      "/apiv1/users/:user_id/devices/:device_id/cas",
+      "/apiv1/users/:user_id/devices/:device_id/certificates/:certificate_id",
+      "/apiv1/users/:user_id/devices/:device_id/certificates/:certificate_id/"
+      "bundle",
+      "/apiv1/users/:user_id/devices/:device_id/cas/:ca_id",
+      "/apiv1/users/:user_id/devices/:device_id/cas/:ca_id/bundle",
+      "/apiv1/users/:user_id/devices/:device_id/install-config",
+      "/apiv1/users/:user_id/devices/:device_id/install-config/restore",
+      "/apiv1/users/:user_id/devices/:device_id/install-config-histories",
+  };
+};
+
+// GitRequestHandler
+template <class S>
+struct handler_meta<httphandler::GitRequestHandler<S>> {
+  static constexpr std::string_view name = "GitRequestHandler";
+  static constexpr std::array<std::string_view, 1> paths{"/git/*"};
+};
+
+// GitreposHandler
+template <class S>
+struct handler_meta<httphandler::GitreposHandler<S>> {
+  static constexpr std::string_view name = "GitreposHandler";
+  static constexpr std::array<std::string_view, 3> paths{
+      "/apiv1/users/:user_id/gitrepos",
+      "/apiv1/users/:user_id/gitrepos/:repo_id/tags",
+      "/apiv1/users/:user_id/gitrepos/:repo_id/*"};
+};
+
+// CaHandler
+template <class S>
+struct handler_meta<httphandler::CaHandler<S>> {
+  static constexpr std::string_view name = "CaHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/apiv1/users/:user_id/cas", "/apiv1/users/:user_id/cas/:ca_id/issue"};
+};
+
+// HealthHandler
+template <class S>
+struct handler_meta<httphandler::HealthHandler<S>> {
+  static constexpr std::string_view name = "HealthHandler";
+  static constexpr std::array<std::string_view, 1> paths{"/health"};
+};
+
+// RefreshTokenHandler
+template <class S>
+struct handler_meta<httphandler::RefreshTokenHandler<S>> {
+  static constexpr std::string_view name = "RefreshTokenHandler";
+  static constexpr std::array<std::string_view, 1> paths{"/auth/refresh"};
+};
+
+// DeviceUpdatesHandler
+template <class S>
+struct handler_meta<httphandler::DeviceUpdatesHandler<S>> {
+  static constexpr std::string_view name = "DeviceUpdatesHandler";
+  static constexpr std::array<std::string_view, 1> paths{
+      "/apiv1/devices/self/updates"};
+};
+
+// DeviceSelfCertsHandler
+template <class S>
+struct handler_meta<httphandler::DeviceSelfCertsHandler<S>> {
+  static constexpr std::string_view name = "DeviceSelfCertsHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/apiv1/devices/self/certificates/:certificate_id/deploy-materials",
+      // JWT-authenticated alias matching the REST "get one" style
+      "/apiv1/devices/self/certificates/:certificate_id"};
+};
+
+// DeviceSelfCasHandler
+template <class S>
+struct handler_meta<httphandler::DeviceSelfCasHandler<S>> {
+  static constexpr std::string_view name = "DeviceSelfCasHandler";
+  static constexpr std::array<std::string_view, 1> paths{
+      "/apiv1/devices/self/cas/:ca_id/bundle"};
+};
+
+// DeviceSelfInstallConfigHandler
+template <class S>
+struct handler_meta<httphandler::DeviceSelfInstallConfigHandler<S>> {
+  static constexpr std::string_view name = "DeviceSelfInstallConfigHandler";
+  static constexpr std::array<std::string_view, 1> paths{
+      "/apiv1/devices/self/install-config"};
+};
+
+// WebAuthnHandler
+template <class S>
+struct handler_meta<httphandler::WebAuthnHandler<S>> {
+  static constexpr std::string_view name = "WebAuthnHandler";
+  static constexpr std::array<std::string_view, 8> paths{
+      "/auth/webauthn/register/options", "/auth/webauthn/register/verify",
+      "/auth/webauthn/login/options",    "/auth/webauthn/login/verify",
+      "/auth/webauthn/step-up/options",  "/auth/webauthn/step-up/verify",
+      "/auth/webauthn/credentials",      "/auth/webauthn/credentials/:id",
+  };
+};
+
+// WalletsHandlerDi
+template <class S>
+struct handler_meta<httphandler::WalletsHandlerDi<S>> {
+  static constexpr std::string_view name = "WalletsHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/apiv1/users/:user_id/wallets",
+      "/apiv1/users/:user_id/wallets/:wallet_id"};
+};
+
+// PaymentQuotesHandlerDi
+template <class S>
+struct handler_meta<httphandler::PaymentQuotesHandlerDi<S>> {
+  static constexpr std::string_view name = "PaymentQuotesHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/apiv1/users/:user_id/payment-quotes",
+      "/apiv1/users/:user_id/payment-quotes/:payment_quote_id"};
+};
+
+// PaymentsHandlerDi
+template <class S>
+struct handler_meta<httphandler::PaymentsHandlerDi<S>> {
+  static constexpr std::string_view name = "PaymentsHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/apiv1/users/:user_id/payments",
+      "/apiv1/users/:user_id/payments/:payment_id"};
+};
+
+// IroiroHandler
+template <class S>
+struct handler_meta<httphandler::IroiroHandler<S>> {
+  static constexpr std::string_view name = "IroiroHandler";
+  static constexpr std::array<std::string_view, 1> paths{"/apiv1/iroiro"};
+};
+
+// TxtAsUrlRespHandler
+template <class S>
+struct handler_meta<httphandler::TxtAsUrlRespHandler<S>> {
+  static constexpr std::string_view name = "TxtAsUrlRespHandler";
+  static constexpr std::array<std::string_view, 2> paths{
+      "/txt-as-url-response", "/txt-as-url-response/:uuid"};
+};
+
+}  // namespace bbserver

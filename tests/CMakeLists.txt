@@ -62,6 +62,7 @@ add_executable(test_login_handler_workflow
   ${CMAKE_SOURCE_DIR}/src/login_handler.cpp
   ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
+  ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_login_handler_workflow PRIVATE cxx_std_17)
@@ -152,6 +153,7 @@ add_executable(test_device_registration
   ${CMAKE_SOURCE_DIR}/src/login_handler.cpp
   ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
+  ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_device_registration PRIVATE cxx_std_17)
@@ -200,6 +202,7 @@ add_executable(test_install_config_manager
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
+  ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_install_config_manager PRIVATE cxx_std_17)
@@ -271,6 +274,7 @@ add_executable(test_updates_polling_handler
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
+  ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_updates_polling_handler PRIVATE cxx_std_17)

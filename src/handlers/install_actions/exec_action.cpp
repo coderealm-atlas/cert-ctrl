@@ -7,6 +7,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <unordered_map>
+#include <cwchar>
 
 #if !defined(_WIN32)
 #include <pwd.h>
@@ -107,15 +108,60 @@ static std::wstring join_command_line(const std::vector<std::string> &args) {
 }
 
 static std::vector<wchar_t> build_environment_block(
-    const std::optional<std::unordered_map<std::string, std::string>> &env) {
-  std::vector<wchar_t> block;
-  if (!env || env->empty()) {
-    return block;
+    const std::optional<std::unordered_map<std::string, std::string>> &env,
+    const std::unordered_map<std::string, std::string> &extra_env) {
+  if (!env && extra_env.empty()) {
+    return {};
   }
-  for (const auto &kv : *env) {
-    std::string entry = kv.first + "=" + kv.second;
-    std::wstring wentry = utf8_to_wide(entry);
-    block.insert(block.end(), wentry.begin(), wentry.end());
+
+  std::vector<std::pair<std::wstring, std::wstring>> merged;
+  merged.reserve((env ? env->size() : 0) + extra_env.size());
+
+  auto merge_in = [&merged](const std::wstring &key, const std::wstring &value) {
+    for (auto &entry : merged) {
+      if (entry.first == key) {
+        entry.second = value;
+        return;
+      }
+    }
+    merged.emplace_back(key, value);
+  };
+
+  if (env) {
+    for (const auto &kv : *env) {
+      merge_in(utf8_to_wide(kv.first), utf8_to_wide(kv.second));
+    }
+  } else {
+    LPWCH env_strings = GetEnvironmentStringsW();
+    if (env_strings != nullptr) {
+      for (LPWCH current = env_strings; *current != L'\0';
+           current += std::wcslen(current) + 1) {
+        std::wstring entry(current);
+        if (entry.empty()) {
+          continue;
+        }
+        auto pos = entry.find(L'=');
+        if (pos == std::wstring::npos) {
+          continue;
+        }
+        std::wstring key = entry.substr(0, pos);
+        std::wstring value = entry.substr(pos + 1);
+        merge_in(key, value);
+      }
+      FreeEnvironmentStringsW(env_strings);
+    }
+  }
+
+  for (const auto &kv : extra_env) {
+    merge_in(utf8_to_wide(kv.first), utf8_to_wide(kv.second));
+  }
+
+  std::vector<wchar_t> block;
+  for (const auto &kv : merged) {
+    std::wstring entry = kv.first;
+    entry.push_back(L'=');
+    entry += kv.second;
+    block.insert(block.end(), entry.begin(), entry.end());
     block.push_back(L'\0');
   }
   block.push_back(L'\0');
@@ -161,8 +207,15 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &conte
   std::vector<wchar_t> cmd_buffer(command_line.begin(), command_line.end());
   cmd_buffer.push_back(L'\0');
 
+  std::unordered_map<std::string, std::string> extra_env;
+  if (context.resolve_exec_env) {
+    if (auto resolved = context.resolve_exec_env(item)) {
+      extra_env = std::move(*resolved);
+    }
+  }
+
   std::vector<wchar_t> env_block =
-      build_environment_block(item.env); // double-null terminated or empty
+      build_environment_block(item.env, extra_env); // double-null terminated or empty
 
   STARTUPINFOW si;
   ZeroMemory(&si, sizeof(si));
@@ -240,6 +293,13 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
     return std::nullopt; // nothing to run
   }
 
+  std::unordered_map<std::string, std::string> extra_env;
+  if (ctx.resolve_exec_env) {
+    if (auto resolved = ctx.resolve_exec_env(item)) {
+      extra_env = std::move(*resolved);
+    }
+  }
+
   // Prepare C args
   std::vector<char *> cargv;
   for (auto &s : argv) cargv.push_back(const_cast<char *>(s.c_str()));
@@ -293,6 +353,10 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
       for (const auto &kv : *item.env) {
         ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
       }
+    }
+
+    for (const auto &kv : extra_env) {
+      ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
     }
 
     // Exec the command

@@ -1,0 +1,355 @@
+#pragma once
+
+#include <algorithm>
+#include <boost/beast/http/string_body.hpp>
+#include <boost/json.hpp>
+#include <charconv>
+#include <format>
+#include <string>
+
+#include "base64.h"
+#include "cert_record_devices_store.hpp"
+#include "cert_store.hpp"
+#include "common_macros.hpp"
+#include "http_request_handler_base.hpp"
+#include "jwt_config_provider.hpp"
+#include "jwt_util.hpp"
+#include "my_error_codes.hpp"
+#include "user_device_store.hpp"
+
+namespace httphandler {
+
+// Uses the same sentinel semantics as DevicesHandler
+
+// GET /apiv1/devices/self/certificates/:certificate_id/deploy-materials
+// Alias: GET /apiv1/devices/self/certificates/:certificate_id
+// Auth: Bearer JWT with device_id claim and subject (user id)
+// Returns JSON bundle with enc_data_key and enc_privkey AEAD fields (no eager
+// wrap)
+template <typename PlainOrSSL>
+class DeviceSelfCertsHandler
+    : public std::enable_shared_from_this<DeviceSelfCertsHandler<PlainOrSSL>>,
+      public IRequestHandler<PlainOrSSL>,
+      public HandlerHelper<DeviceSelfCertsHandler<PlainOrSSL>, PlainOrSSL> {
+  using Self = DeviceSelfCertsHandler<PlainOrSSL>;
+  using CrtpBase = HandlerHelper<Self, PlainOrSSL>;
+
+  static constexpr size_t kPendingWrapSentinelSize = 48;
+
+  ::bbdb::sql::UserDeviceStore& user_device_store_;
+  ::bbdb::sql::CertRecordDevicesStore& crd_store_;
+  ::acme::IAcmeStore& cert_store_;
+  cjj365::jwtutil::IJwtConfigProvider& jwt_config_provider_;
+
+ public:
+  DeviceSelfCertsHandler(::bbdb::sql::UserDeviceStore& user_device_store,
+                         ::bbdb::sql::CertRecordDevicesStore& crd_store,
+                         ::acme::IAcmeStore& cert_store,
+                         cjj365::jwtutil::IJwtConfigProvider& jwt_cfg,
+                         ::bbdb::sql::ApikeyStore& apikey_store,
+                         ::AsyncSessionManagerMonad& session_manager)
+      : CrtpBase(session_manager, apikey_store),
+        user_device_store_(user_device_store),
+        crd_store_(crd_store),
+        cert_store_(cert_store),
+        jwt_config_provider_(jwt_cfg) {
+    this->set_jwt_config_provider(&jwt_config_provider_);
+  }
+
+  ~DeviceSelfCertsHandler() override = default;
+
+  HttpResponseIO start(RequestContextSharedPtr<PlainOrSSL> req_ctx) override {
+    this->req_ctx_ = std::move(req_ctx);
+    this->session_attributes_.reset();
+    if (this->req_ctx_->parse_method() != http::verb::get) {
+      return HttpResponseIO::fail(
+          monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
+                       .what = "Only GET is allowed",
+                       .response_status = 405});
+    }
+    return handle_get();
+  }
+
+ private:
+  HttpResponseIO handle_get() {
+    auto self = this->shared_from_this();
+    // Decide behavior by path: with trailing
+    // "/deploy-materials" → return deploy bundle; otherwise return cert detail
+    // Note: segment indices are 0-based; for 6 segments, last index is 5
+    const bool is_deploy_materials =
+        (this->req_ctx_->segments_size_is(6) &&
+         this->req_ctx_->segment_at_n_is(5, "deploy-materials"));
+    // 1) Expect Authorization: Bearer <token>
+    return this->req_ctx_->expect_auth_header_value()
+        .then([self, is_deploy_materials](auto auth_v) {
+          if (auth_v.rfind("Bearer ", 0) != 0) {
+            return HttpResponseIO::fail(
+                monad::Error{.code = my_errors::GENERAL::UNAUTHORIZED,
+                             .what = "Bearer token required",
+                             .response_status = 401});
+          }
+          // Parse certificate_id path param early (support both keys just in
+          // case)
+          auto cert_id_opt =
+              self->req_ctx_->params.template get<int64_t>("certificate_id");
+          if (!cert_id_opt.has_value()) {
+            cert_id_opt =
+                self->req_ctx_->params.template get<int64_t>("cert_id");
+          }
+          if (!cert_id_opt.has_value()) {
+            return HttpResponseIO::fail(
+                monad::Error{.code = my_errors::GENERAL::MISSING_PARAM,
+                             .what = "Missing 'certificate_id' parameter",
+                             .response_status = 400});
+          }
+          int64_t certificate_id = cert_id_opt.value();
+
+          // 2) Verify JWT
+          int64_t token_user_id = 0;
+          int64_t token_device_id = 0;
+          {
+            std::string token = auth_v.substr(7);
+            auto verify_result = cjj365::jwtutil::verify_hs256(
+                self->jwt_config_provider_.get(), token, true);
+            if (!verify_result.ok) {
+              return HttpResponseIO::fail(
+                  monad::Error{.code = my_errors::GENERAL::UNAUTHORIZED,
+                               .what = "Invalid token",
+                               .response_status = 401});
+            }
+            if (auto* sub = verify_result.payload.if_contains("sub")) {
+              if (sub->is_string()) {
+                try {
+                  token_user_id = std::stoll(std::string(sub->as_string()));
+                } catch (...) {
+                }
+              }
+            }
+            if (auto* did = verify_result.payload.if_contains("device_id")) {
+              if (did->is_int64()) {
+                token_device_id = did->as_int64();
+              } else if (did->is_string()) {
+                std::string s = std::string(did->as_string());
+                std::from_chars(s.data(), s.data() + s.size(), token_device_id);
+              }
+            }
+          }
+          if (token_device_id <= 0) {
+            return HttpResponseIO::fail(
+                monad::Error{.code = my_errors::GENERAL::INVALID_ARGUMENT,
+                             .what = "device_id claim missing in token",
+                             .response_status = 400});
+          }
+
+          // 3) Device ownership check
+          return self->user_device_store_.by_id(token_device_id)
+              .then([self, token_user_id, token_device_id, certificate_id,
+                     is_deploy_materials](auto dev) {
+                if (dev.user_id != token_user_id || dev.status != "ACTIVE") {
+                  return HttpResponseIO::fail(
+                      monad::Error{.code = my_errors::GENERAL::FORBIDDEN,
+                                   .what = "Device not owned or inactive",
+                                   .response_status = 403});
+                }
+                // 4) Load certificate and validate ownership
+                return self->cert_store_
+                    .find_cert_by_id_for_user(token_user_id, certificate_id,
+                                              ::cjj365::HowDetail::Most())
+                    .then([self, token_user_id, token_device_id,
+                           is_deploy_materials](auto cert) {
+                      return self->cert_store_
+                          .find_acct_by_id(cert.acct_id(),
+                                           ::cjj365::HowDetail::Least())
+                          .then([self, token_user_id, token_device_id,
+                                 is_deploy_materials,
+                                 cert = std::move(cert)](auto acct) mutable {
+                            if (acct.user_id() != token_user_id) {
+                              return HttpResponseIO::fail(monad::Error{
+                                  .code = my_errors::GENERAL::FORBIDDEN,
+                                  .what = "Certificate not owned",
+                                  .response_status = 403});
+                            }
+                            // 5) Load mapping for this device
+                            return self->crd_store_.list_devices(cert.id())
+                                .then([self, token_device_id,
+                                       is_deploy_materials,
+                                       cert =
+                                           std::move(cert)](auto rows) mutable {
+                                  ::bbdb::sql::CertRecordDeviceRecord const*
+                                      found = nullptr;
+                                  for (auto& r : rows) {
+                                    if (r.user_device_id == token_device_id) {
+                                      found = &r;
+                                      break;
+                                    }
+                                  }
+                                  if (!found) {
+                                    return HttpResponseIO::fail(monad::Error{
+                                        .code = my_errors::GENERAL::NOT_FOUND,
+                                        .what = "Certificate not assigned to "
+                                                "device",
+                                        .response_status = 404});
+                                  }
+                                  // If this is the JWT "get one" path, return
+                                  // the certificate detail object (same as
+                                  // user-scoped endpoint) rather than the
+                                  // deploy materials bundle.
+                                  if (!is_deploy_materials) {
+                                    return self->to_response(std::move(cert));
+                                  }
+                                  // Policy-aware device retrieval:
+                                  // If policy is MASTER_ONLY and export is
+                                  // enabled, decrypt on server and return
+                                  // plaintext.
+                                  auto policy = cert.has_key_dist_policy()
+                                                    ? cert.key_dist_policy()
+                                                    : std::string();
+                                  auto to_lower = [](std::string s) {
+                                    std::transform(s.begin(), s.end(),
+                                                   s.begin(), ::tolower);
+                                    return s;
+                                  };
+                                  std::string policy_lc = to_lower(policy);
+
+                                  if (policy_lc == "master_only") {
+                                    if (!cert.server_decrypt_export()) {
+                                      return HttpResponseIO::fail(monad::Error{
+                                          .code = my_errors::CERTS::
+                                              EXPORT_FORBIDDEN,
+                                          .what = "Server-decrypted export "
+                                                  "disabled by policy",
+                                          .response_status = 403});
+                                    }
+                                    // For MASTER_ONLY we don't require a device
+                                    // wrap; ignore pending sentinel.
+                                    return self->cert_store_
+                                        .decrypt_cert_privkey(cert.id(),
+                                                              std::nullopt,
+                                                              std::nullopt)
+                                        .then([self, cert = std::move(cert)](
+                                                  auto priv_der) mutable {
+                                          // Build plaintext JSON payload
+                                          boost::json::object data;
+                                          data["enc_scheme"] = "plaintext";
+                                          data["private_key_der_b64"] =
+                                              base64_encode(
+                                                  std::string_view(priv_der));
+                                          if (cert.has_cert()) {
+                                            data["certificate_pem"] =
+                                                cert.cert();
+                                          }
+
+                                          boost::json::object wrapper;
+                                          wrapper["data"] = std::move(data);
+
+                                          http::response<http::string_body>
+                                              res =
+                                                  self->req_ctx_
+                                                      ->template make_response<
+                                                          http::string_body>(
+                                                          http::status::ok);
+                                          res.set(http::field::content_type,
+                                                  "application/json");
+                                          res.body() =
+                                              boost::json::serialize(wrapper);
+                                          res.prepare_payload();
+                                          return HttpResponseIO::pure(
+                                              std::move(res));
+                                        })
+                                        .catch_then([self](auto err) {
+                                          // Align semantics with user-session
+                                          // export: map unissued to NOT_ISSUED
+                                          // (409)
+                                          if (err.code == my_errors::GENERAL::
+                                                              INVALID_ENTITY) {
+                                            err.code =
+                                                my_errors::CERTS::NOT_ISSUED;
+                                            err.what =
+                                                "Certificate not issued yet";
+                                            err.response_status = 409;
+                                          }
+                                          return HttpResponseIO::fail(
+                                              std::move(err));
+                                        });
+                                  }
+
+                                  // Otherwise, require device-wrapped bundle to
+                                  // be ready (no pending sentinel)
+                                  bool pending =
+                                      (found->enc_data_key.size() ==
+                                       kPendingWrapSentinelSize) &&
+                                      std::all_of(
+                                          found->enc_data_key.begin(),
+                                          found->enc_data_key.end(),
+                                          [](auto b) { return b == 0x00; });
+                                  if (pending) {
+                                    return HttpResponseIO::fail(monad::Error{
+                                        .code =
+                                            my_errors::DEVICES::WRAP_PENDING,
+                                        .what = "Device wrap pending",
+                                        .response_status = 409});
+                                  }
+                                  if (!cert.has_enc_privkey() ||
+                                      !cert.has_privkey_nonce() ||
+                                      !cert.has_privkey_tag()) {
+                                    return HttpResponseIO::fail(monad::Error{
+                                        .code = my_errors::GENERAL::NOT_FOUND,
+                                        .what = "Encrypted private key not "
+                                                "available",
+                                        .response_status = 404});
+                                  }
+
+                                  // Build AEAD bundle JSON
+                                  boost::json::object data;
+                                  data["wrap_alg"] = found->wrap_alg;
+                                  data["enc_scheme"] = "aes256gcm";
+                                  data["device_keyfp_b64"] =
+                                      base64_encode(std::string_view(
+                                          reinterpret_cast<const char*>(
+                                              found->device_keyfp.data()),
+                                          found->device_keyfp.size()));
+                                  data["enc_data_key_b64"] =
+                                      base64_encode(std::string_view(
+                                          reinterpret_cast<const char*>(
+                                              found->enc_data_key.data()),
+                                          found->enc_data_key.size()));
+                                  data["enc_privkey_b64"] =
+                                      base64_encode(std::string_view(
+                                          reinterpret_cast<const char*>(
+                                              cert.enc_privkey().data()),
+                                          cert.enc_privkey().size()));
+                                  data["privkey_nonce_b64"] =
+                                      base64_encode(std::string_view(
+                                          reinterpret_cast<const char*>(
+                                              cert.privkey_nonce().data()),
+                                          cert.privkey_nonce().size()));
+                                  data["privkey_tag_b64"] =
+                                      base64_encode(std::string_view(
+                                          reinterpret_cast<const char*>(
+                                              cert.privkey_tag().data()),
+                                          cert.privkey_tag().size()));
+
+                                  boost::json::object wrapper;
+                                  wrapper["data"] = std::move(data);
+
+                                  http::response<http::string_body> res =
+                                      self->req_ctx_->template make_response<
+                                          http::string_body>(http::status::ok);
+                                  res.set(http::field::content_type,
+                                          "application/json");
+                                  res.body() = boost::json::serialize(wrapper);
+                                  res.prepare_payload();
+                                  return HttpResponseIO::pure(std::move(res));
+                                });
+                          });
+                    });
+              });
+        })
+        .catch_then([self](auto&& error) {
+          return HttpResponseIO::pure(
+              self->req_ctx_->make_error_response(std::move(error)));
+        });
+  }
+};
+
+}  // namespace httphandler

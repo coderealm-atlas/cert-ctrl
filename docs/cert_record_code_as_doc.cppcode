@@ -1,0 +1,33 @@
+void tag_invoke(const json::value_from_tag&, json::value& jv,
+                const cjj365::meta::CertRecord& st) {
+  auto jo = json::object{};
+  jo["id"] = st.id();
+  jo["domain_name"] = st.domain_name();
+  jo["acct_id"] = st.acct_id();
+  boost::system::error_code ec;
+  json::value sans_json = json::parse(st.sans(), ec);
+  if (ec) {
+    jo["sans"] = json::array{st.sans()};
+  } else {
+    jo["sans"] = sans_json;
+  }
+  jo["cert"] = st.cert();
+  jo["der"] = base64_encode(st.der());
+  jo["created_at"] = st.created_at();
+  jo["updated_at"] = st.updated_at();
+  jo["dhparam"] = st.dhparam();
+  jo["orders"] = json::value_from(st.orders());
+  jo["csr"] = st.csr();
+  jo["self_signed"] = st.self_signed();
+  jo["organization"] = st.organization();
+  jo["organizational_unit"] = st.organizational_unit();
+  jo["country"] = st.country();
+  jo["state"] = st.state();
+  jo["locality"] = st.locality();
+  jo["serial_number"] = st.serial_number();
+  jo["public_id"] = st.public_id();
+  jo["verified"] = st.verified();
+  jo["key_dist_policy"] = st.key_dist_policy();
+  jo["server_decrypt_export"] = st.server_decrypt_export();
+  jv = std::move(jo);
+}

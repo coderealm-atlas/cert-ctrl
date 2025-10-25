@@ -1,0 +1,112 @@
+  // Core builder returning both ZIP content and generated PFX password.
+  monad::IO<std::pair<std::string, std::string>> build_zip_and_password(
+      const cjj365::meta::CertRecord& cert_record) {
+    using namespace cjj365::opensslutil;
+    using namespace monad;
+    std::vector<std::pair<std::string, std::string>> files;
+
+    // In this project, cert_record.der() holds the private key (DER). Load it.
+    auto der_ptr = cjj365::opensslutil::load_private_key(cert_record.der(), true);
+    if (!der_ptr) {
+      return monad::IO<std::pair<std::string, std::string>>::fail(Error{
+          .code = 11,
+          .what = "exporter failed to load private key.",
+      });
+    }
+    auto pem_r = cjj365::opensslutil::key_to_pem(der_ptr, true);
+    if (pem_r.is_err()) {
+      return monad::IO<std::pair<std::string, std::string>>::fail(std::move(pem_r.error()));
+    }
+    const std::string cer_all = cert_record.cert();
+
+    // Split any number of PEM certificates robustly by BEGIN/END markers
+    auto split_pems = [](const std::string& pem) -> std::vector<std::string> {
+      std::vector<std::string> out;
+      static constexpr const char* kBeg = "-----BEGIN CERTIFICATE-----";
+      static constexpr const char* kEnd = "-----END CERTIFICATE-----";
+      size_t start = 0;
+      while (true) {
+        size_t b = pem.find(kBeg, start);
+        if (b == std::string::npos) break;
+        size_t e = pem.find(kEnd, b);
+        if (e == std::string::npos) break;
+        e += std::strlen(kEnd);
+        // Include trailing newlines after END marker
+        while (e < pem.size() && (pem[e] == '\n' || pem[e] == '\r')) ++e;
+        out.emplace_back(pem.substr(b, e - b));
+        start = e;
+      }
+      return out;
+    };
+
+    auto all_certs = split_pems(cer_all);
+    if (all_certs.empty()) {
+      return monad::IO<std::pair<std::string, std::string>>::fail(Error{.code = 9, .what = "Cert not found."});
+    }
+
+    // Choose leaf certificate: prefer first (common ordering). Optionally could match domain_name.
+    std::string leaf_pem = all_certs.front();
+    std::string chain_pem;
+    if (all_certs.size() > 1) {
+      // Concatenate issuers as chain
+      for (size_t i = 1; i < all_certs.size(); ++i) {
+        if (!chain_pem.empty() && chain_pem.back() != '\n') chain_pem.push_back('\n');
+        chain_pem += all_certs[i];
+        if (chain_pem.back() != '\n') chain_pem.push_back('\n');
+      }
+    }
+
+    // Canonical virtual filenames per DEVICE_INSTALL_CONFIGS_DESIGN.md
+    files.emplace_back("private.key", pem_r.value());
+    files.emplace_back("certificate.pem", leaf_pem);
+    if (!chain_pem.empty()) {
+      files.emplace_back("chain.pem", chain_pem);
+      // fullchain = leaf + chain
+      std::string full = leaf_pem;
+      if (!full.empty() && full.back() != '\n') full.push_back('\n');
+      full += chain_pem;
+      files.emplace_back("fullchain.pem", std::move(full));
+    } else {
+      // No separate chain available; fullchain equals leaf
+      files.emplace_back("fullchain.pem", leaf_pem);
+    }
+
+    // Produce certificate.der from leaf PEM (not the private key)
+    {
+      std::vector<unsigned char> der_data;
+      bool ok = cjj365::opensslutil::convert_pem_string_to_der(leaf_pem, der_data);
+      if (!ok) {
+        return monad::IO<std::pair<std::string, std::string>>::fail(Error{.code = 10, .what = "Failed to convert certificate PEM to DER"});
+      }
+      files.emplace_back("certificate.der", std::string(der_data.begin(), der_data.end()));
+    }
+
+    try {
+      std::string password = cjj365::cryptutil::generateApiSecret(40); // stronger, longer
+      // Use full chain PEM if available; otherwise just leaf
+      std::string full_for_pfx;
+      if (!chain_pem.empty()) {
+        full_for_pfx = leaf_pem;
+        if (!full_for_pfx.empty() && full_for_pfx.back() != '\n') full_for_pfx.push_back('\n');
+        full_for_pfx += chain_pem;
+      } else {
+        full_for_pfx = leaf_pem;
+      }
+      std::string alias = cert_record.domain_name().empty() ? std::string("Certificate") : cert_record.domain_name();
+      std::string pkcs12_bin = create_pkcs12_string(der_ptr, full_for_pfx, alias, password);
+      files.emplace_back("bundle.pfx", pkcs12_bin);
+      // Provide meta.json with minimal metadata (do not include password)
+      std::string meta = std::string("{\n") +
+                         "  \"cert_id\": " + std::to_string(cert_record.id()) + "\n" +
+                         "}\n";
+      files.emplace_back("meta.json", std::move(meta));
+      return monad::IO<std::pair<std::string, std::string>>::pure(
+          std::make_pair(cjj365::fileprocessutil::create_zip_in_memory(files),
+                         std::move(password)));
+    } catch (const std::exception& e) {
+      return monad::IO<std::pair<std::string, std::string>>::fail(Error{
+          .code = 12,
+          .what = "Failed to create pkcs12: " + std::string(e.what()),
+      });
+    }
+  }

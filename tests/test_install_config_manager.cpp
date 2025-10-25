@@ -109,10 +109,17 @@ TEST(InstallConfigManagerTest, AppliesCopyActionsFullPlan) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  auto fetch_override = [config](std::optional<std::int64_t>,
-                                 const std::optional<std::string> &)
+  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
+                                 const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(config);
+    dto::DeviceInstallConfigDto copy = config;
+    if (expected_version) {
+      copy.version = *expected_version;
+    }
+    if (expected_hash) {
+      copy.installs_hash = *expected_hash;
+    }
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
   auto resource_override = [resource_dir](const dto::InstallItem &item)
@@ -198,10 +205,17 @@ TEST(InstallConfigManagerTest, SkipsCopyActionsWithEmptyDestinations) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  auto fetch_override = [config](std::optional<std::int64_t>,
-                                 const std::optional<std::string> &)
+  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
+                                 const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(config);
+    dto::DeviceInstallConfigDto copy = config;
+    if (expected_version) {
+      copy.version = *expected_version;
+    }
+    if (expected_hash) {
+      copy.installs_hash = *expected_hash;
+    }
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
   certctrl::InstallConfigManager manager(runtime_dir, provider, output,
@@ -356,10 +370,17 @@ TEST(InstallConfigManagerTest, FiltersCopyActionsByResource) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  auto fetch_override = [config](std::optional<std::int64_t>,
-                                 const std::optional<std::string> &)
+  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
+                                 const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(config);
+    dto::DeviceInstallConfigDto copy = config;
+    if (expected_version) {
+      copy.version = *expected_version;
+    }
+    if (expected_hash) {
+      copy.installs_hash = *expected_hash;
+    }
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
   certctrl::InstallConfigManager manager(runtime_dir, provider, output,
@@ -396,21 +417,33 @@ TEST(InstallConfigManagerTest, HandlesMasterOnlyPlaintextBundle) {
   auto runtime_dir = make_temp_runtime_dir();
 
   const std::int64_t cert_id = 321;
-  auto resource_dir = runtime_dir / "resources" / "certs" / std::to_string(cert_id) / "current";
-
   const std::string private_key_pem =
-      "-----BEGIN PRIVATE KEY-----\n"
-      "MFMCAQEwBQYDK2dJAzAAMC0CFQC87y2hBtE5g9UoBRB9MYL2EjRHDwIUTDNmHhX8\n"
-      "8IaQwv1lvxR++hXaYes=\n"
-      "-----END PRIVATE KEY-----\n";
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MC4CAQAwBQYDK2VwBCIEIC+BYXto9Jw4/dZElWXKfW6hDqmUC8Uh7xiw5J2wGxmh\n"
+    "-----END PRIVATE KEY-----\n";
 
-  boost::json::object bundle_data;
-  bundle_data["enc_scheme"] = "plaintext";
-  bundle_data["private_key_pem"] = private_key_pem;
+  const std::string certificate_pem =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBVTCCAQegAwIBAgIUNaR75E43mHngKYNdCa8JOW/d7dEwBQYDK2VwMCAxHjAc\n"
+    "BgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAeFw0yNTEwMjUxMTA3NTBaFw0y\n"
+    "NjEwMjUxMTA3NTBaMCAxHjAcBgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAq\n"
+    "MAUGAytlcAMhABceLDKOiP/CqZAfwi/uDcA4UO/1Kv5bect8to8uuVoLo1MwUTAd\n"
+    "BgNVHQ4EFgQUaZ/x7IAcuGgUL6gSG+8//Kf1JRswHwYDVR0jBBgwFoAUaZ/x7IAc\n"
+    "uGgUL6gSG+8//Kf1JRswDwYDVR0TAQH/BAUwAwEB/zAFBgMrZXADQQBeHFmFCaDL\n"
+    "7Ary5Uhf27nkdLdiq/QpOr5oiOEG7jnW5NwaJhj9kRo45MmK5yDGYLpUYmpb+Bnn\n"
+    "futpyqmphkYC\n"
+    "-----END CERTIFICATE-----\n";
+
+  boost::json::object deploy_data;
+  deploy_data["enc_scheme"] = "plaintext";
+  deploy_data["private_key_pem"] = private_key_pem;
+
+  boost::json::object detail_data;
+  detail_data["certificate_pem"] = certificate_pem;
 
   boost::json::object payload;
-  payload["data"] = bundle_data;
-  write_file(resource_dir / "bundle_raw.json", boost::json::serialize(payload));
+  payload["deploy"] = deploy_data;
+  payload["detail"] = detail_data;
 
   dto::DeviceInstallConfigDto config{};
   config.id = 3;
@@ -432,22 +465,25 @@ TEST(InstallConfigManagerTest, HandlesMasterOnlyPlaintextBundle) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  auto fetch_override = [config](std::optional<std::int64_t>,
-                                 const std::optional<std::string> &)
+  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
+                                 const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(config);
+    dto::DeviceInstallConfigDto copy = config;
+    if (expected_version) {
+      copy.version = *expected_version;
+    }
+    if (expected_hash) {
+      copy.installs_hash = *expected_hash;
+    }
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
-  auto resource_override = [resource_dir](const dto::InstallItem &item)
+  auto resource_override = [payload](const dto::InstallItem &item)
       -> std::optional<std::string> {
     if (!item.ob_type || *item.ob_type != "cert") {
       return std::nullopt;
     }
-    auto bundle_path = resource_dir / "bundle_raw.json";
-    if (!std::filesystem::exists(bundle_path)) {
-      return std::nullopt;
-    }
-    return read_file(bundle_path);
+    return boost::json::serialize(payload);
   };
 
   certctrl::InstallConfigManager manager(runtime_dir, provider, output,
@@ -477,6 +513,155 @@ TEST(InstallConfigManagerTest, HandlesMasterOnlyPlaintextBundle) {
 
   ASSERT_TRUE(std::filesystem::exists(dest));
   EXPECT_EQ(read_file(dest), private_key_pem);
+
+  std::filesystem::remove_all(runtime_dir);
+}
+
+TEST(InstallConfigManagerTest, GeneratesMaterialsFromCertificateDetailOnly) {
+  auto runtime_dir = make_temp_runtime_dir();
+
+  const std::int64_t cert_id = 654321;
+  const std::string private_key_pem =
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MC4CAQAwBQYDK2VwBCIEIC+BYXto9Jw4/dZElWXKfW6hDqmUC8Uh7xiw5J2wGxmh\n"
+    "-----END PRIVATE KEY-----\n";
+
+  const std::string leaf_cert =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBVTCCAQegAwIBAgIUNaR75E43mHngKYNdCa8JOW/d7dEwBQYDK2VwMCAxHjAc\n"
+    "BgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAeFw0yNTEwMjUxMTA3NTBaFw0y\n"
+    "NjEwMjUxMTA3NTBaMCAxHjAcBgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAq\n"
+    "MAUGAytlcAMhABceLDKOiP/CqZAfwi/uDcA4UO/1Kv5bect8to8uuVoLo1MwUTAd\n"
+    "BgNVHQ4EFgQUaZ/x7IAcuGgUL6gSG+8//Kf1JRswHwYDVR0jBBgwFoAUaZ/x7IAc\n"
+    "uGgUL6gSG+8//Kf1JRswDwYDVR0TAQH/BAUwAwEB/zAFBgMrZXADQQBeHFmFCaDL\n"
+    "7Ary5Uhf27nkdLdiq/QpOr5oiOEG7jnW5NwaJhj9kRo45MmK5yDGYLpUYmpb+Bnn\n"
+    "futpyqmphkYC\n"
+    "-----END CERTIFICATE-----\n";
+
+  const std::string chain_cert = leaf_cert;
+
+  boost::json::object detail_data;
+  detail_data["id"] = cert_id;
+  detail_data["domain_name"] = "fallback.example.test";
+  detail_data["cert"] = leaf_cert + chain_cert;
+  detail_data["chain_pem"] = chain_cert;
+  detail_data["private_key_pem"] = private_key_pem;
+
+  boost::json::object payload;
+  payload["detail"] = detail_data;
+
+  dto::DeviceInstallConfigDto config{};
+  config.id = 4;
+  config.user_device_id = 44;
+  config.version = 7;
+
+  dto::InstallItem copy_item{};
+  copy_item.id = "cert-detail-only";
+  copy_item.type = "copy";
+  copy_item.ob_type = std::string{"cert"};
+  copy_item.ob_id = cert_id;
+  copy_item.from = std::vector<std::string>{
+      "private.key",   "certificate.pem", "chain.pem",
+      "fullchain.pem", "certificate.der", "bundle.pfx",
+      "meta.json"};
+
+  auto install_root = runtime_dir / "install";
+  copy_item.to = std::vector<std::string>{
+      (install_root / "cert" / "private.key").string(),
+      (install_root / "cert" / "certificate.pem").string(),
+      (install_root / "cert" / "chain.pem").string(),
+      (install_root / "cert" / "fullchain.pem").string(),
+      (install_root / "cert" / "certificate.der").string(),
+      (install_root / "cert" / "bundle.pfx").string(),
+      (install_root / "cert" / "meta.json").string()};
+  config.installs.push_back(copy_item);
+
+  StubConfigProvider provider;
+  provider.config_.runtime_dir = runtime_dir;
+  customio::ConsoleOutputWithColor sink(5);
+  customio::ConsoleOutput output(sink);
+
+  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
+                                 const std::optional<std::string> &expected_hash)
+      -> monad::IO<dto::DeviceInstallConfigDto> {
+    dto::DeviceInstallConfigDto copy = config;
+    if (expected_version) {
+      copy.version = *expected_version;
+    }
+    if (expected_hash) {
+      copy.installs_hash = *expected_hash;
+    }
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
+  };
+
+  auto resource_override = [payload](const dto::InstallItem &item)
+      -> std::optional<std::string> {
+    if (!item.ob_type || *item.ob_type != "cert") {
+      return std::nullopt;
+    }
+    return boost::json::serialize(payload);
+  };
+
+  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
+                                         nullptr, fetch_override,
+                                         resource_override);
+
+  std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
+  manager.ensure_config_version(config.version, std::nullopt)
+      .run([&](auto result) {
+        ASSERT_TRUE(result.is_ok());
+        plan = result.value();
+      });
+
+  ASSERT_TRUE(plan);
+
+  bool apply_ok = false;
+  monad::Error apply_err{};
+  manager.apply_copy_actions(*plan, std::nullopt, std::nullopt)
+      .run([&](auto result) {
+        apply_ok = result.is_ok();
+        if (!apply_ok) {
+          apply_err = result.error();
+        }
+      });
+
+  ASSERT_TRUE(apply_ok) << "apply_copy_actions failed: " << apply_err.what;
+
+  auto resource_root =
+      runtime_dir / "resources" / "certs" / std::to_string(cert_id) /
+      "current";
+  ASSERT_TRUE(std::filesystem::exists(resource_root));
+  EXPECT_EQ(read_file(resource_root / "private.key"), private_key_pem);
+  EXPECT_EQ(read_file(resource_root / "certificate.pem"), leaf_cert);
+  EXPECT_EQ(read_file(resource_root / "chain.pem"), chain_cert);
+  EXPECT_EQ(read_file(resource_root / "fullchain.pem"), leaf_cert + chain_cert);
+
+  auto der_path = resource_root / "certificate.der";
+  ASSERT_TRUE(std::filesystem::exists(der_path));
+  EXPECT_GT(std::filesystem::file_size(der_path), 0u);
+
+  auto pfx_path = resource_root / "bundle.pfx";
+  ASSERT_TRUE(std::filesystem::exists(pfx_path));
+  EXPECT_GT(std::filesystem::file_size(pfx_path), 0u);
+
+  auto meta_text = read_file(resource_root / "meta.json");
+  boost::system::error_code ec;
+  auto meta_json = boost::json::parse(meta_text, ec);
+  ASSERT_FALSE(ec);
+  ASSERT_TRUE(meta_json.is_object());
+  auto &meta_obj = meta_json.as_object();
+  ASSERT_TRUE(meta_obj.if_contains("certificate"));
+  ASSERT_TRUE(meta_obj.if_contains("deploy_materials"));
+
+  for (const auto &dest : *copy_item.to) {
+    ASSERT_TRUE(std::filesystem::exists(dest))
+        << "expected install destination missing: " << dest;
+  }
+
+  EXPECT_EQ(read_file(copy_item.to->at(0)), private_key_pem);
+  EXPECT_EQ(read_file(copy_item.to->at(1)), leaf_cert);
+  EXPECT_EQ(read_file(copy_item.to->at(2)), chain_cert);
+  EXPECT_EQ(read_file(copy_item.to->at(3)), leaf_cert + chain_cert);
 
   std::filesystem::remove_all(runtime_dir);
 }
