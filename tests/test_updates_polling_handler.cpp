@@ -776,10 +776,11 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
   }
 
   {
-    auto install_suffix = make_unique_suffix();
-    json::array install_items;
+  auto install_suffix = make_unique_suffix();
+  fs::path install_root = tmp_root_ / "install-targets" / install_suffix;
+  json::array install_items;
 
-    const std::string install_base = "/opt/cert-ctrl/" + install_suffix;
+  const std::string install_base = install_root.string();
 
     json::array cert_from{"private.key",     "certificate.pem",
                           "chain.pem",       "fullchain.pem",
@@ -956,54 +957,172 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     ASSERT_FALSE(apply_result->is_err())
         << "apply_copy_actions failed: " << apply_result->error().what;
 
-    auto bundle_path = tmp_root_ / "resources" / "certs" /
-                       std::to_string(cert_info.id) / "bundle_raw.json";
-    auto debug_out = fs::path("/home/jianglibo/cert-ctrl") /
-                     ("bundle_debug_" + install_suffix + ".json");
-    std::error_code copy_ec;
-    fs::create_directories(debug_out.parent_path(), copy_ec);
-    copy_ec.clear();
-    fs::copy_file(bundle_path, debug_out,
-                  fs::copy_options::overwrite_existing, copy_ec);
-    if (copy_ec) {
-      std::cerr << "Failed to copy bundle to " << debug_out << ": "
-                << copy_ec.message() << std::endl;
-    } else {
-      std::cerr << "Saved bundle snapshot to " << debug_out << std::endl;
+  auto read_text_file = [](const fs::path &path)
+    -> std::optional<std::string> {
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs.is_open()) {
+    return std::nullopt;
     }
+    std::ostringstream oss;
+    oss << ifs.rdbuf();
+    return oss.str();
+  };
 
-    auto install_root = fs::path("/opt/cert-ctrl") / install_suffix;
-    std::cerr << "Install config target root: " << install_root << std::endl;
+  auto cert_resource_root = tmp_root_ / "resources" / "certs" /
+                std::to_string(cert_info.id);
+  auto cert_current = cert_resource_root / "current";
 
-    auto debug_install_root = fs::path("/home/jianglibo/cert-ctrl") /
-                              ("install_debug_" + install_suffix);
+  ASSERT_TRUE(fs::exists(cert_resource_root / "bundle_raw.json"))
+    << "missing bundle_raw.json for cert " << cert_info.id;
+  ASSERT_TRUE(fs::exists(cert_resource_root / "certificate_detail.json"))
+    << "missing certificate_detail.json for cert " << cert_info.id;
 
-    std::error_code snapshot_ec;
-    fs::create_directories(debug_install_root, snapshot_ec);
-    if (snapshot_ec) {
-      std::cerr << "Failed to create install snapshot dir "
-                << debug_install_root << ": " << snapshot_ec.message()
-                << std::endl;
+  auto private_key_text = read_text_file(cert_current / "private.key");
+  ASSERT_TRUE(private_key_text.has_value())
+    << "private.key not materialized for cert " << cert_info.id;
+  EXPECT_EQ(private_key_text->rfind("-----BEGIN", 0), 0)
+    << "private.key not PEM encoded";
+
+  auto certificate_text = read_text_file(cert_current / "certificate.pem");
+  ASSERT_TRUE(certificate_text.has_value())
+    << "certificate.pem not materialized for cert " << cert_info.id;
+  EXPECT_NE(certificate_text->find("BEGIN CERTIFICATE"), std::string::npos)
+    << "certificate.pem missing BEGIN CERTIFICATE";
+
+  auto chain_text = read_text_file(cert_current / "chain.pem");
+  ASSERT_TRUE(chain_text.has_value())
+    << "chain.pem not materialized for cert " << cert_info.id;
+  EXPECT_NE(chain_text->find("BEGIN CERTIFICATE"), std::string::npos)
+    << "chain.pem missing certificate data";
+
+  auto fullchain_text = read_text_file(cert_current / "fullchain.pem");
+  ASSERT_TRUE(fullchain_text.has_value())
+    << "fullchain.pem not materialized for cert " << cert_info.id;
+  EXPECT_NE(fullchain_text->find("BEGIN CERTIFICATE"), std::string::npos)
+    << "fullchain.pem missing certificate data";
+
+  auto meta_text = read_text_file(cert_current / "meta.json");
+  ASSERT_TRUE(meta_text.has_value())
+    << "meta.json not materialized for cert " << cert_info.id;
+  boost::system::error_code meta_ec;
+  auto meta_json = boost::json::parse(*meta_text, meta_ec);
+  ASSERT_FALSE(meta_ec) << "failed to parse cert meta.json: "
+              << meta_ec.message();
+  ASSERT_TRUE(meta_json.is_object()) << "cert meta.json not an object";
+  auto &meta_obj = meta_json.as_object();
+  EXPECT_TRUE(meta_obj.if_contains("certificate"))
+    << "meta.json missing certificate section";
+  EXPECT_TRUE(meta_obj.if_contains("deploy_materials"))
+    << "meta.json missing deploy_materials section";
+
+  auto detail_text =
+    read_text_file(cert_resource_root / "certificate_detail.json");
+  ASSERT_TRUE(detail_text.has_value())
+    << "certificate_detail.json missing for cert " << cert_info.id;
+  boost::system::error_code detail_ec;
+  auto detail_json = boost::json::parse(*detail_text, detail_ec);
+  ASSERT_FALSE(detail_ec) << "failed to parse certificate_detail.json: "
+              << detail_ec.message();
+  ASSERT_TRUE(detail_json.is_object())
+    << "certificate_detail.json not an object";
+  const boost::json::object *detail_data = nullptr;
+  if (auto *data = detail_json.as_object().if_contains("data")) {
+    if (data->is_object()) {
+    detail_data = &data->as_object();
     }
-
-    if (fs::exists(install_root)) {
-      std::error_code copy_dir_ec;
-      fs::copy(install_root, debug_install_root,
-               fs::copy_options::recursive |
-                   fs::copy_options::overwrite_existing,
-               copy_dir_ec);
-      if (copy_dir_ec) {
-        std::cerr << "Failed to copy install tree from " << install_root
-                  << " to " << debug_install_root << ": "
-                  << copy_dir_ec.message() << std::endl;
-      } else {
-        std::cerr << "Saved install snapshot to " << debug_install_root
-                  << std::endl;
-      }
-    } else {
-      std::cerr << "Install target root does not exist yet: "
-                << install_root << std::endl;
+  }
+  ASSERT_NE(detail_data, nullptr)
+    << "certificate_detail.json missing data object";
+  const boost::json::object *detail_view = detail_data;
+  if (auto *inner = detail_data->if_contains("certificate")) {
+    if (inner->is_object()) {
+    detail_view = &inner->as_object();
     }
+  }
+  ASSERT_NE(detail_view, nullptr);
+  EXPECT_TRUE(detail_view->if_contains("certificate_pem") ||
+        detail_view->if_contains("cert"))
+    << "certificate detail missing PEM payload";
+  const bool detail_has_chain = detail_view->if_contains("chain_pem");
+  EXPECT_TRUE(detail_has_chain || !chain_text->empty())
+    << "certificate detail missing chain data";
+  const bool detail_has_fullchain =
+      detail_view->if_contains("fullchain_pem") ||
+      detail_view->if_contains("fullchain");
+  EXPECT_TRUE(detail_has_fullchain || !fullchain_text->empty())
+    << "certificate detail missing fullchain data";
+
+  std::error_code der_ec;
+  auto der_size = fs::file_size(cert_current / "certificate.der", der_ec);
+  ASSERT_FALSE(der_ec) << "failed to stat certificate.der: "
+             << der_ec.message();
+  EXPECT_GT(der_size, static_cast<std::uintmax_t>(0))
+    << "certificate.der empty";
+
+  std::error_code pfx_ec;
+  auto pfx_size = fs::file_size(cert_current / "bundle.pfx", pfx_ec);
+  ASSERT_FALSE(pfx_ec) << "failed to stat bundle.pfx: "
+             << pfx_ec.message();
+  EXPECT_GT(pfx_size, static_cast<std::uintmax_t>(0))
+    << "bundle.pfx empty";
+
+  auto ca_resource_root = tmp_root_ / "resources" / "cas" /
+              std::to_string(ca_info.id);
+  auto ca_current = ca_resource_root / "current";
+  ASSERT_TRUE(fs::exists(ca_resource_root / "bundle_raw.json"))
+    << "missing CA bundle_raw.json";
+  auto ca_pem_text = read_text_file(ca_current / "ca.pem");
+  ASSERT_TRUE(ca_pem_text.has_value())
+    << "ca.pem not materialized";
+  EXPECT_NE(ca_pem_text->find("BEGIN CERTIFICATE"), std::string::npos)
+    << "ca.pem missing certificate data";
+
+  auto install_cert_dir = install_root / "cert";
+  auto install_ca_dir = install_root / "ca";
+  ASSERT_TRUE(fs::exists(install_cert_dir))
+    << "install cert directory missing";
+  ASSERT_TRUE(fs::exists(install_ca_dir))
+    << "install ca directory missing";
+
+  auto install_private_key =
+    read_text_file(install_cert_dir / "private.key");
+  ASSERT_TRUE(install_private_key.has_value())
+    << "private.key missing in install target";
+  EXPECT_EQ(install_private_key->rfind("-----BEGIN", 0), 0)
+    << "install private.key not PEM";
+
+  auto install_certificate =
+    read_text_file(install_cert_dir / "certificate.pem");
+  ASSERT_TRUE(install_certificate.has_value())
+    << "certificate.pem missing in install target";
+  EXPECT_NE(install_certificate->find("BEGIN CERTIFICATE"),
+        std::string::npos)
+    << "install certificate.pem missing certificate data";
+
+  auto install_meta_text = read_text_file(install_cert_dir / "meta.json");
+  ASSERT_TRUE(install_meta_text.has_value())
+    << "meta.json missing in install target";
+  boost::system::error_code install_meta_ec;
+  auto install_meta_json =
+    boost::json::parse(*install_meta_text, install_meta_ec);
+  ASSERT_FALSE(install_meta_ec) << "failed to parse install meta.json: "
+                  << install_meta_ec.message();
+  EXPECT_EQ(install_meta_json, meta_json)
+    << "install meta.json differs from resource cache";
+
+  std::error_code install_pfx_ec;
+  auto install_pfx_size =
+    fs::file_size(install_cert_dir / "bundle.pfx", install_pfx_ec);
+  ASSERT_FALSE(install_pfx_ec) << "failed to stat install bundle.pfx: "
+                 << install_pfx_ec.message();
+  EXPECT_GT(install_pfx_size, static_cast<std::uintmax_t>(0))
+    << "install bundle.pfx empty";
+
+  auto install_ca_pem = read_text_file(install_ca_dir / "ca.pem");
+  ASSERT_TRUE(install_ca_pem.has_value())
+    << "ca.pem missing in install target";
+  EXPECT_NE(install_ca_pem->find("BEGIN CERTIFICATE"), std::string::npos)
+    << "install ca.pem missing certificate data";
   }
 
   std::this_thread::sleep_for(2500ms);
@@ -1336,7 +1455,8 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
     auto install_suffix = make_unique_suffix();
     json::array install_items;
 
-    const std::string install_base = "/opt/cert-ctrl/" + install_suffix;
+  const std::string install_base =
+    (tmp_root_ / "install-targets" / install_suffix).string();
 
     json::array cert_from{"private.key",     "certificate.pem",
                           "chain.pem",       "fullchain.pem",

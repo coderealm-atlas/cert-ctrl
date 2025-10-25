@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <cstring>
 #include <fmt/format.h>
 #include <future>
 #include <iostream>
@@ -18,6 +19,8 @@
 #include <unordered_map>
 #include <array>
 #include <sstream>
+#include <string_view>
+#include <vector>
 
 #include <sodium.h>
 
@@ -25,16 +28,18 @@
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
 #include "base64.h"
+#include "openssl/crypt_util.hpp"
 #include "openssl/openssl_raii.hpp"
 #include "util/secret_util.hpp"
 #include "util/user_key_crypto.hpp"
-#include "util/my_logging.hpp"
 
 namespace certctrl {
 
 using monad::Error;
 
 namespace {
+
+constexpr const char kPfxPasswordEnvVar[] = "CERTCTRL_PFX_PASSWORD";
 
 std::string generate_temp_suffix() {
   auto now = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -97,6 +102,47 @@ std::optional<std::string> join_pem_entries(const boost::json::value &value) {
   return result;
 }
 
+std::vector<std::string> split_pem_certificates(const std::string &pem_blob) {
+  constexpr std::string_view kBegin = "-----BEGIN CERTIFICATE-----";
+  constexpr std::string_view kEnd = "-----END CERTIFICATE-----";
+
+  std::vector<std::string> blocks;
+  std::size_t search_pos = 0;
+  while (search_pos < pem_blob.size()) {
+    auto begin_pos = pem_blob.find(kBegin.data(), search_pos, kBegin.size());
+    if (begin_pos == std::string::npos) {
+      break;
+    }
+    auto end_pos = pem_blob.find(kEnd.data(), begin_pos, kEnd.size());
+    if (end_pos == std::string::npos) {
+      break;
+    }
+    end_pos += kEnd.size();
+    while (end_pos < pem_blob.size() &&
+           (pem_blob[end_pos] == '\n' || pem_blob[end_pos] == '\r')) {
+      ++end_pos;
+    }
+    blocks.emplace_back(pem_blob.substr(begin_pos, end_pos - begin_pos));
+    search_pos = end_pos;
+  }
+  return blocks;
+}
+
+std::string join_cert_blocks(const std::vector<std::string> &blocks,
+                             std::size_t start_index) {
+  std::string result;
+  for (std::size_t i = start_index; i < blocks.size(); ++i) {
+    if (!result.empty() && result.back() != '\n') {
+      result.push_back('\n');
+    }
+    result += blocks[i];
+    if (!result.empty() && result.back() != '\n') {
+      result.push_back('\n');
+    }
+  }
+  return result;
+}
+
 std::optional<std::vector<unsigned char>> decode_base64_to_bytes(
     const boost::json::value &value) {
   if (!value.is_string()) {
@@ -105,6 +151,16 @@ std::optional<std::vector<unsigned char>> decode_base64_to_bytes(
   try {
     auto encoded = boost::json::value_to<std::string>(value);
     std::string decoded = base64_decode(encoded);
+    return std::vector<unsigned char>(decoded.begin(), decoded.end());
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+std::optional<std::vector<unsigned char>> decode_base64_string_raw(
+    const std::string &value) {
+  try {
+    auto decoded = base64_decode(value);
     return std::vector<unsigned char>(decoded.begin(), decoded.end());
   } catch (...) {
     return std::nullopt;
@@ -201,6 +257,75 @@ std::optional<std::string> convert_der_private_key_to_pem(
     error_out = std::string("Failed to convert DER to PEM: ") + ex.what();
     return std::nullopt;
   }
+}
+
+std::optional<std::string> extract_private_key_from_detail(
+    const boost::json::object &detail_obj, std::string &error_out) {
+  auto get_string_field = [](const boost::json::object &obj,
+                             std::string_view key)
+      -> std::optional<std::string> {
+    if (auto *val = obj.if_contains(key)) {
+      if (val->is_string()) {
+        auto str = val->as_string();
+        if (!str.empty()) {
+          return std::string(str.c_str());
+        }
+      }
+    }
+    return std::nullopt;
+  };
+
+  const boost::json::object *view = &detail_obj;
+  if (auto *cert_node = detail_obj.if_contains("certificate")) {
+    if (cert_node->is_object()) {
+      view = &cert_node->as_object();
+    }
+  }
+
+  if (auto pem = get_string_field(*view, "private_key_pem")) {
+    return pem;
+  }
+  if (auto pem = get_string_field(detail_obj, "private_key_pem")) {
+    return pem;
+  }
+
+  auto decode_der_field = [&](const boost::json::object &source,
+                              std::string_view key)
+      -> std::optional<std::string> {
+    if (auto encoded = get_string_field(source, key)) {
+      if (auto bytes = decode_base64_string_raw(*encoded)) {
+        std::string local_error;
+        if (auto pem = convert_der_private_key_to_pem(*bytes, local_error)) {
+          return pem;
+        }
+        if (!local_error.empty()) {
+          error_out = local_error;
+        }
+      }
+    }
+    return std::nullopt;
+  };
+
+  if (auto pem = decode_der_field(*view, "private_key_der_b64")) {
+    return pem;
+  }
+  if (auto pem = decode_der_field(detail_obj, "private_key_der_b64")) {
+    return pem;
+  }
+  if (auto pem = decode_der_field(*view, "key_der_b64")) {
+    return pem;
+  }
+  if (auto pem = decode_der_field(detail_obj, "key_der_b64")) {
+    return pem;
+  }
+  if (auto pem = decode_der_field(detail_obj, "der")) {
+    return pem;
+  }
+
+  if (error_out.empty()) {
+    error_out = "Certificate detail response missing private key payload";
+  }
+  return std::nullopt;
 }
 
 std::optional<std::string> decrypt_private_key_pem(
@@ -386,6 +511,7 @@ InstallConfigManager::InstallConfigManager(
 void InstallConfigManager::clear_cache() {
   cached_config_.reset();
   local_version_.reset();
+  bundle_passwords_.clear();
 }
 
 std::shared_ptr<dto::DeviceInstallConfigDto>
@@ -697,6 +823,10 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
                              "Resource reference missing ob_type/ob_id");
   }
 
+  const std::string ob_type = *item.ob_type;
+  const std::int64_t ob_id = *item.ob_id;
+  const bool is_cert = (ob_type == "cert");
+
   auto current_dir = resource_current_dir(*item.ob_type, *item.ob_id);
 
   if (runtime_dir_.empty()) {
@@ -705,9 +835,13 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
   }
 
   bool all_present = true;
+  bool bundle_requested = false;
   if (item.from) {
     for (const auto &virtual_name : *item.from) {
       if (!virtual_name.empty()) {
+        if (virtual_name == "bundle.pfx") {
+          bundle_requested = true;
+        }
         if (!std::filesystem::exists(current_dir / virtual_name)) {
           all_present = false;
           break;
@@ -717,44 +851,74 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
   }
 
   if (all_present) {
+    if (is_cert && bundle_requested && !lookup_bundle_password(ob_type, ob_id)) {
+      all_present = false;
+    }
+  }
+
+  if (all_present) {
     return std::nullopt;
   }
 
-  std::string body;
-  if (resource_fetch_override_) {
-    auto override_body = resource_fetch_override_(item);
-    if (!override_body) {
-  return monad::make_error(
-      my_errors::GENERAL::INVALID_ARGUMENT,
-      "Resource fetch override returned empty body");
+  auto parse_enveloped_object = [](const std::string &raw,
+                                   const char *context,
+                                   boost::json::object &out)
+      -> std::optional<monad::Error> {
+    boost::system::error_code ec;
+    auto parsed = boost::json::parse(raw, ec);
+    if (ec || !parsed.is_object()) {
+      return monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          fmt::format("{} response not a JSON object: {}", context, ec ? ec.message() : ""));
     }
-    body = std::move(*override_body);
-  } else {
-    if (!http_client_) {
-      return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                               "InstallConfigManager requires HTTP client");
+    auto &obj = parsed.as_object();
+    if (auto *data = obj.if_contains("data")) {
+      if (data->is_object()) {
+        out = data->as_object();
+        return std::nullopt;
+      }
     }
+    return monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT,
+        fmt::format("{} response missing data object", context));
+  };
 
-    auto token_opt = load_access_token();
-    if (!token_opt || token_opt->empty()) {
-      return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                               "Device access token unavailable");
+  auto get_string_field = [](const boost::json::object &obj,
+                             std::string_view key) -> std::optional<std::string> {
+    if (auto *value = obj.if_contains(key)) {
+      if (value->is_string()) {
+        return value->as_string().c_str();
+      }
     }
+    return std::nullopt;
+  };
 
-    const auto &cfg = config_provider_.get();
-    std::string url;
-    if (*item.ob_type == "cert") {
-      url = fmt::format("{}/apiv1/devices/self/certificates/{}/bundle?pack=download",
-                        cfg.base_url, *item.ob_id);
-    } else if (*item.ob_type == "ca") {
-      url = fmt::format("{}/apiv1/devices/self/cas/{}/bundle?pack=download",
-                        cfg.base_url, *item.ob_id);
-    } else {
-  return monad::make_error(
-      my_errors::GENERAL::INVALID_ARGUMENT,
-      fmt::format("Unsupported ob_type '{}'", *item.ob_type));
+  auto decode_base64_string = [](const std::string &encoded)
+      -> std::optional<std::vector<unsigned char>> {
+    try {
+      std::string decoded = base64_decode(encoded);
+      return std::vector<unsigned char>(decoded.begin(), decoded.end());
+    } catch (...) {
+      return std::nullopt;
     }
+  };
 
+  auto extract_pem = [](const boost::json::object &obj,
+                        std::string_view key) -> std::optional<std::string> {
+    if (auto *value = obj.if_contains(key)) {
+      if (value->is_string()) {
+        return value->as_string().c_str();
+      }
+      if (auto merged = join_pem_entries(*value)) {
+        return merged;
+      }
+    }
+    return std::nullopt;
+  };
+
+  auto fetch_http_body = [&](const std::string &url,
+                             const std::string &token,
+                             std::string &out_body) -> std::optional<monad::Error> {
     namespace http = boost::beast::http;
 
     constexpr int kMaxAttempts = 12;
@@ -764,7 +928,7 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
 
     for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
       auto request_io = http_io<GetStringTag>(url)
-                            .map([token = *token_opt](auto ex) {
+                            .map([token](auto ex) {
                               ex->request.set(http::field::authorization,
                                               std::string("Bearer ") + token);
                               return ex;
@@ -789,23 +953,23 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
       }
 
       int status = exchange->response->result_int();
-      body = exchange->response->body();
+      out_body = exchange->response->body();
 
       if (status == 200) {
         last_error.reset();
-        break;
+        return std::nullopt;
       }
 
-    auto err = monad::make_error(
-      my_errors::NETWORK::READ_ERROR,
-      fmt::format("Resource fetch HTTP {}", status));
+      auto err = monad::make_error(
+          my_errors::NETWORK::READ_ERROR,
+          fmt::format("Resource fetch HTTP {}", status));
       err.response_status = status;
-      err.params["response_body_preview"] = body.substr(0, 512);
+      err.params["response_body_preview"] = out_body.substr(0, 512);
 
       if (status == 503) {
         last_error = err;
 
-        std::string body_preview = body.substr(0, 512);
+        std::string body_preview = out_body.substr(0, 512);
         output_.logger().info()
             << "Resource fetch 503 for URL '" << url
             << "' (attempt " << attempt << "/" << kMaxAttempts
@@ -822,84 +986,420 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
         continue;
       }
 
-  return err;
+      return err;
     }
 
-    if (last_error.has_value()) {
-      return last_error;
+    return last_error;
+  };
+
+  std::unordered_map<std::string, std::string> text_outputs;
+  std::unordered_map<std::string, std::vector<unsigned char>> binary_outputs;
+
+  std::string deploy_raw_json;
+  std::string detail_raw_json;
+  std::string ca_raw_json;
+  boost::json::object deploy_obj;
+  boost::json::object detail_obj;
+
+  if (!item.ob_type) {
+    return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                             "Install item missing ob_type");
+  }
+
+  if (resource_fetch_override_ && *item.ob_type == "cert") {
+    auto override_body = resource_fetch_override_(item);
+    if (!override_body) {
+      return monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT,
+          "Resource fetch override returned empty body");
     }
+
+    boost::system::error_code ec;
+    auto parsed = boost::json::parse(*override_body, ec);
+    if (ec || !parsed.is_object()) {
+      return monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                               "Override payload for cert is not an object");
+    }
+    auto &obj = parsed.as_object();
+    if (auto *deploy = obj.if_contains("deploy")) {
+      if (deploy->is_object()) {
+        deploy_obj = deploy->as_object();
+      }
+    }
+    if (auto *detail = obj.if_contains("detail")) {
+      if (detail->is_object()) {
+        detail_obj = detail->as_object();
+      }
+    }
+    if (deploy_obj.empty() && obj.if_contains("data") && obj["data"].is_object()) {
+      deploy_obj = obj["data"].as_object();
+    }
+    if (detail_obj.empty() && obj.if_contains("certificate") && obj["certificate"].is_object()) {
+      detail_obj = obj["certificate"].as_object();
+    }
+    if (detail_obj.empty()) {
+      return monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "Override payload missing certificate detail object");
+    }
+    deploy_raw_json = boost::json::serialize(boost::json::object{{"data", deploy_obj}});
+    detail_raw_json = boost::json::serialize(boost::json::object{{"data", detail_obj}});
+    if (deploy_obj.empty()) {
+      boost::json::object placeholder;
+      placeholder["note"] =
+          "resource override missing deploy materials; generated locally";
+      deploy_raw_json = boost::json::serialize(
+          boost::json::object{{"data", placeholder}});
+    }
+  } else if (*item.ob_type == "cert") {
+    if (!http_client_) {
+      return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                               "InstallConfigManager requires HTTP client");
+    }
+
+    auto token_opt = load_access_token();
+    if (!token_opt || token_opt->empty()) {
+      return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                               "Device access token unavailable");
+    }
+
+    const auto &cfg = config_provider_.get();
+    std::string detail_url = fmt::format(
+        "{}/apiv1/devices/self/certificates/{}", cfg.base_url, *item.ob_id);
+    std::string deploy_url = fmt::format(
+        "{}/apiv1/devices/self/certificates/{}/deploy-materials",
+        cfg.base_url, *item.ob_id);
+
+    if (auto err = fetch_http_body(detail_url, *token_opt, detail_raw_json)) {
+      return err;
+    }
+
+    bool deploy_available = true;
+    if (auto err = fetch_http_body(deploy_url, *token_opt, deploy_raw_json)) {
+      if (err->response_status == 404 || err->response_status == 204) {
+        deploy_available = false;
+        deploy_raw_json.clear();
+        output_.logger().info()
+            << "Deploy materials endpoint unavailable for cert "
+            << *item.ob_id << " (status=" << err->response_status
+            << "); falling back to certificate detail payload" << std::endl;
+        boost::json::object placeholder;
+        placeholder["note"] =
+            "no deploy materials provided; generated locally by agent";
+        deploy_raw_json =
+            boost::json::serialize(boost::json::object{{"data", placeholder}});
+      } else {
+        return err;
+      }
+    }
+
+    if (auto err = parse_enveloped_object(detail_raw_json,
+                                           "certificate detail", detail_obj)) {
+      return err;
+    }
+    if (deploy_available) {
+      if (auto err = parse_enveloped_object(
+              deploy_raw_json, "deploy materials", deploy_obj)) {
+        return err;
+      }
+    }
+  }
+
+  std::string ca_body;
+  boost::json::object ca_obj;
+  if (*item.ob_type == "ca") {
+    if (resource_fetch_override_) {
+      auto override_body = resource_fetch_override_(item);
+      if (!override_body) {
+        return monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            "Resource fetch override returned empty body");
+      }
+      ca_body = std::move(*override_body);
+    } else {
+      if (!http_client_) {
+        return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                                 "InstallConfigManager requires HTTP client");
+      }
+
+      auto token_opt = load_access_token();
+      if (!token_opt || token_opt->empty()) {
+        return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                                 "Device access token unavailable");
+      }
+
+      const auto &cfg = config_provider_.get();
+      std::string url = fmt::format(
+          "{}/apiv1/devices/self/cas/{}/bundle?pack=download", cfg.base_url,
+          *item.ob_id);
+      if (auto err = fetch_http_body(url, *token_opt, ca_body)) {
+        return err;
+      }
+    }
+
+    auto bundle_data = parse_bundle_data(ca_body);
+    if (!bundle_data) {
+      return monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "CA bundle response missing expected data");
+    }
+    ca_obj = *bundle_data;
   }
 
   try {
     std::filesystem::create_directories(current_dir);
-    auto raw_path = current_dir.parent_path() / "bundle_raw.json";
-    {
-      std::ofstream ofs(raw_path, std::ios::binary | std::ios::trunc);
-      ofs << body;
-    }
-
-    std::unordered_map<std::string, std::string> text_outputs;
-    std::unordered_map<std::string, std::vector<unsigned char>> binary_outputs;
-
-    auto bundle_data = parse_bundle_data(body);
 
     if (item.from) {
-      if (item.ob_type && *item.ob_type == "cert") {
-        if (bundle_data) {
-          std::string decrypt_error;
-          auto private_key_pem =
-              decrypt_private_key_pem(*bundle_data, runtime_dir_, state_dir(),
+      if (*item.ob_type == "cert") {
+        std::string decrypt_error;
+        std::optional<std::string> private_key_pem;
+        if (!deploy_obj.empty()) {
+          private_key_pem =
+              decrypt_private_key_pem(deploy_obj, runtime_dir_, state_dir(),
                                       decrypt_error);
-          if (!private_key_pem) {
-      return monad::make_error(
-        my_errors::GENERAL::UNEXPECTED_RESULT,
-        fmt::format(
-          "Failed to materialize decrypted private key for cert {}: {}",
-          *item.ob_id, decrypt_error));
+        }
+
+        std::string fallback_error;
+        if (!private_key_pem) {
+          private_key_pem = extract_private_key_from_detail(detail_obj,
+                                                            fallback_error);
+        }
+
+        if (!private_key_pem) {
+          std::string message =
+              fmt::format("Failed to materialize private key for cert {}",
+                          *item.ob_id);
+          if (!decrypt_error.empty()) {
+            message += "; deploy materials: " + decrypt_error;
           }
-          text_outputs["private.key"] = std::move(*private_key_pem);
-          if (auto *pem = bundle_data->if_contains("certificate_pem")) {
-            if (auto merged = join_pem_entries(*pem)) {
-              text_outputs["certificate.pem"] = *merged;
+          if (!fallback_error.empty()) {
+            message += "; detail fallback: " + fallback_error;
+          }
+          return monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                                   std::move(message));
+        }
+
+        text_outputs["private.key"] = *private_key_pem;
+
+        const boost::json::object *detail_view = &detail_obj;
+        if (auto *cert_node = detail_obj.if_contains("certificate")) {
+          if (cert_node->is_object()) {
+            detail_view = &cert_node->as_object();
+          }
+        }
+
+        std::optional<std::string> cert_source =
+            extract_pem(*detail_view, "certificate_pem");
+        if (!cert_source) {
+          cert_source = extract_pem(*detail_view, "cert");
+        }
+
+        if (!cert_source || cert_source->empty()) {
+          return monad::make_error(
+              my_errors::GENERAL::UNEXPECTED_RESULT,
+              fmt::format(
+                  "Certificate detail missing PEM payload for cert {}",
+                  *item.ob_id));
+        }
+
+        auto pem_blocks = split_pem_certificates(*cert_source);
+        if (pem_blocks.empty()) {
+          pem_blocks.emplace_back(*cert_source);
+        }
+
+        std::string leaf_pem = pem_blocks.front();
+        std::string chain_pem = join_cert_blocks(pem_blocks, 1);
+
+        if (auto chain_field = extract_pem(*detail_view, "chain_pem")) {
+          if (!chain_field->empty()) {
+            chain_pem = *chain_field;
+          }
+        }
+
+        std::string fullchain_pem;
+        if (auto fullchain_field = extract_pem(*detail_view, "fullchain_pem")) {
+          fullchain_pem = *fullchain_field;
+        }
+
+        if (fullchain_pem.empty()) {
+          fullchain_pem = leaf_pem;
+          if (!fullchain_pem.empty() && fullchain_pem.back() != '\n') {
+            fullchain_pem.push_back('\n');
+          }
+          if (!chain_pem.empty()) {
+            fullchain_pem += chain_pem;
+          }
+        }
+
+        if (chain_pem.empty()) {
+          auto derived_chain_blocks = split_pem_certificates(fullchain_pem);
+          if (derived_chain_blocks.size() > 1) {
+            chain_pem = join_cert_blocks(derived_chain_blocks, 1);
+          }
+        }
+
+        bool chain_required = false;
+        if (item.from) {
+          chain_required = std::find(item.from->begin(), item.from->end(),
+                                     std::string("chain.pem")) !=
+                           item.from->end();
+        }
+        if (chain_required && chain_pem.empty()) {
+          chain_pem = leaf_pem;
+        }
+
+        text_outputs["certificate.pem"] = leaf_pem;
+        if (!chain_pem.empty()) {
+          text_outputs["chain.pem"] = chain_pem;
+        }
+        text_outputs["fullchain.pem"] = fullchain_pem;
+
+    if (binary_outputs.find("certificate.der") ==
+      binary_outputs.end()) {
+          std::vector<unsigned char> der_bytes;
+          if (cjj365::opensslutil::convert_pem_string_to_der(leaf_pem,
+                                                             der_bytes)) {
+            binary_outputs["certificate.der"] = std::move(der_bytes);
+          }
+        }
+
+        if (binary_outputs.find("bundle.pfx") == binary_outputs.end()) {
+          try {
+            auto pkey =
+                cjj365::opensslutil::load_private_key(*private_key_pem, false);
+            if (!pkey) {
+              return monad::make_error(
+                  my_errors::GENERAL::UNEXPECTED_RESULT,
+                  "Failed to load private key for PKCS#12 generation");
             }
-          }
-          if (auto *chain = bundle_data->if_contains("chain_pem")) {
-            if (auto merged = join_pem_entries(*chain)) {
-              text_outputs["chain.pem"] = *merged;
+
+            std::string pfx_chain = fullchain_pem;
+            if (pfx_chain.empty()) {
+              pfx_chain = leaf_pem;
             }
-          }
-          if (auto *fullchain = bundle_data->if_contains("fullchain_pem")) {
-            if (auto merged = join_pem_entries(*fullchain)) {
-              text_outputs["fullchain.pem"] = *merged;
+
+            std::string alias = "Certificate";
+            if (auto name = detail_view->if_contains("domain_name")) {
+              if (name->is_string() && !name->as_string().empty()) {
+                alias = std::string(name->as_string().c_str());
+              }
+            } else if (auto name = detail_obj.if_contains("domain_name")) {
+              if (name->is_string() && !name->as_string().empty()) {
+                alias = std::string(name->as_string().c_str());
+              }
             }
+
+            std::string pfx_password;
+            if (auto existing = lookup_bundle_password(ob_type, ob_id)) {
+              pfx_password = *existing;
+            } else {
+              pfx_password = cjj365::cryptutil::generateApiSecret(40);
+            }
+
+            std::string pkcs12 = cjj365::opensslutil::create_pkcs12_string(
+                pkey, pfx_chain, alias, pfx_password);
+            binary_outputs["bundle.pfx"] =
+                std::vector<unsigned char>(pkcs12.begin(), pkcs12.end());
+            remember_bundle_password(ob_type, ob_id, pfx_password);
+          } catch (const std::exception &ex) {
+            return monad::make_error(
+                my_errors::GENERAL::UNEXPECTED_RESULT,
+                fmt::format("Failed to create PKCS#12 bundle: {}",
+                            ex.what()));
           }
-          if (auto *cert_der = bundle_data->if_contains("certificate_der_b64")) {
-            if (auto bytes = decode_base64_to_bytes(*cert_der)) {
+        }
+
+    if (binary_outputs.find("certificate.der") ==
+      binary_outputs.end()) {
+          if (auto der_b64 =
+                  get_string_field(*detail_view, "certificate_der_b64")) {
+            if (auto bytes = decode_base64_string(*der_b64)) {
+              binary_outputs["certificate.der"] = std::move(*bytes);
+            }
+          } else if (auto *der_val =
+                         detail_view->if_contains("certificate_der_b64")) {
+            if (auto bytes = decode_base64_to_bytes(*der_val)) {
               binary_outputs["certificate.der"] = std::move(*bytes);
             }
           }
-          if (auto pfx = extract_bundle_pfx_bytes(*bundle_data)) {
-            binary_outputs["bundle.pfx"] = std::move(*pfx);
-          }
-          text_outputs["meta.json"] = boost::json::serialize(*bundle_data);
-        } else {
-          text_outputs["private.key"] = body;
-          text_outputs["meta.json"] = body;
         }
-      } else if (item.ob_type && *item.ob_type == "ca") {
-        if (bundle_data) {
-          if (auto *pem = bundle_data->if_contains("ca_certificate_pem")) {
-            text_outputs["ca.pem"] = boost::json::value_to<std::string>(*pem);
-          }
-          if (auto *der = bundle_data->if_contains("ca_certificate_der_b64")) {
-            if (auto bytes = decode_base64_to_bytes(*der)) {
-              binary_outputs["ca.der"] = std::move(*bytes);
+
+        if (binary_outputs.find("bundle.pfx") == binary_outputs.end()) {
+          if (auto *pfx_val = detail_view->if_contains("bundle_pfx_b64")) {
+            if (auto bytes = decode_base64_to_bytes(*pfx_val)) {
+              binary_outputs["bundle.pfx"] = std::move(*bytes);
+              forget_bundle_password(ob_type, ob_id);
+            }
+          } else if (auto *pfx_val = detail_view->if_contains("pkcs12_b64")) {
+            if (auto bytes = decode_base64_to_bytes(*pfx_val)) {
+              binary_outputs["bundle.pfx"] = std::move(*bytes);
+              forget_bundle_password(ob_type, ob_id);
             }
           }
-          text_outputs["meta.json"] = boost::json::serialize(*bundle_data);
-        } else {
-          text_outputs["meta.json"] = body;
         }
+
+        boost::json::object meta_root;
+        meta_root["certificate"] = detail_obj;
+        meta_root["deploy_materials"] = deploy_obj;
+        text_outputs["meta.json"] = boost::json::serialize(meta_root);
+
+        auto raw_path = current_dir.parent_path() / "bundle_raw.json";
+        {
+          std::ofstream ofs(raw_path, std::ios::binary | std::ios::trunc);
+          ofs << deploy_raw_json;
+        }
+
+        auto detail_dump = current_dir.parent_path() / "certificate_detail.json";
+        {
+          std::ofstream ofs(detail_dump, std::ios::binary | std::ios::trunc);
+          ofs << detail_raw_json;
+        }
+      } else if (*item.ob_type == "ca") {
+        if (auto *pem = ca_obj.if_contains("ca_certificate_pem")) {
+          text_outputs["ca.pem"] = boost::json::value_to<std::string>(*pem);
+        }
+        if (auto *der = ca_obj.if_contains("ca_certificate_der_b64")) {
+          if (auto bytes = decode_base64_to_bytes(*der)) {
+            binary_outputs["ca.der"] = std::move(*bytes);
+          }
+        }
+        boost::json::object meta_root;
+        meta_root["ca_bundle"] = ca_obj;
+        text_outputs["meta.json"] = boost::json::serialize(meta_root);
+
+        auto raw_path = current_dir.parent_path() / "bundle_raw.json";
+        {
+          std::ofstream ofs(raw_path, std::ios::binary | std::ios::trunc);
+          ofs << ca_body;
+        }
+      } else {
+        return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                                 fmt::format("Unsupported ob_type '{}'",
+                                             *item.ob_type));
+      }
+
+      std::vector<std::string> missing;
+      for (const auto &virtual_name : *item.from) {
+        if (virtual_name.empty()) {
+          continue;
+        }
+        bool present = binary_outputs.count(virtual_name) ||
+                        text_outputs.count(virtual_name);
+        if (!present) {
+          missing.push_back(virtual_name);
+        }
+      }
+      if (!missing.empty()) {
+        std::ostringstream oss;
+        oss << "Missing deploy materials: ";
+        for (std::size_t i = 0; i < missing.size(); ++i) {
+          if (i != 0) {
+            oss << ", ";
+          }
+          oss << missing[i];
+        }
+        return monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                                 oss.str());
       }
 
       for (const auto &virtual_name : *item.from) {
@@ -916,9 +1416,6 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
                    text_it != text_outputs.end()) {
           std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
           ofs << text_it->second;
-        } else {
-          std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
-          ofs << body;
         }
       }
     }
@@ -955,11 +1452,19 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
         if (target_ob_type) {
           allowed_types = std::vector<std::string>{*target_ob_type};
         }
-        return install_actions::apply_exec_actions({runtime_dir_, output_,
-                                                   [this](const dto::InstallItem &item) {
-                                                     return ensure_resource_materialized_sync(item);
-                                                   }},
-                                                  config, allowed_types);
+        install_actions::InstallActionContext exec_context{
+            runtime_dir_,
+            output_,
+            [this](const dto::InstallItem &item) {
+              return ensure_resource_materialized_sync(item);
+            },
+            [this](const dto::InstallItem &item)
+                -> std::optional<std::unordered_map<std::string, std::string>> {
+              return resolve_exec_env_for_item(item);
+            }};
+
+        return install_actions::apply_exec_actions(exec_context, config,
+                                                   allowed_types);
       });
 }
 
@@ -982,20 +1487,28 @@ monad::IO<void> InstallConfigManager::apply_import_ca_actions(
         if (target_ob_type) {
           allowed_types = std::vector<std::string>{*target_ob_type};
         }
-        return install_actions::apply_exec_actions({runtime_dir_, output_,
-                                                   [this](const dto::InstallItem &item) {
-                                                     return ensure_resource_materialized_sync(item);
-                                                   }},
-                                                  config, allowed_types);
+        install_actions::InstallActionContext exec_context{
+            runtime_dir_,
+            output_,
+            [this](const dto::InstallItem &item) {
+              return ensure_resource_materialized_sync(item);
+            },
+            [this](const dto::InstallItem &item)
+                -> std::optional<std::unordered_map<std::string, std::string>> {
+              return resolve_exec_env_for_item(item);
+            }};
+
+        return install_actions::apply_exec_actions(exec_context, config,
+                                                   allowed_types);
       });
 }
 
 monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
-  const ::data::DeviceUpdateSignal &signal) {
+    const ::data::DeviceUpdateSignal &signal) {
   using ReturnIO = monad::IO<void>;
 
   if (signal.type == "install.updated") {
-  auto typed = ::data::get_install_updated(signal);
+    auto typed = ::data::get_install_updated(signal);
     std::optional<std::int64_t> expected_version;
     std::optional<std::string> expected_hash;
     if (typed) {
@@ -1034,6 +1547,57 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
   }
 
   return ReturnIO::pure();
+}
+
+std::optional<std::unordered_map<std::string, std::string>>
+InstallConfigManager::resolve_exec_env_for_item(
+    const dto::InstallItem &item) {
+  if (!item.ob_type || !item.ob_id) {
+    return std::nullopt;
+  }
+  if (*item.ob_type != "cert") {
+    return std::nullopt;
+  }
+
+  auto password = lookup_bundle_password(*item.ob_type, *item.ob_id);
+  if (!password || password->empty()) {
+    return std::nullopt;
+  }
+
+  std::unordered_map<std::string, std::string> env;
+  env.emplace(kPfxPasswordEnvVar, *password);
+  return env;
+}
+
+std::optional<std::string> InstallConfigManager::lookup_bundle_password(
+    const std::string &ob_type, std::int64_t ob_id) const {
+  auto type_it = bundle_passwords_.find(ob_type);
+  if (type_it == bundle_passwords_.end()) {
+    return std::nullopt;
+  }
+  auto id_it = type_it->second.find(ob_id);
+  if (id_it == type_it->second.end()) {
+    return std::nullopt;
+  }
+  return id_it->second;
+}
+
+void InstallConfigManager::remember_bundle_password(
+    const std::string &ob_type, std::int64_t ob_id,
+    const std::string &password) {
+  bundle_passwords_[ob_type][ob_id] = password;
+}
+
+void InstallConfigManager::forget_bundle_password(
+    const std::string &ob_type, std::int64_t ob_id) {
+  auto type_it = bundle_passwords_.find(ob_type);
+  if (type_it == bundle_passwords_.end()) {
+    return;
+  }
+  type_it->second.erase(ob_id);
+  if (type_it->second.empty()) {
+    bundle_passwords_.erase(type_it);
+  }
 }
 
 } // namespace certctrl

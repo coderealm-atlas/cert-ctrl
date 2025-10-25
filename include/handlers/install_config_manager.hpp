@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
@@ -82,6 +83,17 @@ private:
   std::optional<monad::Error>
   ensure_resource_materialized_sync(const dto::InstallItem &item);
 
+  std::optional<std::unordered_map<std::string, std::string>>
+  resolve_exec_env_for_item(const dto::InstallItem &item);
+
+  std::optional<std::string> lookup_bundle_password(const std::string &ob_type,
+                                                    std::int64_t ob_id) const;
+  void remember_bundle_password(const std::string &ob_type,
+                                std::int64_t ob_id,
+                                const std::string &password);
+  void forget_bundle_password(const std::string &ob_type,
+                              std::int64_t ob_id);
+
 private:
   std::filesystem::path runtime_dir_;
   certctrl::ICertctrlConfigProvider &config_provider_;
@@ -96,6 +108,10 @@ private:
   mutable std::optional<std::filesystem::file_time_type>
       cached_access_token_mtime_;
   logsrc::severity_logger<trivial::severity_level> lg;
+
+  std::unordered_map<std::string,
+                     std::unordered_map<std::int64_t, std::string>>
+      bundle_passwords_;
 };
 
 } // namespace certctrl
