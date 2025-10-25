@@ -52,6 +52,16 @@ namespace po = boost::program_options;
 
 namespace {
 
+bool real_server_tests_enabled() {
+  if (const char *flag = std::getenv("CERTCTRL_REAL_SERVER_TESTS")) {
+    return flag[0] != '\0' && flag[0] != '0';
+  }
+  if (const char *legacy = std::getenv("RUN_REAL_SERVER_TESTS")) {
+    return legacy[0] != '\0' && legacy[0] != '0';
+  }
+  return false;
+}
+
 std::string make_unique_suffix() {
   auto now =
       std::chrono::steady_clock::now().time_since_epoch().count();
@@ -103,13 +113,6 @@ struct RealServerWorkflowContext {
   size_t cert_renewed_count{0};
   size_t cert_revoked_count{0};
 };
-
-bool real_server_tests_enabled() {
-  if (const char *flag = std::getenv("RUN_REAL_SERVER_TESTS")) {
-    return flag[0] != '\0' && flag[0] != '0';
-  }
-  return false;
-}
 
 class ScopeGuard {
 public:
@@ -170,6 +173,10 @@ protected:
   std::optional<int64_t> newly_registered_device_id_;
 
   void SetUp() override {
+    if (!real_server_tests_enabled()) {
+      GTEST_SKIP() << "Set CERTCTRL_REAL_SERVER_TESTS=1 to enable real server end-to-end tests.";
+    }
+
     ASSERT_GE(sodium_init(), 0) << "libsodium initialization failed";
 
     base_url_ = testutil::url_base();

@@ -6,10 +6,13 @@
 #include <fmt/format.h>
 #include <random>
 #include <string>
+#include <string_view>
 
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
+#include "my_error_codes.hpp"
+#include "handlers/install_actions/copy_action.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "io_monad.hpp"
 #include "log_stream.hpp"
@@ -219,6 +222,52 @@ TEST(InstallConfigManagerTest, SkipsCopyActionsWithEmptyDestinations) {
       .run([&](auto result) { ASSERT_TRUE(result.is_ok()); });
 
   EXPECT_FALSE(std::filesystem::exists(dest_path));
+
+  std::filesystem::remove_all(runtime_dir);
+}
+
+TEST(InstallConfigManagerTest, CopyActionsAggregateFailures) {
+  auto runtime_dir = make_temp_runtime_dir();
+
+  dto::DeviceInstallConfigDto config{};
+  dto::InstallItem copy_item{};
+  copy_item.id = "copy-failures";
+  copy_item.type = "copy";
+  copy_item.ob_type = std::string{"cert"};
+  copy_item.ob_id = static_cast<std::int64_t>(4242);
+  copy_item.from = std::vector<std::string>{"missing.pem", "also-missing.pem"};
+  auto absolute_dest = runtime_dir / "deploy" / "certs" / "missing.pem";
+  copy_item.to = std::vector<std::string>{"relative-dest.pem", absolute_dest.string()};
+  config.installs.push_back(copy_item);
+
+  customio::ConsoleOutputWithColor sink(5);
+  customio::ConsoleOutput output(sink);
+
+  certctrl::install_actions::InstallActionContext context{
+      runtime_dir,
+      output,
+      [](const dto::InstallItem &) { return std::nullopt; }};
+
+  bool callback_invoked = false;
+  certctrl::install_actions::apply_copy_actions(context, config, std::nullopt,
+                                               std::nullopt)
+      .run([&](auto result) {
+        callback_invoked = true;
+        ASSERT_TRUE(result.is_err())
+            << "Expected aggregated failures but copy actions succeeded";
+        auto err = result.error();
+        EXPECT_EQ(err.code, my_errors::GENERAL::FILE_READ_WRITE);
+        std::string_view message(err.what);
+        EXPECT_NE(message.find("destination path 'relative-dest.pem' is not absolute"),
+                  std::string_view::npos)
+            << "Missing relative path diagnostic";
+        EXPECT_NE(message.find("Source file"), std::string_view::npos)
+            << "Missing source not found diagnostic";
+      });
+
+  ASSERT_TRUE(callback_invoked);
+  EXPECT_FALSE(std::filesystem::exists(absolute_dest))
+      << "No destination file should be created on failure";
 
   std::filesystem::remove_all(runtime_dir);
 }

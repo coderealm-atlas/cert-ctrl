@@ -5,7 +5,9 @@
 #include <fmt/format.h>
 #include <optional>
 #include <random>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
@@ -138,6 +140,8 @@ apply_copy_actions(const InstallActionContext &context,
   using ReturnIO = monad::IO<void>;
 
   try {
+    std::vector<std::string> failure_messages;
+
     for (const auto &item : config.installs) {
       if (item.type != "copy") {
         continue;
@@ -153,9 +157,11 @@ apply_copy_actions(const InstallActionContext &context,
       }
 
       if (!item.from || item.from->empty()) {
-        return ReturnIO::fail(
-            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                              "copy item missing from entries"));
+        std::string msg = fmt::format("copy item '{}' missing from entries",
+                                      item.id);
+        context.output.logger().error() << msg << std::endl;
+        failure_messages.push_back(std::move(msg));
+        continue;
       }
 
       if (!item.to || item.to->empty()) {
@@ -166,20 +172,28 @@ apply_copy_actions(const InstallActionContext &context,
       }
 
       if (item.from->size() != item.to->size()) {
-        return ReturnIO::fail(
-            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                              "copy item from/to length mismatch"));
+        std::string msg = fmt::format(
+            "copy item '{}' from/to length mismatch", item.id);
+        context.output.logger().error() << msg << std::endl;
+        failure_messages.push_back(std::move(msg));
+        continue;
       }
 
       if (!item.ob_type || !item.ob_id) {
-        return ReturnIO::fail(
-            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                              "copy item missing ob_type/ob_id"));
+        std::string msg = fmt::format(
+            "copy item '{}' missing ob_type/ob_id", item.id);
+        context.output.logger().error() << msg << std::endl;
+        failure_messages.push_back(std::move(msg));
+        continue;
       }
 
       if (auto ensure_err = context.ensure_resource_materialized(item);
           ensure_err.has_value()) {
-        return ReturnIO::fail(std::move(*ensure_err));
+        std::string msg = fmt::format(
+            "copy item '{}': {}", item.id, ensure_err->what);
+        context.output.logger().error() << msg << std::endl;
+        failure_messages.push_back(std::move(msg));
+        continue;
       }
 
       auto resource_root =
@@ -200,22 +214,43 @@ apply_copy_actions(const InstallActionContext &context,
         std::filesystem::path dest_path(dest_path_str);
 
         if (!dest_path.is_absolute()) {
-          return ReturnIO::fail(monad::make_error(
-              my_errors::GENERAL::INVALID_ARGUMENT,
-              fmt::format("Destination path '{}' is not absolute",
-                          dest_path.string())));
+          std::string msg = fmt::format(
+              "copy item '{}': destination path '{}' is not absolute",
+              item.id, dest_path.string());
+          context.output.logger().error() << msg << std::endl;
+          failure_messages.push_back(std::move(msg));
+          continue;
         }
 
         bool private_material = is_private_material_name(virtual_name);
         if (auto err = perform_copy_operation(context, source_path, dest_path,
                                               private_material)) {
-          return ReturnIO::fail(
-              monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, *err));
+          std::string msg = fmt::format(
+              "copy item '{}': failed to copy '{}' -> '{}': {}", item.id,
+              source_path.string(), dest_path.string(), *err);
+          context.output.logger().error() << msg << std::endl;
+          failure_messages.push_back(std::move(msg));
+          continue;
         }
 
         context.output.logger().info() << "Copied '" << source_path << "' -> '"
                                        << dest_path << "'" << std::endl;
       }
+    }
+
+    if (!failure_messages.empty()) {
+      std::ostringstream oss;
+      oss << "copy actions encountered " << failure_messages.size()
+          << " failure(s): ";
+      for (std::size_t i = 0; i < failure_messages.size(); ++i) {
+        if (i != 0) {
+          oss << "; ";
+        }
+        oss << failure_messages[i];
+      }
+      auto err = monad::make_error(my_errors::GENERAL::FILE_READ_WRITE,
+                                   oss.str());
+      return ReturnIO::fail(std::move(err));
     }
 
     return ReturnIO::pure();
