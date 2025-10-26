@@ -212,10 +212,9 @@ std::string hmac_sha1_base64(const std::string& txt, const std::string& key,
 
   // Compute the HMAC using SHA1
   HMAC(EVP_sha1(), key.data(), key.size(),
-       reinterpret_cast<const unsigned char*>(txt.data()), txt.size(), hash,
-       &hash_len);
-  std::string_view hash_view{reinterpret_cast<const char*>(hash), hash_len};
-  return base64_encode(hash_view, url_safe);
+    reinterpret_cast<const unsigned char*>(txt.data()), txt.size(), hash,
+    &hash_len);
+  return base64_encode(hash, hash_len, url_safe);
 }
 std::string sha1_hex(const std::string& txt) {
   unsigned char hash[SHA_DIGEST_LENGTH];  // Buffer for the hash
