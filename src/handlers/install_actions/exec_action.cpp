@@ -215,7 +215,12 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &conte
   }
 
   std::vector<wchar_t> env_block =
-      build_environment_block(item.env, extra_env); // double-null terminated or empty
+    build_environment_block(item.env, extra_env); // double-null terminated or empty
+
+  DWORD creation_flags = 0;
+  if (!env_block.empty()) {
+  creation_flags |= CREATE_UNICODE_ENVIRONMENT;
+  }
 
   STARTUPINFOW si;
   ZeroMemory(&si, sizeof(si));
@@ -224,7 +229,7 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &conte
   ZeroMemory(&pi, sizeof(pi));
 
   BOOL created = CreateProcessW(
-      nullptr, cmd_buffer.data(), nullptr, nullptr, FALSE, 0,
+    nullptr, cmd_buffer.data(), nullptr, nullptr, FALSE, creation_flags,
       env_block.empty() ? nullptr : env_block.data(), nullptr, &si, &pi);
   if (!created) {
     DWORD err = GetLastError();
