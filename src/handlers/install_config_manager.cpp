@@ -637,27 +637,64 @@ InstallConfigManager::refresh_from_remote(
         });
   };
 
-  return perform_fetch()
-      .then([this, expected_version,
-             expected_hash](dto::DeviceInstallConfigDto config)
-                -> ReturnIO {
-        if (expected_version && config.version != *expected_version) {
-          output_.logger().warning()
-              << "Fetched install-config version " << config.version
-              << " does not match expected " << *expected_version
-              << std::endl;
-        }
-        if (expected_hash && !config.installs_hash.empty() &&
-            config.installs_hash != *expected_hash) {
-          output_.logger().warning()
-              << "Fetched install-config hash mismatch" << std::endl;
-        }
+  constexpr int kMaxAttempts = 4;
+  constexpr std::chrono::milliseconds kBaseRetryDelay{200};
 
-        return persist_config(config)
-            .then([this]() -> ReturnIO {
-              return ReturnIO::pure(cached_config_);
-            });
-      });
+  auto attempt_ref = std::make_shared<std::function<ReturnIO(int)>>();
+
+  *attempt_ref = [this, expected_version, expected_hash, perform_fetch,
+                  attempt_ref, kMaxAttempts, kBaseRetryDelay](int attempt)
+      -> ReturnIO {
+    return perform_fetch()
+        .then([this, expected_version, expected_hash, attempt, attempt_ref,
+               kMaxAttempts, kBaseRetryDelay](
+                  dto::DeviceInstallConfigDto config) -> ReturnIO {
+          if (expected_version && config.version < *expected_version) {
+            output_.logger().warning()
+                << "Fetched install-config version " << config.version
+                << " is older than expected " << *expected_version
+                << std::endl;
+
+            if (attempt + 1 < kMaxAttempts) {
+              auto delay = kBaseRetryDelay * (attempt + 1);
+              output_.logger().info()
+                  << "Retrying install-config fetch (attempt "
+                  << (attempt + 2) << "/" << kMaxAttempts
+                  << ") after " << delay.count() << "ms" << std::endl;
+              std::this_thread::sleep_for(delay);
+              return (*attempt_ref)(attempt + 1);
+            }
+
+            auto err = make_error(
+                my_errors::GENERAL::UNEXPECTED_RESULT,
+                fmt::format(
+                    "install-config fetch returned stale version {} (expected >= {})",
+                    config.version, *expected_version));
+            err.params["expected_version"] = std::to_string(*expected_version);
+            err.params["observed_version"] = std::to_string(config.version);
+            return ReturnIO::fail(std::move(err));
+          }
+
+          if (expected_version && config.version > *expected_version) {
+            output_.logger().info()
+                << "Fetched install-config version " << config.version
+                << " (ahead of expected " << *expected_version << ")"
+                << std::endl;
+          }
+
+          if (expected_hash && !config.installs_hash.empty() &&
+              config.installs_hash != *expected_hash) {
+            output_.logger().warning()
+                << "Fetched install-config hash mismatch" << std::endl;
+          }
+
+          return persist_config(config).then([this]() -> ReturnIO {
+            return ReturnIO::pure(cached_config_);
+          });
+        });
+  };
+
+  return (*attempt_ref)(0);
 }
 
 std::optional<dto::DeviceInstallConfigDto>

@@ -665,3 +665,100 @@ TEST(InstallConfigManagerTest, GeneratesMaterialsFromCertificateDetailOnly) {
 
   std::filesystem::remove_all(runtime_dir);
 }
+
+TEST(InstallConfigManagerTest, RetriesUntilExpectedVersionAvailable) {
+  auto runtime_dir = make_temp_runtime_dir();
+
+  dto::DeviceInstallConfigDto config{};
+  config.id = 5;
+  config.user_device_id = 55;
+  config.version = 17;
+
+  StubConfigProvider provider;
+  provider.config_.runtime_dir = runtime_dir;
+  customio::ConsoleOutputWithColor sink(5);
+  customio::ConsoleOutput output(sink);
+
+  int call_count = 0;
+  auto fetch_override = [&config, &call_count](
+                            std::optional<std::int64_t> expected_version,
+                            const std::optional<std::string> &expected_hash)
+      -> monad::IO<dto::DeviceInstallConfigDto> {
+    dto::DeviceInstallConfigDto copy = config;
+    ++call_count;
+    if (expected_version) {
+      copy.version = (call_count < 3) ? (*expected_version - 1)
+                                     : *expected_version;
+    }
+    if (expected_hash) {
+      copy.installs_hash = *expected_hash;
+    }
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
+  };
+
+  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
+                                         nullptr, fetch_override);
+
+  std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
+  manager.ensure_config_version(config.version, std::nullopt)
+      .run([&](auto result) {
+        ASSERT_TRUE(result.is_ok());
+        plan = result.value();
+      });
+
+  ASSERT_TRUE(plan);
+  EXPECT_EQ(call_count, 3);
+  ASSERT_TRUE(manager.local_version());
+  EXPECT_EQ(*manager.local_version(), config.version);
+
+  std::filesystem::remove_all(runtime_dir);
+}
+
+TEST(InstallConfigManagerTest, FailsWhenExpectedVersionNeverArrives) {
+  auto runtime_dir = make_temp_runtime_dir();
+
+  dto::DeviceInstallConfigDto config{};
+  config.id = 6;
+  config.user_device_id = 66;
+  config.version = 23;
+
+  StubConfigProvider provider;
+  provider.config_.runtime_dir = runtime_dir;
+  customio::ConsoleOutputWithColor sink(5);
+  customio::ConsoleOutput output(sink);
+
+  int call_count = 0;
+  auto fetch_override = [&config, &call_count](
+                            std::optional<std::int64_t> expected_version,
+                            const std::optional<std::string> &expected_hash)
+      -> monad::IO<dto::DeviceInstallConfigDto> {
+    dto::DeviceInstallConfigDto copy = config;
+    ++call_count;
+    if (expected_version) {
+      copy.version = *expected_version - 1;
+    }
+    if (expected_hash) {
+      copy.installs_hash = *expected_hash;
+    }
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
+  };
+
+  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
+                                         nullptr, fetch_override);
+
+  bool completed = false;
+  monad::Error observed_error{};
+  manager.ensure_config_version(config.version, std::nullopt)
+      .run([&](auto result) {
+        completed = true;
+        ASSERT_TRUE(result.is_err());
+        observed_error = result.error();
+      });
+
+  ASSERT_TRUE(completed);
+  EXPECT_EQ(observed_error.code, my_errors::GENERAL::UNEXPECTED_RESULT);
+  EXPECT_FALSE(manager.local_version());
+  EXPECT_GE(call_count, 4);
+
+  std::filesystem::remove_all(runtime_dir);
+}
