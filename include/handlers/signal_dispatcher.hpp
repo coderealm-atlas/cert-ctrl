@@ -39,7 +39,7 @@ public:
      */
     void register_handler(std::shared_ptr<signal_handlers::ISignalHandler> handler) {
         handlers_[handler->signal_type()] = handler;
-        BOOST_LOG_SEV(lg_, trivial::info)
+        BOOST_LOG_SEV(lg_, trivial::trace)
             << "Registered handler for: " << handler->signal_type();
     }
     
