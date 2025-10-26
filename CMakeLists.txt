@@ -32,6 +32,10 @@ endif()
 
 project(bbserver LANGUAGES CXX)
 
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
+endif()
+
 include(GNUInstallDirs)
 include(CheckCXXCompilerFlag)
 

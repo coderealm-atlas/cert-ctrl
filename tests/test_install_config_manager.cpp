@@ -312,7 +312,11 @@ TEST(ImportCaActionTest, CopiesCaIntoOverrideDirectory) {
 
   auto trust_dir = runtime_dir / "trust-anchors";
   ScopedEnvVar dir_env("CERTCTRL_CA_IMPORT_DIR", trust_dir.string());
+#if defined(_WIN32)
+  ScopedEnvVar cmd_env("CERTCTRL_CA_UPDATE_COMMAND", "exit 0");
+#else
   ScopedEnvVar cmd_env("CERTCTRL_CA_UPDATE_COMMAND", "true");
+#endif
 
   certctrl::install_actions::apply_import_ca_actions(context, config,
                                                      std::nullopt,
