@@ -8,7 +8,11 @@
 #include <sstream>
 #include <cstdlib>
 #include <filesystem>
+#include <chrono>
+#include <system_error>
+#include <fstream>
 #include <mutex>
+#include <string>
 
 using namespace certctrl::install_actions;
 
@@ -196,6 +200,68 @@ TEST(ExecActionTest, MergesItemEnvWithContextEnv) {
   apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
     ASSERT_TRUE(result.is_ok());
   });
+}
+
+TEST(ExecActionTest, RunsMultipleCommandsFromSingleShellLine) {
+  namespace fs = std::filesystem;
+
+  TestOutput iout;
+  customio::ConsoleOutput cout(iout);
+
+  const auto temp_dir = fs::temp_directory_path() /
+      ("certctrl_exec_multi_cmd_test_" +
+       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  struct DirCleanup {
+    fs::path path;
+    ~DirCleanup() {
+      std::error_code ec;
+      fs::remove_all(path, ec);
+    }
+  } cleanup{temp_dir};
+  fs::create_directories(temp_dir);
+  const auto test_file = temp_dir / "testfile";
+
+  {
+    std::ofstream ofs(test_file);
+    ofs << "placeholder";
+  }
+  fs::permissions(test_file,
+                  fs::perms::owner_read | fs::perms::owner_write |
+                      fs::perms::group_read | fs::perms::others_read,
+                  fs::perm_options::replace);
+
+  const std::string file_path = test_file.string();
+
+  certctrl::install_actions::InstallActionContext ctx{
+      temp_dir, cout,
+      [](const dto::InstallItem &) -> std::optional<monad::Error> {
+        return std::nullopt;
+      }};
+
+  dto::DeviceInstallConfigDto cfg;
+  dto::InstallItem it;
+  it.id = "t-multi-cmd";
+  it.type = "exec";
+  // Run two shell commands in one line to ensure chaining works: overwrite the file then chmod it.
+  it.cmd = std::string("printf 'updated' > '") + file_path + "';chmod 640 '" + file_path + "'";
+  it.timeout_ms = 2000;
+  cfg.installs.push_back(it);
+
+  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+    ASSERT_TRUE(result.is_ok());
+  });
+
+  {
+    std::ifstream verify_in(test_file);
+    std::string contents;
+    std::getline(verify_in, contents);
+    EXPECT_EQ(contents, "updated");
+  }
+
+  const auto perms = fs::status(test_file).permissions() & fs::perms::mask;
+  const auto expected =
+      fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read;
+  EXPECT_EQ(perms, expected);
 }
 #endif
 

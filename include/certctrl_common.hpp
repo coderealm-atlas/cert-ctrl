@@ -104,7 +104,7 @@ struct CliCtx {
     }
     return std::count(params.verbose.begin(), params.verbose.end(), 'v');
   }
-  ~CliCtx() { DEBUG_PRINT("CliCtx destroyed"); }
+  ~CliCtx() { DEBUG_PRINT("DEBUG_PRINT: CliCtx destroyed"); }
 
   bool is_create() { return positional_contains("create"); }
   bool is_delete() { return positional_contains("delete"); }

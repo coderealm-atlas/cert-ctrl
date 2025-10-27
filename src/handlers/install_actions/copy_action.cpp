@@ -248,8 +248,12 @@ apply_copy_actions(const InstallActionContext &context,
         }
         oss << failure_messages[i];
       }
+      oss << ".****** If in linux system, it's most likely permission issue"
+             " need to add ReadWritePaths in systemd service file. ******";
       auto err = monad::make_error(my_errors::GENERAL::FILE_READ_WRITE,
                                    oss.str());
+      // log a square error message, if in linux system, it's most likely permission issue
+      // need to add ReadWritePaths in systemd service file
       return ReturnIO::fail(std::move(err));
     }
 

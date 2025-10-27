@@ -403,8 +403,6 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
       auto certctrl_config = json::value_to<certctrl::CertctrlConfig>(
           certctrl_config_result.value());
       cli_ctx.params.verbose = certctrl_config.verbose;
-      std::cerr << "using verbose from configuration: "
-                << certctrl_config.verbose << std::endl;
     }
 
     // clang-format off

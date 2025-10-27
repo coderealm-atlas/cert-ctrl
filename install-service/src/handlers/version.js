@@ -297,8 +297,9 @@ async function isSecurityUpdate(releaseBody) {
 
 async function getMinimumSupportedVersion(env) {
   // This could be stored in KV store and updated as needed
+  // Production: wrangler kv:key put --binding CONFIG minimum_supported_version v1.5.0 --env production
   const config = await env.CONFIG?.get('minimum_supported_version');
-  return config || 'v1.0.0';
+  return config || 'v0.0.1';
 }
 
 async function getDeprecationWarnings(currentVersion, env) {
