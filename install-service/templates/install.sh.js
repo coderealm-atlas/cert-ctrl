@@ -368,6 +368,7 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=@@CONFIG_DIR@@
 ReadWritePaths=@@STATE_DIR@@
+@@ADDITIONAL_READWRITE_PATHS@@
 
 [Install]
 WantedBy=multi-user.target
@@ -400,8 +401,30 @@ install_service_unit() {
 
     ensure_service_account
 
+    local unit_path="/etc/systemd/system/$SERVICE_NAME"
+    declare -a preserved_readwrite_paths=()
+    declare -A seen_readwrite_paths=()
+    if [ -f "$unit_path" ]; then
+        while IFS= read -r line; do
+            case "$line" in
+                ReadWritePaths=*)
+                    local existing_path="\${line#ReadWritePaths=}"
+                    if [ -n "$existing_path" ] && [ "$existing_path" != "$CONFIG_DIR" ] && [ "$existing_path" != "$STATE_DIR" ]; then
+                        if [ -z "\${seen_readwrite_paths[\$existing_path]:-}" ]; then
+                            preserved_readwrite_paths+=("$existing_path")
+                            seen_readwrite_paths["$existing_path"]=1
+                        fi
+                    fi
+                    ;;
+            esac
+        done < "$unit_path"
+        if [ \${#preserved_readwrite_paths[@]} -gt 0 ]; then
+            log_verbose "Preserving existing ReadWritePaths entries: \${preserved_readwrite_paths[*]}"
+        fi
+    fi
+
     log_info "Installing systemd unit at /etc/systemd/system/$SERVICE_NAME"
-    if [ -f "/etc/systemd/system/$SERVICE_NAME" ] && [ "$FORCE" = "false" ]; then
+    if [ -f "$unit_path" ] && [ "$FORCE" = "false" ]; then
         if [ "$NONINTERACTIVE" = "true" ]; then
             log_info "Overwriting existing service unit (non-interactive mode)"
         else
@@ -415,12 +438,35 @@ install_service_unit() {
     create_systemd_unit
 
     # Substitute placeholders in the service file
-    sed -i "s|@@BINARY_PATH@@|$INSTALL_DIR/cert-ctrl|g" "/etc/systemd/system/$SERVICE_NAME"
-    sed -i "s|@@CONFIG_DIR@@|$CONFIG_DIR|g" "/etc/systemd/system/$SERVICE_NAME"
-    sed -i "s|@@SERVICE_USER@@|$SERVICE_ACCOUNT|g" "/etc/systemd/system/$SERVICE_NAME"
-    sed -i "s|@@DESCRIPTION@@|$SERVICE_DESCRIPTION|g" "/etc/systemd/system/$SERVICE_NAME"
-    sed -i "s|@@STATE_DIR_NAME@@|$STATE_DIR_NAME|g" "/etc/systemd/system/$SERVICE_NAME"
-    sed -i "s|@@STATE_DIR@@|$STATE_DIR|g" "/etc/systemd/system/$SERVICE_NAME"
+    sed -i "s|@@BINARY_PATH@@|$INSTALL_DIR/cert-ctrl|g" "$unit_path"
+    sed -i "s|@@CONFIG_DIR@@|$CONFIG_DIR|g" "$unit_path"
+    sed -i "s|@@SERVICE_USER@@|$SERVICE_ACCOUNT|g" "$unit_path"
+    sed -i "s|@@DESCRIPTION@@|$SERVICE_DESCRIPTION|g" "$unit_path"
+    sed -i "s|@@STATE_DIR_NAME@@|$STATE_DIR_NAME|g" "$unit_path"
+    sed -i "s|@@STATE_DIR@@|$STATE_DIR|g" "$unit_path"
+
+    local extra_readwrite_block=""
+    if [ \${#preserved_readwrite_paths[@]} -gt 0 ]; then
+        extra_readwrite_block=$(printf 'ReadWritePaths=%s\n' "\${preserved_readwrite_paths[@]}")
+    fi
+
+    local tmp_unit=$(mktemp)
+    if [ -z "$tmp_unit" ]; then
+        log_error "Failed to allocate temporary file for unit rewrite"
+        exit 1
+    fi
+    {
+        while IFS= read -r line || [ -n "$line" ]; do
+            if [ "$line" = "@@ADDITIONAL_READWRITE_PATHS@@" ]; then
+                if [ -n "$extra_readwrite_block" ]; then
+                    printf '%s\n' "$extra_readwrite_block"
+                fi
+                continue
+            fi
+            printf '%s\n' "$line"
+        done < "$unit_path"
+    } > "$tmp_unit"
+    mv "$tmp_unit" "$unit_path"
 
     # Ensure config directory exists and has proper permissions
     if [ ! -d "$CONFIG_DIR" ]; then

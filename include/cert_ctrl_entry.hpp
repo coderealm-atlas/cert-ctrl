@@ -125,7 +125,7 @@ public:
         di::bind<certctrl::CliCtx>().to(cli_ctx_),
         // Register all handlers for aggregate injection; DI will convert to
         // vector<unique_ptr<IHandler>>
-  di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::InstallConfigHandler, certctrl::LoginHandler, certctrl::UpdateHandler, certctrl::UpdatesPollingHandler>());
+        di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::InstallConfigHandler, certctrl::LoginHandler, certctrl::UpdateHandler, certctrl::UpdatesPollingHandler>());
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
@@ -147,6 +147,18 @@ public:
     output_hub_->logger().info() << "Config source directories:" << std::endl;
     for (const auto &source : config_sources_.paths_) {
       output_hub_->logger().info() << " - " << source << std::endl;
+    }
+    // log file
+    if (config_sources_.logging_config().is_err()) {
+      output_hub_->logger().error()
+          << "Failed to get log file: "
+          << config_sources_.logging_config().error().what << std::endl;
+    } else {
+      output_hub_->logger().info() << std::endl
+                                   << "Log directory:" << std::endl;
+      output_hub_->logger().info()
+          << " - " << config_sources_.logging_config().value().log_dir
+          << std::endl;
     }
     // If auto_apply_config is disabled (the default), make a conspicuous
     // reminder on stdout so operators running the tool interactively
@@ -264,7 +276,8 @@ public:
   void shutdown() {
     auto self = this->shared_from_this();
     std::call_once(shutdown_once_flag_, [self] {
-      self->info("Shutting down App...");
+      self->output_hub_->logger().debug()
+          << "Shutting down App..." << std::endl;
       // 1. Disable further signal handling early
       if (self->signals_) {
         self->output_hub_->logger().debug()
@@ -288,7 +301,8 @@ public:
       self->output_hub_->logger().debug()
           << "Shutdown: stop io_context_manager_" << std::endl;
       self->io_context_manager_->stop();
-      self->info("App shutdown completed.");
+      self->output_hub_->logger().debug()
+          << "App shutdown completed." << std::endl;
       detail::clear_shutdown_handler();
     });
   }

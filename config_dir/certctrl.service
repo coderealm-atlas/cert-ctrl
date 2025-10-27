@@ -1,3 +1,4 @@
+# THIS FILE NEVER USED, install script will generate this file.
 [Unit]
 Description=Cert issue Service
 After=network.target
@@ -10,6 +11,7 @@ EnvironmentFile=/opt/apps/certctrl/app.env
 Restart=on-failure
 User=root
 Group=root
+ReadWritePaths=/var/spool/postfix/certs
 
 [Install]
 WantedBy=multi-user.target

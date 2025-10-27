@@ -47,6 +47,9 @@ wrangler kv:namespace create CONFIG
 ```bash
 npm install
 npm run deploy
+
+cd /home/jianglibo/cert-ctrl/install-service && npx wrangler deploy --env production
+
 ```
 
 ## URL Structure
