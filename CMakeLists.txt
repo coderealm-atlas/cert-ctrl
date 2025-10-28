@@ -340,6 +340,8 @@ set(CMAKE_PCH_ENABLE ON)
 
 find_package(Git)
 
+option(FORCE_CLEAN_GIT_DESCRIBE "Remove '-dirty' suffix from embedded version" OFF)
+
 set(GIT_DESCRIBE "")
 set(_GIT_DIFF_RESULT 0)
 if(Git_FOUND)
@@ -351,6 +353,10 @@ if(Git_FOUND)
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET
     )
+
+    if(GIT_DESCRIBE AND FORCE_CLEAN_GIT_DESCRIBE)
+        string(REGEX REPLACE "-dirty$" "" GIT_DESCRIBE "${GIT_DESCRIBE}")
+    endif()
 
     execute_process(
         COMMAND ${GIT_EXECUTABLE} diff --quiet HEAD
@@ -376,11 +382,15 @@ if(Git_FOUND)
         )
         if(_GIT_SHA AND _GIT_COMMIT_COUNT)
             set(GIT_DESCRIBE "v0.0.${_GIT_COMMIT_COUNT}-${_GIT_SHA}")
-            if(NOT _GIT_DIFF_RESULT EQUAL 0 AND NOT _GIT_DIFF_RESULT EQUAL 128)
+            if(NOT FORCE_CLEAN_GIT_DESCRIBE AND NOT _GIT_DIFF_RESULT EQUAL 0 AND NOT _GIT_DIFF_RESULT EQUAL 128)
                 set(GIT_DESCRIBE "${GIT_DESCRIBE}-dirty")
             endif()
         endif()
     endif()
+endif()
+
+if(GIT_DESCRIBE AND FORCE_CLEAN_GIT_DESCRIBE)
+    string(REGEX REPLACE "-dirty$" "" GIT_DESCRIBE "${GIT_DESCRIBE}")
 endif()
 
 if(NOT GIT_DESCRIBE)
