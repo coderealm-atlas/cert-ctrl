@@ -427,6 +427,7 @@ jobs:
               -D CMAKE_C_COMPILER=clang
               -D CMAKE_CXX_COMPILER=clang++
             )
+            cmake_args+=(-DFORCE_CLEAN_GIT_DESCRIBE=ON)
           elif [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "macOS" ]; then
             # Manual configuration for macOS compatibility builds (no static libgcc/libstdc++)
             cmake_args=(
@@ -442,6 +443,7 @@ jobs:
               -DCMAKE_C_FLAGS="-O2 -DNDEBUG"
               -DDISABLE_LTO=ON
             )
+            cmake_args+=(-DFORCE_CLEAN_GIT_DESCRIBE=ON)
           else
             # Use manual configuration for other build types
             cmake_args=(
@@ -453,6 +455,7 @@ jobs:
               -DCMAKE_BUILD_TYPE=$build_type
               -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
             )
+            cmake_args+=(-DFORCE_CLEAN_GIT_DESCRIBE=ON)
           fi
           
           if [ "${{ env.IS_SELF_HOSTED }}" != "true" ]; then
@@ -487,6 +490,7 @@ jobs:
               # Ensure MSVC builds in workflow accept C++20 features (designated initializers etc.)
               "-DCMAKE_CXX_STANDARD=20"
             )
+            $cmakeArgs += '-DFORCE_CLEAN_GIT_DESCRIBE=ON'
           } else {
             # Use manual configuration for other build types
             $buildDir = "${{ github.workspace }}/build"
@@ -502,6 +506,7 @@ jobs:
               # C++20 language features used in test/util headers (designated initializers).
               "-DCMAKE_CXX_STANDARD=20"
             )
+            $cmakeArgs += '-DFORCE_CLEAN_GIT_DESCRIBE=ON'
           }
           
           if ("${{ env.IS_SELF_HOSTED }}" -ne "true") {

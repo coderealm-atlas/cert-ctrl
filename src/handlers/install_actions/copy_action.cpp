@@ -1,5 +1,6 @@
 #include "handlers/install_actions/copy_action.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fmt/format.h>
@@ -15,6 +16,8 @@
 namespace certctrl::install_actions {
 
 namespace {
+
+constexpr std::size_t kMaxBackupsPerFile = 5;
 
 std::string generate_temp_suffix() {
   auto now = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -104,15 +107,77 @@ std::optional<std::string> perform_copy_operation(
 #endif
 
     if (std::filesystem::exists(destination)) {
-      auto backup = destination;
-      backup += ".bak";
-      backup += generate_temp_suffix();
+      const auto backup_dir = destination.parent_path() / ".certctrl-backups";
+      std::error_code dir_ec;
+      std::filesystem::create_directories(backup_dir, dir_ec);
+#ifndef _WIN32
+      if (!dir_ec) {
+        std::filesystem::permissions(backup_dir, default_directory_perms(),
+                                     std::filesystem::perm_options::add);
+      }
+#endif
+
+      const auto base_name = destination.filename().string();
+      std::filesystem::path backup;
+      bool using_subdir = !dir_ec;
+      if (using_subdir) {
+        backup = backup_dir / (base_name + "." + generate_temp_suffix());
+      } else {
+        backup = destination;
+        backup += ".bak";
+        backup += generate_temp_suffix();
+      }
       std::error_code ec;
       std::filesystem::rename(destination, backup, ec);
       if (ec) {
         context.output.logger().warning()
             << "Failed to create backup for '" << destination
             << "': " << ec.message() << std::endl;
+      } else if (using_subdir) {
+        struct BackupInfo {
+          std::filesystem::path path;
+          std::filesystem::file_time_type timestamp;
+        };
+        std::vector<BackupInfo> backups;
+        const std::string prefix = base_name + ".";
+        std::error_code iter_ec;
+        for (const auto &entry : std::filesystem::directory_iterator(backup_dir, iter_ec)) {
+          if (!entry.is_regular_file()) {
+            continue;
+          }
+          const auto name = entry.path().filename().string();
+          if (name.rfind(prefix, 0) == 0) {
+            std::error_code ts_ec;
+            auto ts = std::filesystem::last_write_time(entry.path(), ts_ec);
+            if (ts_ec) {
+              ts = std::filesystem::file_time_type::min();
+            }
+            backups.push_back({entry.path(), ts});
+          }
+        }
+        if (iter_ec) {
+          context.output.logger().warning()
+              << "Failed to enumerate backups in '" << backup_dir
+              << "': " << iter_ec.message() << std::endl;
+        }
+
+        if (backups.size() > kMaxBackupsPerFile) {
+          std::sort(backups.begin(), backups.end(),
+                    [](const BackupInfo &lhs, const BackupInfo &rhs) {
+                      return lhs.timestamp > rhs.timestamp;
+                    });
+
+          for (std::size_t idx = kMaxBackupsPerFile; idx < backups.size(); ++idx) {
+            std::error_code rm_ec;
+            std::filesystem::remove(backups[idx].path, rm_ec);
+            if (rm_ec) {
+              context.output.logger().warning()
+                  << "Failed to prune backup '" << backups[idx].path
+                  << "': " << rm_ec.message() << std::endl;
+              break;
+            }
+          }
+        }
       }
     }
 
