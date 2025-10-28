@@ -1,22 +1,24 @@
 #include "handlers/install_actions/exec_action.hpp"
 
+#include "util/my_logging.hpp"
+#include <boost/algorithm/string/join.hpp>
 #include <chrono>
-#include <cstring>
-#include <thread>
-#include <vector>
-#include <sstream>
 #include <cstdlib>
-#include <unordered_map>
+#include <cstring>
 #include <cwchar>
+#include <sstream>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
 #if !defined(_WIN32)
+#include <errno.h>
+#include <fcntl.h>
 #include <pwd.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
 #if defined(__APPLE__)
 #include <crt_externs.h>
 #endif
@@ -42,7 +44,8 @@ static std::wstring utf8_to_wide(const std::string &input) {
     return L"";
   }
   std::wstring result(static_cast<size_t>(size_needed - 1), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, input.c_str(), -1, result.data(), size_needed);
+  MultiByteToWideChar(CP_UTF8, 0, input.c_str(), -1, result.data(),
+                      size_needed);
   return result;
 }
 
@@ -50,13 +53,14 @@ static std::string wide_to_utf8(const std::wstring &input) {
   if (input.empty()) {
     return std::string();
   }
-  const int size_needed =
-      WideCharToMultiByte(CP_UTF8, 0, input.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  const int size_needed = WideCharToMultiByte(CP_UTF8, 0, input.c_str(), -1,
+                                              nullptr, 0, nullptr, nullptr);
   if (size_needed <= 1) {
     return std::string();
   }
   std::string result(static_cast<size_t>(size_needed - 1), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, input.c_str(), -1, result.data(), size_needed, nullptr, nullptr);
+  WideCharToMultiByte(CP_UTF8, 0, input.c_str(), -1, result.data(), size_needed,
+                      nullptr, nullptr);
   return result;
 }
 
@@ -117,7 +121,8 @@ static std::vector<wchar_t> build_environment_block(
   std::vector<std::pair<std::wstring, std::wstring>> merged;
   merged.reserve((env ? env->size() : 0) + extra_env.size());
 
-  auto merge_in = [&merged](const std::wstring &key, const std::wstring &value) {
+  auto merge_in = [&merged](const std::wstring &key,
+                            const std::wstring &value) {
     for (auto &entry : merged) {
       if (entry.first == key) {
         entry.second = value;
@@ -189,10 +194,12 @@ static std::string format_last_error(DWORD error_code) {
 
 } // namespace
 
-static std::optional<std::string> run_item_cmd(const InstallActionContext &context,
-                                               const dto::InstallItem &item) {
+static std::optional<std::string>
+run_item_cmd(const InstallActionContext &context,
+             const dto::InstallItem &item) {
   (void)context;
-  if ((!item.cmd || item.cmd->empty()) && (!item.cmd_argv || item.cmd_argv->empty())) {
+  if ((!item.cmd || item.cmd->empty()) &&
+      (!item.cmd_argv || item.cmd_argv->empty())) {
     return std::nullopt;
   }
 
@@ -214,12 +221,12 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &conte
     }
   }
 
-  std::vector<wchar_t> env_block =
-    build_environment_block(item.env, extra_env); // double-null terminated or empty
+  std::vector<wchar_t> env_block = build_environment_block(
+      item.env, extra_env); // double-null terminated or empty
 
   DWORD creation_flags = 0;
   if (!env_block.empty()) {
-  creation_flags |= CREATE_UNICODE_ENVIRONMENT;
+    creation_flags |= CREATE_UNICODE_ENVIRONMENT;
   }
 
   STARTUPINFOW si;
@@ -229,16 +236,17 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &conte
   ZeroMemory(&pi, sizeof(pi));
 
   BOOL created = CreateProcessW(
-    nullptr, cmd_buffer.data(), nullptr, nullptr, FALSE, creation_flags,
+      nullptr, cmd_buffer.data(), nullptr, nullptr, FALSE, creation_flags,
       env_block.empty() ? nullptr : env_block.data(), nullptr, &si, &pi);
   if (!created) {
     DWORD err = GetLastError();
-    return std::optional<std::string>(
-        std::string("CreateProcess failed: ") + format_last_error(err));
+    return std::optional<std::string>(std::string("CreateProcess failed: ") +
+                                      format_last_error(err));
   }
 
-  const DWORD timeout_ms =
-      item.timeout_ms.value_or(static_cast<uint32_t>(30000));
+  const DWORD timeout_ms = (item.timeout_ms && *item.timeout_ms > 0)
+                               ? *item.timeout_ms
+                               : static_cast<uint32_t>(30000);
   DWORD wait_result = WaitForSingleObject(pi.hProcess, timeout_ms);
   if (wait_result == WAIT_TIMEOUT) {
     TerminateProcess(pi.hProcess, 1u);
@@ -291,9 +299,13 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
   if (item.cmd_argv && !item.cmd_argv->empty()) {
     // we'll exec directly using argv form
     argv = *item.cmd_argv;
+    BOOST_LOG_SEV(app_logger(), boost::log::trivial::info)
+        << "Executing command argv: " << boost::algorithm::join(argv, " ");
   } else if (item.cmd && !item.cmd->empty()) {
     use_shell = true;
     shell_cmd = *item.cmd;
+    BOOST_LOG_SEV(app_logger(), boost::log::trivial::info)
+        << "Executing shell command: " << shell_cmd;
   } else {
     return std::nullopt; // nothing to run
   }
@@ -307,12 +319,14 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
 
   // Prepare C args
   std::vector<char *> cargv;
-  for (auto &s : argv) cargv.push_back(const_cast<char *>(s.c_str()));
+  for (auto &s : argv)
+    cargv.push_back(const_cast<char *>(s.c_str()));
   cargv.push_back(nullptr);
 
   pid_t pid = fork();
   if (pid < 0) {
-    return std::optional<std::string>(std::string("fork failed: ") + std::strerror(errno));
+    return std::optional<std::string>(std::string("fork failed: ") +
+                                      std::strerror(errno));
   }
 
   if (pid == 0) {
@@ -336,12 +350,14 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
 
     // Apply env overrides if provided
     if (item.env) {
-      // Clear existing environment then set new variables. macOS lacks clearenv.
+      // Clear existing environment then set new variables. macOS lacks
+      // clearenv.
 #if defined(__APPLE__)
       auto environ_ptr = *_NSGetEnviron();
       if (environ_ptr != nullptr) {
         std::vector<std::string> existing_keys;
-        for (char **entry = environ_ptr; entry != nullptr && *entry != nullptr; ++entry) {
+        for (char **entry = environ_ptr; entry != nullptr && *entry != nullptr;
+             ++entry) {
           std::string kv(*entry);
           auto pos = kv.find('=');
           if (pos != std::string::npos) {
@@ -377,7 +393,9 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
   // parent: wait with timeout
   int status = 0;
   auto start = std::chrono::steady_clock::now();
-  const auto timeout = std::chrono::milliseconds(item.timeout_ms.value_or(30000));
+  const auto effective_timeout_ms =
+    (item.timeout_ms && *item.timeout_ms > 0) ? *item.timeout_ms : 30000;
+  const auto timeout = std::chrono::milliseconds(effective_timeout_ms);
 
   while (true) {
     pid_t w = waitpid(pid, &status, WNOHANG);
@@ -385,7 +403,8 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
       break;
     }
     if (w == -1) {
-      return std::optional<std::string>(std::string("waitpid failed: ") + std::strerror(errno));
+      return std::optional<std::string>(std::string("waitpid failed: ") +
+                                        std::strerror(errno));
     }
     auto elapsed = std::chrono::steady_clock::now() - start;
     if (elapsed >= timeout) {
@@ -417,35 +436,43 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
 }
 #endif
 
-monad::IO<void> apply_exec_actions(
-    const InstallActionContext &context,
-    const dto::DeviceInstallConfigDto &config,
-    std::optional<std::vector<std::string>> allowed_types) {
+monad::IO<void>
+apply_exec_actions(const InstallActionContext &context,
+                   const dto::DeviceInstallConfigDto &config,
+                   std::optional<std::vector<std::string>> allowed_types) {
   using ReturnIO = monad::IO<void>;
   try {
     bool processed_any = false;
     for (const auto &item : config.installs) {
       // If allowed_types specified, skip items not matching
       if (allowed_types) {
-        if (!item.ob_type) continue;
+        if (!item.ob_type)
+          continue;
         bool matched = false;
         for (const auto &t : *allowed_types) {
-          if (*item.ob_type == t) { matched = true; break; }
+          if (*item.ob_type == t) {
+            matched = true;
+            break;
+          }
         }
-        if (!matched) continue;
+        if (!matched)
+          continue;
       }
 
-      if ((!item.cmd || item.cmd->empty()) && (!item.cmd_argv || item.cmd_argv->empty())) {
+      if ((!item.cmd || item.cmd->empty()) &&
+          (!item.cmd_argv || item.cmd_argv->empty())) {
         continue;
       }
 
       processed_any = true;
 
       // Ensure resources if referenced
-      if (auto err = context.ensure_resource_materialized(item); err.has_value()) {
+      if (auto err = context.ensure_resource_materialized(item);
+          err.has_value()) {
         if (item.continue_on_error) {
           context.output.logger().warning()
-              << "exec item '" << item.id << "' resource materialize failed: " << err->what << std::endl;
+              << "exec item '" << item.id
+              << "' resource materialize failed: " << err->what << std::endl;
           continue;
         }
         return ReturnIO::fail(std::move(*err));
@@ -457,7 +484,8 @@ monad::IO<void> apply_exec_actions(
               << "exec item '" << item.id << "' failed: " << *err << std::endl;
           continue;
         }
-        return ReturnIO::fail(monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *err));
+        return ReturnIO::fail(
+            monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *err));
       }
 
       context.output.logger().info()
@@ -465,12 +493,14 @@ monad::IO<void> apply_exec_actions(
     }
 
     if (!processed_any) {
-      context.output.logger().debug() << "No exec items present in plan" << std::endl;
+      context.output.logger().debug()
+          << "No exec items present in plan" << std::endl;
     }
 
     return ReturnIO::pure();
   } catch (const std::exception &ex) {
-    return ReturnIO::fail(monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, ex.what()));
+    return ReturnIO::fail(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, ex.what()));
   }
 }
 

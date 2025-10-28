@@ -259,6 +259,12 @@ target_link_libraries(test_exec_action PRIVATE
   GTest::gtest_main
   Boost::program_options
   Boost::json
+  Boost::log
+  Boost::log_setup
+  Boost::filesystem
+  Boost::thread
+  Boost::chrono
+  Boost::date_time
   certctrl_libatomic
 )
 
