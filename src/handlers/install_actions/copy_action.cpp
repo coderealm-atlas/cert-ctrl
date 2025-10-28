@@ -204,7 +204,7 @@ apply_copy_actions(const InstallActionContext &context,
         const auto &dest_path_str = item.to->at(i);
 
         if(dest_path_str.empty()) {
-          context.output.logger().info()
+          context.output.logger().debug()
               << "Skipping copy of '" << virtual_name
               << "' due to empty destination path" << std::endl;
           continue;

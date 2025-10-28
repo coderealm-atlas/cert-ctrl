@@ -102,6 +102,31 @@ TEST(ExecActionTest, TimesOutOnLongSleep) {
   });
 }
 
+#ifndef _WIN32
+TEST(ExecActionTest, ZeroTimeoutFallsBackToDefault) {
+  TestOutput iout;
+  customio::ConsoleOutput cout(iout);
+
+  certctrl::install_actions::InstallActionContext ctx{
+      std::filesystem::current_path(), cout,
+      [](const dto::InstallItem &) -> std::optional<monad::Error> {
+        return std::nullopt;
+      }};
+
+  dto::DeviceInstallConfigDto cfg;
+  dto::InstallItem it;
+  it.id = "t-timeout-zero";
+  it.type = "exec";
+  it.cmd = "sleep 1";
+  it.timeout_ms = 0;
+  cfg.installs.push_back(it);
+
+  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+    EXPECT_TRUE(result.is_ok());
+  });
+}
+#endif
+
 TEST(ExecActionTest, RunsCmdArgvDirectly) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);

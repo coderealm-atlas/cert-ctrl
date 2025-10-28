@@ -108,3 +108,8 @@ inline void init_my_log(const cjj365::LoggingConfig &loggingConfig) {
                                      logging::trivial::info);
   }
 }
+
+inline src::severity_logger<trivial::severity_level> &app_logger() {
+  static src::severity_logger<trivial::severity_level> instance;
+  return instance;
+}
