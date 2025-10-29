@@ -374,7 +374,9 @@ TEST(ExecActionTest, WindowsPowerShellCmdArgvRunsWhenAvailable) {
   it.cmd_argv = std::vector<std::string>{
       "powershell", "-NoLogo", "-NonInteractive", "-Command",
       "Write-Output powershell-test"};
-  it.timeout_ms = 5000;
+  // Powershell.exe can take a few extra seconds to cold-start under load, so
+  // give it a little more headroom than pwsh to keep this test stable.
+  it.timeout_ms = 10000;
   cfg.installs.push_back(it);
 
   apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
