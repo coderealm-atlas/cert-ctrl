@@ -531,6 +531,7 @@ endforeach()
 
 set(HTTP_CLIENT_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/external/http_client/src/base64.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/http_client/src/client_ssl_ctx.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/http_client/src/json_util.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/http_client/src/misc_util.cpp
 )
