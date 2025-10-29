@@ -55,7 +55,11 @@ endif()
 certctrl_use_static_atomic(test_program_options)
 
 include(GoogleTest)
-gtest_discover_tests(test_program_options DISCOVERY_TIMEOUT 30)
+
+set(TEST_DISCOVERY_TIMEOUT_MEDIUM 120)
+set(TEST_DISCOVERY_TIMEOUT_LONG 240)
+
+gtest_discover_tests(test_program_options DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
 add_executable(test_login_handler_workflow
   test_login_handler_workflow.cpp
@@ -102,7 +106,7 @@ endif()
 
 certctrl_use_static_atomic(test_login_handler_workflow)
 
-gtest_discover_tests(test_login_handler_workflow)
+gtest_discover_tests(test_login_handler_workflow DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
 
 # Real server integration login test (requires running external server)
 add_executable(test_login_real_server
@@ -145,7 +149,7 @@ endif()
 
 certctrl_use_static_atomic(test_login_real_server)
 
-gtest_discover_tests(test_login_real_server DISCOVERY_TIMEOUT 60)
+gtest_discover_tests(test_login_real_server DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
 
 # Monadic device registration/login integration test using HttpClientManager + IO monad
 add_executable(test_device_registration
@@ -191,7 +195,7 @@ endif()
 
 certctrl_use_static_atomic(test_device_registration)
 
-gtest_discover_tests(test_device_registration DISCOVERY_TIMEOUT 60)
+gtest_discover_tests(test_device_registration DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
 
 # Updates polling handler test
 add_executable(test_install_config_manager
@@ -244,7 +248,7 @@ endif()
 
 certctrl_use_static_atomic(test_install_config_manager)
 
-gtest_discover_tests(test_install_config_manager DISCOVERY_TIMEOUT 30)
+gtest_discover_tests(test_install_config_manager DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
 
 add_executable(test_exec_action
   test_exec_action.cpp
@@ -270,7 +274,7 @@ target_link_libraries(test_exec_action PRIVATE
 
 certctrl_use_static_atomic(test_exec_action)
 
-gtest_discover_tests(test_exec_action DISCOVERY_TIMEOUT 20)
+gtest_discover_tests(test_exec_action DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
 add_executable(test_updates_polling_handler
   test_updates_polling_handler.cpp
@@ -321,4 +325,4 @@ if(APPLE)
 endif()
 certctrl_use_static_atomic(test_updates_polling_handler)
 
-gtest_discover_tests(test_updates_polling_handler DISCOVERY_TIMEOUT 30)
+gtest_discover_tests(test_updates_polling_handler DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
