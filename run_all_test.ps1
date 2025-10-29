@@ -74,6 +74,56 @@ function Resolve-PresetBinaryDir {
     return [System.IO.Path]::GetFullPath($resolved)
 }
 
+$isWindows = $false
+try {
+    $isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+} catch {
+    $isWindows = $false
+}
+
+function Ensure-VsBuildToolsOnPath {
+    if (-not $isWindows) { return }
+
+    if (Get-Command dumpbin -ErrorAction SilentlyContinue) {
+        return
+    }
+
+    $vswhere = Join-Path -Path ${env:ProgramFiles(x86)} -ChildPath 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -Path $vswhere -PathType Leaf)) {
+        Write-Warning "Could not find vswhere.exe; dumpbin not added to PATH."
+        return
+    }
+
+    $installationPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installationPath)) {
+        Write-Warning "vswhere.exe did not return a Visual Studio installation path; dumpbin not added to PATH."
+        return
+    }
+
+    $vcToolsRoot = Join-Path -Path $installationPath -ChildPath 'VC\Tools\MSVC'
+    if (-not (Test-Path -Path $vcToolsRoot -PathType Container)) {
+        Write-Warning "VS installation at '$installationPath' does not contain VC tools; dumpbin not added to PATH."
+        return
+    }
+
+    $latestToolset = Get-ChildItem -Path $vcToolsRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $latestToolset) {
+        Write-Warning "Unable to locate a VC toolset version under '$vcToolsRoot'."
+        return
+    }
+
+    $binHostPath = Join-Path -Path $latestToolset.FullName -ChildPath 'bin\Hostx64\x64'
+    if (-not (Test-Path -Path (Join-Path -Path $binHostPath -ChildPath 'dumpbin.exe') -PathType Leaf)) {
+        Write-Warning "dumpbin.exe not found under '$binHostPath'."
+        return
+    }
+
+    if (-not ($env:PATH -split ';' | Where-Object { $_ -eq $binHostPath })) {
+        $env:PATH = "$binHostPath;" + $env:PATH
+        Write-Host "[run_all_test] Added Visual Studio tools to PATH: $binHostPath"
+    }
+}
+
 $scriptDir = Split-Path -Path $PSCommandPath -Parent
 $projectRoot = $scriptDir
 $preset = 'windows-debug'
@@ -152,6 +202,8 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 if (-not (Get-Command ctest -ErrorAction SilentlyContinue)) {
     throw 'Error: ctest is not installed or not in PATH.'
 }
+
+Ensure-VsBuildToolsOnPath
 
 if ($configureFirst) {
     Write-Host "[run_all_test] Configuring with preset '$preset'..."

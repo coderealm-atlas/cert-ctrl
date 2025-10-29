@@ -79,6 +79,9 @@ curl -fsSL https://install.lets-script.com/install.sh | bash
 iwr -useb https://install.lets-script.com/install.ps1 | iex
 ```
 
+> **Heads-up:** Installing to the default path `C:\Program Files\cert-ctrl` requires an elevated PowerShell (right-click → **Run as administrator**). If you prefer a different location, pass `-InstallDir` with a directory you already own.
+> Installations to the default system path require an elevated PowerShell (right-click → **Run as administrator**). Alternatively, pass `-InstallDir` to choose a directory you already own.
+
 ### Advanced Installation
 
 ```bash
