@@ -22,19 +22,19 @@ This document outlines deployment strategies for the `cert_ctrl` application, co
 #### Linux/macOS (curl | bash pattern)
 ```bash
 # Quick install
-curl -fsSL https://install.cert-ctrl.com/install.sh | bash
+curl -fsSL https://install.lets-script.com/install.sh | bash
 
 # With options
-curl -fsSL https://install.cert-ctrl.com/install.sh | bash -s -- --version=latest --install-dir=/usr/local/bin
+curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --version=latest --install-dir=/usr/local/bin
 ```
 
 #### Windows (PowerShell)
 ```powershell
 # Quick install
-iwr -useb https://install.cert-ctrl.com/install.ps1 | iex
+iwr -useb https://install.lets-script.com/install.ps1 | iex
 
 # With options
-iwr -useb https://install.cert-ctrl.com/install.ps1 | iex; Install-CertCtrl -Version "latest" -InstallPath "C:\Program Files\CertCtrl"
+iwr -useb https://install.lets-script.com/install.ps1 | iex; Install-CertCtrl -Version "latest" -InstallPath "C:\Program Files\CertCtrl"
 ```
 
 ### 1.2 Package Manager Integration
@@ -42,13 +42,13 @@ iwr -useb https://install.cert-ctrl.com/install.ps1 | iex; Install-CertCtrl -Ver
 #### Linux Package Managers
 ```bash
 # APT (Debian/Ubuntu)
-curl -fsSL https://repo.cert-ctrl.com/gpg.key | sudo apt-key add -
-echo "deb https://repo.cert-ctrl.com/apt stable main" | sudo tee /etc/apt/sources.list.d/cert-ctrl.list
+curl -fsSL https://repo.lets-script.com/gpg.key | sudo apt-key add -
+echo "deb https://repo.lets-script.com/apt stable main" | sudo tee /etc/apt/sources.list.d/cert-ctrl.list
 sudo apt update && sudo apt install cert-ctrl
 
 # YUM/DNF (RedHat/CentOS/Fedora)
-sudo rpm --import https://repo.cert-ctrl.com/rpm.key
-sudo yum-config-manager --add-repo https://repo.cert-ctrl.com/rpm/cert-ctrl.repo
+sudo rpm --import https://repo.lets-script.com/rpm.key
+sudo yum-config-manager --add-repo https://repo.lets-script.com/rpm/cert-ctrl.repo
 sudo yum install cert-ctrl
 
 # Snap
@@ -148,7 +148,7 @@ public:
     
     std::optional<VersionInfo> checkForUpdates() {
         // HTTP request to version API
-        auto response = httpClient.get("https://api.cert-ctrl.com/v1/version/check", {
+        auto response = httpClient.get("https://api.lets-script.com/v1/version/check", {
             {"current_version", getCurrentVersion()},
             {"platform", getPlatform()},
             {"arch", getArchitecture()}
@@ -183,7 +183,7 @@ cert-ctrl --check-updates
 
 #### REST API Structure
 ```json
-// GET https://api.cert-ctrl.com/v1/version/check?current=v2.0.5&platform=linux&arch=x64
+// GET https://api.lets-script.com/v1/version/check?current=v2.0.5&platform=linux&arch=x64
 {
   "current_version": "v2.0.5",
   "latest_version": "v2.1.0",
@@ -300,7 +300,7 @@ systemctl enable --now dnf-automatic-install.timer
 # update-cert-ctrl.sh
 
 CURRENT_VERSION=$(docker inspect cert-ctrl/cert-ctrl:current --format='{{.Config.Labels.version}}')
-LATEST_VERSION=$(curl -s https://api.cert-ctrl.com/v1/version/latest | jq -r '.version')
+LATEST_VERSION=$(curl -s https://api.lets-script.com/v1/version/latest | jq -r '.version')
 
 if [ "$CURRENT_VERSION" != "$LATEST_VERSION" ]; then
     echo "Updating from $CURRENT_VERSION to $LATEST_VERSION"
@@ -351,8 +351,8 @@ private:
 #### Signature Verification
 ```bash
 # Download with signature verification
-curl -fsSL https://releases.cert-ctrl.com/v2.1.0/cert-ctrl-linux-x64.tar.gz -o cert-ctrl.tar.gz
-curl -fsSL https://releases.cert-ctrl.com/v2.1.0/cert-ctrl-linux-x64.tar.gz.sig -o cert-ctrl.tar.gz.sig
+curl -fsSL https://releases.lets-script.com/v2.1.0/cert-ctrl-linux-x64.tar.gz -o cert-ctrl.tar.gz
+curl -fsSL https://releases.lets-script.com/v2.1.0/cert-ctrl-linux-x64.tar.gz.sig -o cert-ctrl.tar.gz.sig
 
 # Verify signature
 gpg --verify cert-ctrl.tar.gz.sig cert-ctrl.tar.gz
@@ -367,7 +367,7 @@ gpg --verify cert-ctrl.tar.gz.sig cert-ctrl.tar.gz
 #### System Installation
 ```bash
 # Install system-wide (requires root)
-sudo curl -fsSL https://install.cert-ctrl.com/install.sh | sudo bash
+sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash
 ```
 
 ### 4.3 Update Security
@@ -613,8 +613,8 @@ Install-CertCtrl -Version $Version -InstallPath $InstallPath -UserInstall $UserI
 ```json
 {
   "deployment": {
-    "update_check_url": "https://api.cert-ctrl.com/v1/version/check",
-    "download_base_url": "https://releases.cert-ctrl.com",
+    "update_check_url": "https://api.lets-script.com/v1/version/check",
+    "download_base_url": "https://releases.lets-script.com",
     "auto_update": false,
     "update_channel": "stable",
     "backup_on_update": true,
@@ -622,7 +622,7 @@ Install-CertCtrl -Version $Version -InstallPath $InstallPath -UserInstall $UserI
   },
   "installation": {
     "verify_signatures": true,
-    "public_key_url": "https://keys.cert-ctrl.com/release.pub",
+    "public_key_url": "https://keys.lets-script.com/release.pub",
     "allow_downgrades": false,
     "max_download_retries": 3
   }
