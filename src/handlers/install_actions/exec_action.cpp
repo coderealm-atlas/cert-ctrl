@@ -3,13 +3,16 @@
 #include "util/my_logging.hpp"
 #include <boost/algorithm/string/join.hpp>
 #include <chrono>
+#include <filesystem>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <memory>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <utility>
 
 #if !defined(_WIN32)
 #include <errno.h>
@@ -29,10 +32,31 @@
 
 namespace certctrl::install_actions {
 
+ExecActionHandler::ExecActionHandler(std::filesystem::path runtime_dir,
+                   customio::ConsoleOutput &output,
+                   IResourceMaterializer::Ptr resource_materializer,
+                   IExecEnvironmentResolver::Ptr exec_env_resolver)
+  : runtime_dir_(std::move(runtime_dir)),
+  output_(output),
+  resource_materializer_(std::move(resource_materializer)),
+  exec_env_resolver_(std::move(exec_env_resolver)) {}
+
 #if defined(_WIN32)
 #include <windows.h>
 
 namespace {
+
+static std::unordered_map<std::string, std::string>
+resolve_exec_environment(const IExecEnvironmentResolver::Ptr &resolver,
+                         const dto::InstallItem &item) {
+  if (!resolver) {
+    return {};
+  }
+  if (auto result = resolver->resolve(item)) {
+    return std::move(*result);
+  }
+  return {};
+}
 
 static std::wstring utf8_to_wide(const std::string &input) {
   if (input.empty()) {
@@ -195,9 +219,8 @@ static std::string format_last_error(DWORD error_code) {
 } // namespace
 
 static std::optional<std::string>
-run_item_cmd(const InstallActionContext &context,
-             const dto::InstallItem &item) {
-  (void)context;
+run_item_cmd(const dto::InstallItem &item,
+             const IExecEnvironmentResolver::Ptr &resolver) {
   if ((!item.cmd || item.cmd->empty()) &&
       (!item.cmd_argv || item.cmd_argv->empty())) {
     return std::nullopt;
@@ -214,12 +237,8 @@ run_item_cmd(const InstallActionContext &context,
   std::vector<wchar_t> cmd_buffer(command_line.begin(), command_line.end());
   cmd_buffer.push_back(L'\0');
 
-  std::unordered_map<std::string, std::string> extra_env;
-  if (context.resolve_exec_env) {
-    if (auto resolved = context.resolve_exec_env(item)) {
-      extra_env = std::move(*resolved);
-    }
-  }
+  std::unordered_map<std::string, std::string> extra_env =
+      resolve_exec_environment(resolver, item);
 
   std::vector<wchar_t> env_block = build_environment_block(
       item.env, extra_env); // double-null terminated or empty
@@ -290,8 +309,9 @@ run_item_cmd(const InstallActionContext &context,
 #else
 // Helper: run a single InstallItem cmd/cmd_argv synchronously with timeout.
 // Returns nullopt on success, or an error string on failure.
-static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
-                                               const dto::InstallItem &item) {
+static std::optional<std::string> run_item_cmd(
+  const dto::InstallItem &item,
+  const IExecEnvironmentResolver::Ptr &resolver) {
   // Determine command form
   std::vector<std::string> argv;
   bool use_shell = false;
@@ -310,12 +330,8 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
     return std::nullopt; // nothing to run
   }
 
-  std::unordered_map<std::string, std::string> extra_env;
-  if (ctx.resolve_exec_env) {
-    if (auto resolved = ctx.resolve_exec_env(item)) {
-      extra_env = std::move(*resolved);
-    }
-  }
+  std::unordered_map<std::string, std::string> extra_env =
+      resolve_exec_environment(resolver, item);
 
   // Prepare C args
   std::vector<char *> cargv;
@@ -436,27 +452,39 @@ static std::optional<std::string> run_item_cmd(const InstallActionContext &ctx,
 }
 #endif
 
-monad::IO<void>
-apply_exec_actions(const InstallActionContext &context,
-                   const dto::DeviceInstallConfigDto &config,
-                   std::optional<std::vector<std::string>> allowed_types) {
+monad::IO<void> ExecActionHandler::apply(
+  const dto::DeviceInstallConfigDto &config,
+  std::optional<std::vector<std::string>> allowed_types) {
   using ReturnIO = monad::IO<void>;
   try {
-    bool processed_any = false;
-    for (const auto &item : config.installs) {
-      // If allowed_types specified, skip items not matching
-      if (allowed_types) {
-        if (!item.ob_type)
-          continue;
-        bool matched = false;
-        for (const auto &t : *allowed_types) {
-          if (*item.ob_type == t) {
-            matched = true;
-            break;
-          }
+    if (!resource_materializer_) {
+      return ReturnIO::fail(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT,
+          "ExecActionHandler missing resource materializer"));
+    }
+
+    auto processed_any = std::make_shared<bool>(false);
+
+    auto is_allowed = [&allowed_types](const dto::InstallItem &item) {
+      if (!allowed_types) {
+        return true;
+      }
+      if (!item.ob_type) {
+        return false;
+      }
+      for (const auto &t : *allowed_types) {
+        if (*item.ob_type == t) {
+          return true;
         }
-        if (!matched)
-          continue;
+      }
+      return false;
+    };
+
+    ReturnIO pipeline = ReturnIO::pure();
+
+    for (const auto &item : config.installs) {
+      if (!is_allowed(item)) {
+        continue;
       }
 
       if ((!item.cmd || item.cmd->empty()) &&
@@ -464,40 +492,57 @@ apply_exec_actions(const InstallActionContext &context,
         continue;
       }
 
-      processed_any = true;
+      auto item_copy = item;
+      pipeline = pipeline.then([this, processed_any, item_copy]() mutable {
+        using ReturnIO = monad::IO<void>;
+        *processed_any = true;
 
-      // Ensure resources if referenced
-      if (auto err = context.ensure_resource_materialized(item);
-          err.has_value()) {
-        if (item.continue_on_error) {
-          context.output.logger().warning()
-              << "exec item '" << item.id
-              << "' resource materialize failed: " << err->what << std::endl;
-          continue;
-        }
-        return ReturnIO::fail(std::move(*err));
-      }
+        return resource_materializer_->ensure_materialized(item_copy)
+            .then([this, item_copy]() -> ReturnIO {
+              if (auto err = run_item_cmd(item_copy, exec_env_resolver_)) {
+                if (item_copy.continue_on_error) {
+                  output_.logger().warning()
+                      << "exec item '" << item_copy.id
+                      << "' failed: " << *err << std::endl;
+                  return ReturnIO::pure();
+                }
+                auto error_obj = monad::make_error(
+                    my_errors::GENERAL::UNEXPECTED_RESULT, *err);
+                error_obj.params["stage"] = "exec";
+                return ReturnIO::fail(std::move(error_obj));
+              }
 
-      if (auto err = run_item_cmd(context, item)) {
-        if (item.continue_on_error) {
-          context.output.logger().warning()
-              << "exec item '" << item.id << "' failed: " << *err << std::endl;
-          continue;
-        }
-        return ReturnIO::fail(
-            monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *err));
-      }
+              output_.logger().info()
+                  << "Executed exec item '" << item_copy.id
+                  << "' successfully" << std::endl;
+              return ReturnIO::pure();
+            })
+            .catch_then([this, item_copy](monad::Error err) -> ReturnIO {
+              if (auto *stage = err.params.if_contains("stage")) {
+                if (stage->is_string() && stage->as_string() == "exec") {
+                  return ReturnIO::fail(std::move(err));
+                }
+              }
 
-      context.output.logger().info()
-          << "Executed exec item '" << item.id << "' successfully" << std::endl;
+              if (item_copy.continue_on_error) {
+                output_.logger().warning()
+                    << "exec item '" << item_copy.id
+                    << "' resource materialize failed: " << err.what
+                    << std::endl;
+                return ReturnIO::pure();
+              }
+              return ReturnIO::fail(std::move(err));
+            });
+      });
     }
 
-    if (!processed_any) {
-      context.output.logger().debug()
-          << "No exec items present in plan" << std::endl;
-    }
-
-    return ReturnIO::pure();
+    return pipeline.then([this, processed_any]() -> ReturnIO {
+      if (!*processed_any) {
+        output_.logger().debug()
+            << "No exec items present in plan" << std::endl;
+      }
+      return ReturnIO::pure();
+    });
   } catch (const std::exception &ex) {
     return ReturnIO::fail(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, ex.what()));

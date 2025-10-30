@@ -17,6 +17,10 @@
 
 namespace certctrl {
 
+// Lifetime: usually injected as a Boost.DI singleton within the App injector.
+// InstallConfigHandler may also create a per-handler shared_ptr instance.
+// Ensure the instance outlives any async monad pipelines started from its
+// member functions, as they capture `this` directly.
 class InstallConfigManager {
 public:
   using FetchOverrideFn = std::function<
@@ -80,8 +84,11 @@ private:
   std::filesystem::path resource_current_dir(const std::string &ob_type,
                                              std::int64_t ob_id) const;
 
+  monad::IO<void>
+  ensure_resource_materialized(const dto::InstallItem &item);
+
   std::optional<monad::Error>
-  ensure_resource_materialized_sync(const dto::InstallItem &item);
+  ensure_resource_materialized_impl(const dto::InstallItem &item);
 
   std::optional<std::unordered_map<std::string, std::string>>
   resolve_exec_env_for_item(const dto::InstallItem &item);

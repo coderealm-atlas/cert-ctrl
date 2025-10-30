@@ -11,14 +11,13 @@ InstallConfigApplyHandler::InstallConfigApplyHandler(
     cjj365::ConfigSources &config_sources, certctrl::CliCtx &cli_ctx,
     customio::ConsoleOutput &output,
     client_async::HttpClientManager &http_client,
-    certctrl::ICertctrlConfigProvider &config_provider)
-    : cli_ctx_(cli_ctx), output_(output), config_sources_(config_sources),
-      http_client_(http_client), config_provider_(config_provider) {
-  auto runtime_dir = config_sources_.paths_.empty()
-                          ? std::filesystem::path{}
-                          : config_sources_.paths_.back();
-  install_config_manager_ = std::make_shared<InstallConfigManager>(
-      runtime_dir, config_provider_, output_, &http_client_);
+    certctrl::ICertctrlConfigProvider &config_provider,
+    std::shared_ptr<InstallWorkflowRunner> workflow_runner)
+    : cli_ctx_(cli_ctx), output_(output),
+      config_provider_(config_provider),
+      workflow_runner_(std::move(workflow_runner)) {
+  (void)config_sources;
+  (void)http_client;
 }
 
 std::string InstallConfigApplyHandler::command() const { return "install"; }
@@ -40,27 +39,12 @@ monad::IO<void> InstallConfigApplyHandler::start() {
         << " prefer manual promotion." << std::endl;
   }
 
-  auto config_ptr = install_config_manager_->cached_config_snapshot();
-  if (!config_ptr) {
-    output_.logger().warning()
-        << "No staged install configuration found on disk." << std::endl
-        << "Fetch one first (e.g. via updates polling) before running apply."
-        << std::endl;
-    return ReturnIO::pure();
+  InstallWorkflowRunner::Options options{};
+  if (cli_ctx_.positionals.size() > 2) {
+    // Future: parse target filters from CLI (not yet implemented).
   }
 
-  auto version = config_ptr->version;
-  output_.logger().info()
-      << "Applying staged install-config version " << version << std::endl;
-
-  return install_config_manager_->apply_copy_actions(*config_ptr, std::nullopt,
-                                                     std::nullopt)
-      .then([this, version]() {
-        output_.logger().info()
-            << "Installed configuration version " << version
-            << " successfully." << std::endl;
-        return monad::IO<void>::pure();
-      });
+  return workflow_runner_->start(options);
 }
 
 } // namespace certctrl

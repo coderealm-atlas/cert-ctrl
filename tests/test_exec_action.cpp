@@ -3,7 +3,7 @@
 #include "customio/console_output.hpp"
 #include "data/install_config_dto.hpp"
 #include "handlers/install_actions/exec_action.hpp"
-#include "handlers/install_actions/install_action_context.hpp"
+#include "handlers/install_actions/function_adapters.hpp"
 
 #include <sstream>
 #include <cstdlib>
@@ -13,8 +13,44 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <optional>
+#include <unordered_map>
 
 using namespace certctrl::install_actions;
+
+namespace {
+
+using certctrl::install_actions::FunctionExecEnvironmentResolver;
+using certctrl::install_actions::FunctionResourceMaterializer;
+using certctrl::install_actions::IExecEnvironmentResolver;
+using certctrl::install_actions::IResourceMaterializer;
+
+IResourceMaterializer::Ptr make_default_materializer() {
+  return std::make_shared<FunctionResourceMaterializer>(
+      [](const dto::InstallItem &)
+          -> monad::IO<void> { return monad::IO<void>::pure(); });
+}
+
+IExecEnvironmentResolver::Ptr make_env_resolver(
+    std::function<std::optional<std::unordered_map<std::string, std::string>>(
+        const dto::InstallItem &)> fn) {
+  return std::make_shared<FunctionExecEnvironmentResolver>(std::move(fn));
+}
+
+ExecActionHandler make_handler(
+    customio::ConsoleOutput &cout,
+    const std::filesystem::path &runtime_dir =
+        std::filesystem::current_path(),
+    IResourceMaterializer::Ptr materializer = {},
+    IExecEnvironmentResolver::Ptr resolver = {}) {
+  if (!materializer) {
+    materializer = make_default_materializer();
+  }
+  return ExecActionHandler(runtime_dir, cout, std::move(materializer),
+                           std::move(resolver));
+}
+
+} // namespace
 
 // Minimal test IOutput implementation that captures output into strings
 class TestOutput : public customio::IOutput {
@@ -50,12 +86,6 @@ TEST(ExecActionTest, RunsShellCmdAndCapturesSuccess) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
 
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      }};
-
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
   it.id = "t1";
@@ -69,7 +99,8 @@ TEST(ExecActionTest, RunsShellCmdAndCapturesSuccess) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -77,12 +108,6 @@ TEST(ExecActionTest, RunsShellCmdAndCapturesSuccess) {
 TEST(ExecActionTest, TimesOutOnLongSleep) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
-
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      }};
 
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
@@ -97,7 +122,8 @@ TEST(ExecActionTest, TimesOutOnLongSleep) {
   it.timeout_ms = 1000; // 1s
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_FALSE(result.is_ok());
   });
 }
@@ -107,12 +133,6 @@ TEST(ExecActionTest, ZeroTimeoutFallsBackToDefault) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
 
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      }};
-
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
   it.id = "t-timeout-zero";
@@ -121,7 +141,8 @@ TEST(ExecActionTest, ZeroTimeoutFallsBackToDefault) {
   it.timeout_ms = 0;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -130,12 +151,6 @@ TEST(ExecActionTest, ZeroTimeoutFallsBackToDefault) {
 TEST(ExecActionTest, RunsCmdArgvDirectly) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
-
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      }};
 
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
@@ -151,7 +166,8 @@ TEST(ExecActionTest, RunsCmdArgvDirectly) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -163,18 +179,14 @@ TEST(ExecActionTest, SuppliesAdditionalEnvironmentFromContext) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
 
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      },
+  auto resolver = make_env_resolver(
       [expected = std::string(kExpectedSecret)](
           const dto::InstallItem &)
-          -> std::optional<std::unordered_map<std::string, std::string>> {
+      -> std::optional<std::unordered_map<std::string, std::string>> {
         std::unordered_map<std::string, std::string> env;
         env.emplace("CERTCTRL_PFX_PASSWORD", expected);
         return env;
-      }};
+      });
 
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
@@ -187,7 +199,9 @@ TEST(ExecActionTest, SuppliesAdditionalEnvironmentFromContext) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout, std::filesystem::current_path(),
+                              make_default_materializer(), resolver);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     ASSERT_TRUE(result.is_ok());
   });
 }
@@ -198,18 +212,14 @@ TEST(ExecActionTest, MergesItemEnvWithContextEnv) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
 
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      },
+  auto resolver = make_env_resolver(
       [expected = std::string(kExpectedSecret)](
           const dto::InstallItem &)
-          -> std::optional<std::unordered_map<std::string, std::string>> {
+      -> std::optional<std::unordered_map<std::string, std::string>> {
         std::unordered_map<std::string, std::string> env;
         env.emplace("CERTCTRL_PFX_PASSWORD", expected);
         return env;
-      }};
+      });
 
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
@@ -222,7 +232,9 @@ TEST(ExecActionTest, MergesItemEnvWithContextEnv) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout, std::filesystem::current_path(),
+                              make_default_materializer(), resolver);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     ASSERT_TRUE(result.is_ok());
   });
 }
@@ -257,12 +269,6 @@ TEST(ExecActionTest, RunsMultipleCommandsFromSingleShellLine) {
 
   const std::string file_path = test_file.string();
 
-  certctrl::install_actions::InstallActionContext ctx{
-      temp_dir, cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      }};
-
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
   it.id = "t-multi-cmd";
@@ -272,7 +278,8 @@ TEST(ExecActionTest, RunsMultipleCommandsFromSingleShellLine) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout, temp_dir);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     ASSERT_TRUE(result.is_ok());
   });
 
@@ -305,12 +312,6 @@ TEST(ExecActionTest, WindowsShellCmdRunsUnderCmdExe) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
 
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      }};
-
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
   it.id = "t4";
@@ -320,7 +321,8 @@ TEST(ExecActionTest, WindowsShellCmdRunsUnderCmdExe) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -333,12 +335,6 @@ TEST(ExecActionTest, WindowsPwshCmdArgvRunsWhenAvailable) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
 
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      }};
-
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
   it.id = "t5";
@@ -348,7 +344,8 @@ TEST(ExecActionTest, WindowsPwshCmdArgvRunsWhenAvailable) {
   it.timeout_ms = 5000;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -360,12 +357,6 @@ TEST(ExecActionTest, WindowsPowerShellCmdArgvRunsWhenAvailable) {
 
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
-
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      }};
 
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
@@ -379,7 +370,8 @@ TEST(ExecActionTest, WindowsPowerShellCmdArgvRunsWhenAvailable) {
   it.timeout_ms = 10000;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -390,18 +382,14 @@ TEST(ExecActionTest, WindowsMergesItemEnvWithContextEnv) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
 
-  certctrl::install_actions::InstallActionContext ctx{
-      std::filesystem::current_path(), cout,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      },
+  auto resolver = make_env_resolver(
       [expected = std::string(kExpectedSecret)](
           const dto::InstallItem &)
-          -> std::optional<std::unordered_map<std::string, std::string>> {
+      -> std::optional<std::unordered_map<std::string, std::string>> {
         std::unordered_map<std::string, std::string> env;
         env.emplace("CERTCTRL_PFX_PASSWORD", expected);
         return env;
-      }};
+      });
 
   dto::DeviceInstallConfigDto cfg;
   dto::InstallItem it;
@@ -414,7 +402,9 @@ TEST(ExecActionTest, WindowsMergesItemEnvWithContextEnv) {
   it.timeout_ms = 4000;
   cfg.installs.push_back(it);
 
-  apply_exec_actions(ctx, cfg, std::nullopt).run([&](auto result) {
+  auto handler = make_handler(cout, std::filesystem::current_path(),
+                              make_default_materializer(), resolver);
+  handler.apply(cfg, std::nullopt).run([&](auto result) {
     ASSERT_TRUE(result.is_ok());
   });
 }

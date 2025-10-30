@@ -3,6 +3,8 @@
 
 set -euo pipefail
 
+# export CERTCTRL_REAL_SERVER_TESTS=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 PRESET="debug"

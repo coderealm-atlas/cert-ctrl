@@ -2,10 +2,13 @@
 #include "handlers/install_actions/copy_action.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_actions/exec_action.hpp"
+#include "handlers/install_actions/function_adapters.hpp"
 
+#include <boost/asio/io_context.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/json.hpp>
 #include <boost/system/error_code.hpp>
+#include <boost/log/trivial.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -847,7 +850,17 @@ std::filesystem::path InstallConfigManager::resource_current_dir(
   return resource_root;
 }
 
-std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_sync(
+monad::IO<void> InstallConfigManager::ensure_resource_materialized(
+    const dto::InstallItem &item) {
+  auto result = ensure_resource_materialized_impl(item);
+  if (result.has_value()) {
+    return monad::IO<void>::fail(std::move(*result));
+  }
+  return monad::IO<void>::pure();
+}
+
+std::optional<monad::Error>
+InstallConfigManager::ensure_resource_materialized_impl(
     const dto::InstallItem &item) {
   using monad::GetStringTag;
   using monad::http_io;
@@ -859,6 +872,10 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
     return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                              "Resource reference missing ob_type/ob_id");
   }
+
+  BOOST_LOG_SEV(lg, trivial::trace)
+    << "ensure_resource_materialized start ob_type=" << *item.ob_type
+      << " ob_id=" << *item.ob_id;
 
   const std::string ob_type = *item.ob_type;
   const std::int64_t ob_id = *item.ob_id;
@@ -887,6 +904,10 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
     }
   }
 
+  DEBUG_PRINT("ensure_resource_materialized_impl check ob_type=" << ob_type
+               << " ob_id=" << ob_id << " all_present=" << all_present
+               << " bundle_requested=" << bundle_requested);
+
   if (all_present) {
     if (is_cert && bundle_requested && !lookup_bundle_password(ob_type, ob_id)) {
       all_present = false;
@@ -894,6 +915,13 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
   }
 
   if (all_present) {
+    BOOST_LOG_SEV(lg, trivial::trace)
+        << "ensure_resource_materialized_impl short-circuit ob_type="
+        << ob_type << " ob_id=" << ob_id
+        << " materials in place";
+    BOOST_LOG_SEV(lg, trivial::trace)
+        << "Resource already materialized ob_type=" << ob_type
+        << " ob_id=" << ob_id;
     return std::nullopt;
   }
 
@@ -959,74 +987,133 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
     namespace http = boost::beast::http;
 
     constexpr int kMaxAttempts = 12;
-    constexpr std::chrono::seconds kRetryDelay{3};
+    constexpr std::chrono::seconds kRetryBaseDelay{3};
 
-    std::optional<monad::Error> last_error;
+    auto attempt_counter = std::make_shared<int>(0);
 
-    for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
-      auto request_io = http_io<GetStringTag>(url)
-                            .map([token](auto ex) {
-                              ex->request.set(http::field::authorization,
-                                              std::string("Bearer ") + token);
-                              return ex;
-                            })
-                            .then(http_request_io<GetStringTag>(*http_client_));
+    auto fetch_once = http_io<GetStringTag>(url)
+                          .map([&, token](auto ex) {
+                            const int current_attempt = ++(*attempt_counter);
+                            BOOST_LOG_SEV(lg, trivial::trace)
+                                << "fetch_http_body attempt "
+                                << current_attempt << '/' << kMaxAttempts
+                                << " for url=" << url;
+                            ex->request.set(http::field::authorization,
+                                            std::string("Bearer ") + token);
+                            return ex;
+                          })
+                          .then(http_request_io<GetStringTag>(*http_client_))
+                          .then([&, url](ExchangePtr ex) -> monad::IO<std::string> {
+                            if (!ex->response.has_value()) {
+                              BOOST_LOG_SEV(lg, trivial::warning)
+                                  << "fetch_http_body received empty response for url="
+                                  << url;
+                              return monad::IO<std::string>::fail(
+                                  monad::make_error(
+                                      my_errors::NETWORK::READ_ERROR,
+                                      "No response while fetching resource"));
+                            }
 
-      std::promise<ResultType> promise;
-      auto future = promise.get_future();
-      request_io.run([&promise](ResultType result) {
-        promise.set_value(std::move(result));
-      });
+                            int status = ex->response->result_int();
+                            std::string body = ex->response->body();
 
-      auto io_result = future.get();
-      if (io_result.is_err()) {
-        return io_result.error();
+                            if (status == 200) {
+                              DEBUG_PRINT("fetch_http_body success status=200 url="
+                                           << url << " bytes=" << body.size());
+                              BOOST_LOG_SEV(lg, trivial::trace)
+                                  << "fetch_http_body succeeded for url=" << url
+                                  << " (status=200, bytes=" << body.size() << ')';
+                              return monad::IO<std::string>::pure(std::move(body));
+                            }
+
+                            DEBUG_PRINT("fetch_http_body failure status=" << status
+                                         << " url=" << url
+                                         << " preview=" << body.substr(0, 128));
+
+              auto err = monad::make_error(
+                my_errors::NETWORK::READ_ERROR,
+                fmt::format("Resource fetch HTTP {}", status));
+                            err.response_status = status;
+                            err.params["response_body_preview"] = body.substr(0, 512);
+
+                            if (status == 503) {
+                              auto preview = body.substr(0, 512);
+                              output_.logger().info()
+                                  << "Resource fetch 503 for URL '" << url
+                                  << "' (attempt " << *attempt_counter << "/"
+                                  << kMaxAttempts << ") response preview: "
+                                  << preview << std::endl;
+
+                              const auto next_delay = kRetryBaseDelay *
+                                                      (1 << std::max(0, *attempt_counter - 1));
+                              if (*attempt_counter < kMaxAttempts) {
+                                output_.logger().info()
+                                    << "Retrying after " << next_delay.count()
+                                    << " seconds for server availability" << std::endl;
+                              } else {
+                                BOOST_LOG_SEV(lg, trivial::warning)
+                                    << "fetch_http_body exhausted retries for url=" << url
+                                    << " last_status=503";
+                              }
+                            } else {
+                              BOOST_LOG_SEV(lg, trivial::warning)
+                                  << "fetch_http_body aborting on status=" << status
+                                  << " for url=" << url;
+                            }
+
+                            BOOST_LOG_SEV(lg, trivial::error)
+                                << "fetch_http_body error status=" << status
+                                << " url=" << url << " what=" << err.what;
+                            return monad::IO<std::string>::fail(std::move(err));
+                          });
+
+    boost::asio::io_context retry_ioc;
+    retry_ioc.restart();
+
+    auto should_retry = [attempt_counter, kMaxAttempts](const monad::Error &err) {
+      return err.response_status == 503 && *attempt_counter < kMaxAttempts;
+    };
+
+    std::promise<monad::Result<std::string, monad::Error>> promise;
+    auto future = promise.get_future();
+
+    std::move(fetch_once)
+        .retry_exponential_if(kMaxAttempts, kRetryBaseDelay, retry_ioc, should_retry)
+        .run([&promise](monad::Result<std::string, monad::Error> result) {
+          promise.set_value(std::move(result));
+        });
+
+    while (future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+      auto processed = retry_ioc.poll_one();
+      if (processed == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
       }
-
-      auto exchange = io_result.value();
-      if (!exchange->response.has_value()) {
-        return monad::make_error(my_errors::NETWORK::READ_ERROR,
-                                 "No response while fetching resource");
-      }
-
-      int status = exchange->response->result_int();
-      out_body = exchange->response->body();
-
-      if (status == 200) {
-        last_error.reset();
-        return std::nullopt;
-      }
-
-      auto err = monad::make_error(
-          my_errors::NETWORK::READ_ERROR,
-          fmt::format("Resource fetch HTTP {}", status));
-      err.response_status = status;
-      err.params["response_body_preview"] = out_body.substr(0, 512);
-
-      if (status == 503) {
-        last_error = err;
-
-        std::string body_preview = out_body.substr(0, 512);
-        output_.logger().info()
-            << "Resource fetch 503 for URL '" << url
-            << "' (attempt " << attempt << "/" << kMaxAttempts
-            << ") response preview: " << body_preview << std::endl;
-        output_.logger().info()
-            << "Retrying after " << (kRetryDelay * 2).count()
-            << " seconds for server availability" << std::endl;
-
-        if (attempt == kMaxAttempts) {
-          break;
-        }
-
-        std::this_thread::sleep_for(kRetryDelay * 2);
-        continue;
-      }
-
-      return err;
     }
 
-    return last_error;
+    retry_ioc.restart();
+    retry_ioc.poll();
+
+    auto result = future.get();
+    if (result.is_ok()) {
+      out_body = std::move(result.value());
+      return std::nullopt;
+    }
+
+    DEBUG_PRINT("fetch_http_body final error status="
+                 << result.error().response_status << " url=" << url);
+
+    if (result.error().response_status != 503) {
+      BOOST_LOG_SEV(lg, trivial::debug)
+          << "fetch_http_body received status=" << result.error().response_status
+          << " for url=" << url;
+    }
+
+    auto err = result.error();
+    BOOST_LOG_SEV(lg, trivial::error)
+        << "fetch_http_body giving up url=" << url
+        << " status=" << err.response_status
+        << " what=" << err.what;
+    return err;
   };
 
   std::unordered_map<std::string, std::string> text_outputs;
@@ -1090,14 +1177,22 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
     }
   } else if (*item.ob_type == "cert") {
     if (!http_client_) {
-      return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                               "InstallConfigManager requires HTTP client");
+      auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                                   "InstallConfigManager requires HTTP client");
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "ensure_resource_materialized_impl cert fetch missing http_client ob_id="
+          << *item.ob_id;
+      return err;
     }
 
     auto token_opt = load_access_token();
     if (!token_opt || token_opt->empty()) {
-      return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                               "Device access token unavailable");
+      auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                                   "Device access token unavailable");
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "ensure_resource_materialized_impl cert fetch missing token ob_id="
+          << *item.ob_id;
+      return err;
     }
 
     const auto &cfg = config_provider_.get();
@@ -1108,6 +1203,10 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
         cfg.base_url, *item.ob_id);
 
     if (auto err = fetch_http_body(detail_url, *token_opt, detail_raw_json)) {
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "ensure_resource_materialized_impl detail fetch failed cert ob_id="
+          << *item.ob_id << " status=" << err->response_status
+          << " what=" << err->what;
       return err;
     }
 
@@ -1126,17 +1225,27 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
         deploy_raw_json =
             boost::json::serialize(boost::json::object{{"data", placeholder}});
       } else {
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "ensure_resource_materialized_impl deploy fetch failed cert ob_id="
+            << *item.ob_id << " status=" << err->response_status
+            << " what=" << err->what;
         return err;
       }
     }
 
     if (auto err = parse_enveloped_object(detail_raw_json,
                                            "certificate detail", detail_obj)) {
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "ensure_resource_materialized_impl parse detail failed cert ob_id="
+          << *item.ob_id << " what=" << err->what;
       return err;
     }
     if (deploy_available) {
       if (auto err = parse_enveloped_object(
               deploy_raw_json, "deploy materials", deploy_obj)) {
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "ensure_resource_materialized_impl parse deploy failed cert ob_id="
+            << *item.ob_id << " what=" << err->what;
         return err;
       }
     }
@@ -1148,21 +1257,33 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
     if (resource_fetch_override_) {
       auto override_body = resource_fetch_override_(item);
       if (!override_body) {
-        return monad::make_error(
+        auto err = monad::make_error(
             my_errors::GENERAL::INVALID_ARGUMENT,
             "Resource fetch override returned empty body");
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "ensure_resource_materialized_impl CA override empty ob_id="
+            << *item.ob_id;
+        return err;
       }
       ca_body = std::move(*override_body);
     } else {
       if (!http_client_) {
-        return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                 "InstallConfigManager requires HTTP client");
+        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                                     "InstallConfigManager requires HTTP client");
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "ensure_resource_materialized_impl CA fetch missing http_client ob_id="
+            << *item.ob_id;
+        return err;
       }
 
       auto token_opt = load_access_token();
       if (!token_opt || token_opt->empty()) {
-        return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                 "Device access token unavailable");
+        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                                     "Device access token unavailable");
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "ensure_resource_materialized_impl CA fetch missing token ob_id="
+            << *item.ob_id;
+        return err;
       }
 
       const auto &cfg = config_provider_.get();
@@ -1170,16 +1291,40 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
           "{}/apiv1/devices/self/cas/{}/bundle?pack=download", cfg.base_url,
           *item.ob_id);
       if (auto err = fetch_http_body(url, *token_opt, ca_body)) {
+        DEBUG_PRINT("CA fetch error status=" << err->response_status
+                     << " url=" << url);
+        BOOST_LOG_SEV(lg, trivial::warning)
+            << "Failed to fetch CA bundle ob_type=" << *item.ob_type
+            << " ob_id=" << *item.ob_id
+            << " status=" << err->response_status;
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "ensure_resource_materialized_impl CA fetch failed ob_id="
+            << *item.ob_id << " status=" << err->response_status
+            << " what=" << err->what;
         return err;
       }
+
+      DEBUG_PRINT("CA fetch bytes=" << ca_body.size() << " url=" << url);
     }
 
     auto bundle_data = parse_bundle_data(ca_body);
     if (!bundle_data) {
-      return monad::make_error(
+      DEBUG_PRINT("CA bundle parse failed ob_type=" << *item.ob_type
+                   << " ob_id=" << *item.ob_id
+                   << " preview=" << ca_body.substr(0, 128));
+      BOOST_LOG_SEV(lg, trivial::warning)
+          << "CA bundle missing expected data ob_type=" << *item.ob_type
+          << " ob_id=" << *item.ob_id;
+      auto err = monad::make_error(
           my_errors::GENERAL::UNEXPECTED_RESULT,
           "CA bundle response missing expected data");
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "ensure_resource_materialized_impl CA bundle parse failure ob_id="
+          << *item.ob_id;
+      return err;
     }
+    DEBUG_PRINT("CA bundle parsed keys=" << bundle_data->size()
+                 << " ob_type=" << *item.ob_type << " ob_id=" << *item.ob_id);
     ca_obj = *bundle_data;
   }
 
@@ -1460,7 +1605,13 @@ std::optional<monad::Error> InstallConfigManager::ensure_resource_materialized_s
     output_.logger().debug()
         << "Fetched resource " << *item.ob_type << "/" << *item.ob_id
         << " (materials cached)" << std::endl;
+  BOOST_LOG_SEV(lg, trivial::trace)
+    << "ensure_resource_materialized complete ob_type=" << ob_type
+        << " ob_id=" << ob_id;
   } catch (const std::exception &e) {
+    BOOST_LOG_SEV(lg, trivial::error)
+        << "Failed to write resource materials ob_type=" << ob_type
+        << " ob_id=" << ob_id << " error=" << e.what();
     return monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, e.what());
   }
 
@@ -1471,17 +1622,24 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
     const dto::DeviceInstallConfigDto &config,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
-  install_actions::InstallActionContext context{
-      runtime_dir_,
-      output_,
-      [this](const dto::InstallItem &item) {
-        return ensure_resource_materialized_sync(item);
-      }};
+  auto resource_materializer =
+      std::make_shared<install_actions::FunctionResourceMaterializer>(
+          [this](const dto::InstallItem &item) {
+            return ensure_resource_materialized(item);
+          });
+
+  install_actions::CopyActionHandler copy_handler(
+      runtime_dir_, output_, resource_materializer);
 
   // First perform copy actions
-  return install_actions::apply_copy_actions(context, config, target_ob_type,
-                                             target_ob_id)
+  return copy_handler
+      .apply(config, target_ob_type, target_ob_id)
       .then([this, &config, &target_ob_type, target_ob_id]() {
+        BOOST_LOG_SEV(lg, trivial::trace)
+            << "apply_copy_actions exec stage start target_ob_type="
+            << (target_ob_type ? *target_ob_type : std::string("<none>"))
+            << " target_ob_id="
+            << (target_ob_id ? std::to_string(*target_ob_id) : "<none>");
         // After copy actions, always run exec items (cmd/cmd_argv) that may be
         // present regardless of item.type. Limit exec targets to the same
         // target_ob_type/target_ob_id when specified.
@@ -1489,19 +1647,30 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
         if (target_ob_type) {
           allowed_types = std::vector<std::string>{*target_ob_type};
         }
-        install_actions::InstallActionContext exec_context{
-            runtime_dir_,
-            output_,
-            [this](const dto::InstallItem &item) {
-              return ensure_resource_materialized_sync(item);
-            },
-            [this](const dto::InstallItem &item)
-                -> std::optional<std::unordered_map<std::string, std::string>> {
-              return resolve_exec_env_for_item(item);
-            }};
+        auto exec_resource_materializer =
+            std::make_shared<install_actions::FunctionResourceMaterializer>(
+                [this](const dto::InstallItem &item) {
+                  return ensure_resource_materialized(item);
+                });
+        auto exec_env_resolver =
+            std::make_shared<install_actions::FunctionExecEnvironmentResolver>(
+                [this](const dto::InstallItem &item)
+                    -> std::optional<std::unordered_map<std::string, std::string>> {
+                  return resolve_exec_env_for_item(item);
+                });
 
-        return install_actions::apply_exec_actions(exec_context, config,
-                                                   allowed_types);
+        install_actions::ExecActionHandler exec_handler(
+            runtime_dir_, output_, exec_resource_materializer,
+            exec_env_resolver);
+        return exec_handler.apply(config, allowed_types);
+      })
+  .catch_then([this](monad::Error err) {
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "apply_copy_actions encountered error code=" << err.code
+            << " status=" << err.response_status
+    << " what=" << err.what
+    << " params=" << boost::json::serialize(err.params);
+        return monad::IO<void>::fail(std::move(err));
       });
 }
 
@@ -1509,34 +1678,52 @@ monad::IO<void> InstallConfigManager::apply_import_ca_actions(
     const dto::DeviceInstallConfigDto &config,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
-  install_actions::InstallActionContext context{
-      runtime_dir_,
-      output_,
-      [this](const dto::InstallItem &item) {
-        return ensure_resource_materialized_sync(item);
-      }};
+  auto resource_materializer =
+      std::make_shared<install_actions::FunctionResourceMaterializer>(
+          [this](const dto::InstallItem &item) {
+            return ensure_resource_materialized(item);
+          });
 
-  return install_actions::apply_import_ca_actions(context, config,
-                                                  target_ob_type,
-                                                  target_ob_id)
+  install_actions::ImportCaActionHandler import_handler(
+      runtime_dir_, output_, resource_materializer);
+
+  BOOST_LOG_SEV(lg, trivial::trace)
+    << "apply_import_ca_actions start target_ob_type="
+    << (target_ob_type ? *target_ob_type : std::string("<none>"))
+    << " target_ob_id="
+    << (target_ob_id ? std::to_string(*target_ob_id) : "<none>");
+
+  return import_handler
+      .apply(config, target_ob_type, target_ob_id)
       .then([this, &config, &target_ob_type, target_ob_id]() {
         std::optional<std::vector<std::string>> allowed_types = std::nullopt;
         if (target_ob_type) {
           allowed_types = std::vector<std::string>{*target_ob_type};
         }
-        install_actions::InstallActionContext exec_context{
-            runtime_dir_,
-            output_,
-            [this](const dto::InstallItem &item) {
-              return ensure_resource_materialized_sync(item);
-            },
-            [this](const dto::InstallItem &item)
-                -> std::optional<std::unordered_map<std::string, std::string>> {
-              return resolve_exec_env_for_item(item);
-            }};
+        auto exec_resource_materializer =
+            std::make_shared<install_actions::FunctionResourceMaterializer>(
+                [this](const dto::InstallItem &item) {
+                  return ensure_resource_materialized(item);
+                });
+        auto exec_env_resolver =
+            std::make_shared<install_actions::FunctionExecEnvironmentResolver>(
+                [this](const dto::InstallItem &item)
+                    -> std::optional<std::unordered_map<std::string, std::string>> {
+                  return resolve_exec_env_for_item(item);
+                });
 
-        return install_actions::apply_exec_actions(exec_context, config,
-                                                   allowed_types);
+        install_actions::ExecActionHandler exec_handler(
+            runtime_dir_, output_, exec_resource_materializer,
+            exec_env_resolver);
+        return exec_handler.apply(config, allowed_types);
+      })
+  .catch_then([this](monad::Error err) {
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "apply_import_ca_actions encountered error code=" << err.code
+            << " status=" << err.response_status
+    << " what=" << err.what
+    << " params=" << boost::json::serialize(err.params);
+        return monad::IO<void>::fail(std::move(err));
       });
 }
 
