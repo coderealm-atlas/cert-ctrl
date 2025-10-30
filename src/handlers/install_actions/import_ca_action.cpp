@@ -5,15 +5,26 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fmt/format.h>
+#include <memory>
 #include <optional>
 #include <random>
 #include <string>
 #include <system_error>
+#include <utility>
 
+#include "util/my_logging.hpp"
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
 
 namespace certctrl::install_actions {
+
+ImportCaActionHandler::ImportCaActionHandler(
+    std::filesystem::path runtime_dir,
+    customio::ConsoleOutput &output,
+    IResourceMaterializer::Ptr resource_materializer)
+    : runtime_dir_(std::move(runtime_dir)),
+      output_(output),
+      resource_materializer_(std::move(resource_materializer)) {}
 
 namespace {
 
@@ -85,7 +96,12 @@ std::optional<std::string> copy_ca_material(
     const std::filesystem::path &source,
     const std::filesystem::path &destination) {
   try {
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "copy_ca_material start source='" << source
+        << "' destination='" << destination << "'";
     if (!std::filesystem::exists(source)) {
+      BOOST_LOG_SEV(app_logger(), trivial::error)
+          << "copy_ca_material missing source: " << source;
       return fmt::format("CA source '{}' not found", source.string());
     }
 
@@ -125,8 +141,13 @@ std::optional<std::string> copy_ca_material(
                                  std::filesystem::perm_options::replace);
 #endif
 
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "copy_ca_material finished source='" << source
+        << "' destination='" << destination << "'";
     return std::nullopt;
   } catch (const std::exception &ex) {
+    BOOST_LOG_SEV(app_logger(), trivial::error)
+        << "copy_ca_material exception: " << ex.what();
     return ex.what();
   }
 }
@@ -188,9 +209,9 @@ std::optional<TrustStoreTarget> detect_system_trust_store() {
   return std::nullopt;
 }
 
-std::filesystem::path resource_root_for(const InstallActionContext &context,
+std::filesystem::path resource_root_for(const std::filesystem::path &runtime_dir,
                                         const dto::InstallItem &item) {
-  std::filesystem::path root = context.runtime_dir / "resources";
+  std::filesystem::path root = runtime_dir / "resources";
   if (item.ob_type && *item.ob_type == "ca" && item.ob_id) {
     root /= "cas";
     root /= std::to_string(*item.ob_id);
@@ -215,131 +236,190 @@ bool should_skip_item(const dto::InstallItem &item,
   return false;
 }
 
-void log_warning(const InstallActionContext &context,
-                 const dto::InstallItem &item, std::string_view message) {
-  context.output.logger().warning()
-      << "import_ca item '" << item.id << "': " << message << std::endl;
+void log_warning(customio::ConsoleOutput &output,
+         const dto::InstallItem &item, std::string_view message) {
+  output.logger().warning()
+    << "import_ca item '" << item.id << "': " << message << std::endl;
 }
 
 } // namespace
 
-monad::IO<void> apply_import_ca_actions(
-    const InstallActionContext &context,
+monad::IO<void> ImportCaActionHandler::apply(
     const dto::DeviceInstallConfigDto &config,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
   using ReturnIO = monad::IO<void>;
 
   try {
-    bool processed_any = false;
+    if (!resource_materializer_) {
+      return ReturnIO::fail(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT,
+          "ImportCaActionHandler missing resource materializer"));
+    }
 
-    for (const auto &item : config.installs) {
+    auto processed_any = std::make_shared<bool>(false);
+    auto target_ob_type_copy = target_ob_type;
+
+    auto process_item = [this, processed_any, target_ob_type_copy,
+                         target_ob_id](const dto::InstallItem &item) -> ReturnIO {
       if (item.type != "import_ca") {
-        continue;
+        return ReturnIO::pure();
       }
 
-      processed_any = true;
+      *processed_any = true;
+      BOOST_LOG_SEV(app_logger(), trivial::trace)
+          << "Processing import_ca item '" << item.id << "'";
 
-      if (should_skip_item(item, target_ob_type, target_ob_id)) {
-        continue;
+      if (should_skip_item(item, target_ob_type_copy, target_ob_id)) {
+        return ReturnIO::pure();
       }
 
       if (!item.ob_type || *item.ob_type != "ca" || !item.ob_id) {
-        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                              "import_ca item requires ob_type 'ca' and ob_id");
+        auto err = monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            "import_ca item requires ob_type 'ca' and ob_id");
         if (item.continue_on_error) {
-          log_warning(context, item, err.what);
-          continue;
+          log_warning(output_, item, err.what);
+          return ReturnIO::pure();
         }
         return ReturnIO::fail(std::move(err));
       }
 
       auto trust_store = detect_system_trust_store();
       if (!trust_store) {
-        auto err = monad::make_error(my_errors::GENERAL::NOT_IMPLEMENTED,
-                              "unable to locate a supported trust store directory; set CERTCTRL_CA_IMPORT_DIR to override");
+        auto err = monad::make_error(
+            my_errors::GENERAL::NOT_IMPLEMENTED,
+            "unable to locate a supported trust store directory; set CERTCTRL_CA_IMPORT_DIR to override");
         if (item.continue_on_error) {
-          log_warning(context, item, err.what);
-          continue;
+          log_warning(output_, item, err.what);
+          return ReturnIO::pure();
         }
         return ReturnIO::fail(std::move(err));
       }
 
-      if (auto ensure_err = context.ensure_resource_materialized(item);
-          ensure_err.has_value()) {
-        if (item.continue_on_error) {
-          log_warning(context, item, ensure_err->what);
-          continue;
-        }
-        return ReturnIO::fail(std::move(*ensure_err));
-      }
+      auto trust = *trust_store;
 
-      auto resource_root = resource_root_for(context, item);
-      if (resource_root.empty()) {
-        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                              "unable to resolve resource root for CA");
-        if (item.continue_on_error) {
-          log_warning(context, item, err.what);
-          continue;
-        }
-        return ReturnIO::fail(std::move(err));
-      }
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+      << "import_ca item '" << item.id
+      << "' resolved trust store target dir='" << trust.directory
+      << "' update_cmd='" << trust.update_command << "'";
 
-      auto ca_pem_path = resource_root / "ca.pem";
-      if (!std::filesystem::exists(ca_pem_path)) {
-        auto err = monad::make_error(my_errors::GENERAL::FILE_NOT_FOUND,
-                              fmt::format("expected CA PEM missing: {}",
-                                          ca_pem_path.string()));
-        if (item.continue_on_error) {
-          log_warning(context, item, err.what);
-          continue;
-        }
-        return ReturnIO::fail(std::move(err));
-      }
+    return resource_materializer_->ensure_materialized(item)
+      .then([this, item, trust]() -> ReturnIO {
+      BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "import_ca item '" << item.id
+        << "' resource materialization complete";
+            auto resource_root = resource_root_for(runtime_dir_, item);
+            if (resource_root.empty()) {
+              auto err = monad::make_error(
+                  my_errors::GENERAL::INVALID_ARGUMENT,
+                  "unable to resolve resource root for CA");
+              if (item.continue_on_error) {
+                log_warning(output_, item, err.what);
+                return ReturnIO::pure();
+              }
+              return ReturnIO::fail(std::move(err));
+            }
 
-      auto label = item.ob_name.value_or(std::string{});
-      auto sanitized = sanitize_label(label, *item.ob_id);
-      auto destination = trust_store->directory / (sanitized + ".crt");
+            auto ca_pem_path = resource_root / "ca.pem";
+            if (!std::filesystem::exists(ca_pem_path)) {
+              auto err = monad::make_error(
+                  my_errors::GENERAL::FILE_NOT_FOUND,
+                  fmt::format("expected CA PEM missing: {}",
+                              ca_pem_path.string()));
+              if (item.continue_on_error) {
+                log_warning(output_, item, err.what);
+                return ReturnIO::pure();
+              }
+              return ReturnIO::fail(std::move(err));
+            }
 
-      if (auto err = copy_ca_material(ca_pem_path, destination)) {
-        auto error_obj = monad::make_error(my_errors::GENERAL::FILE_READ_WRITE,
-                                           *err);
-        if (item.continue_on_error) {
-          log_warning(context, item, error_obj.what);
-          continue;
-        }
-        return ReturnIO::fail(std::move(error_obj));
-      }
+            auto label = item.ob_name.value_or(std::string{});
+            auto sanitized = sanitize_label(label, *item.ob_id);
+            auto destination = trust.directory / (sanitized + ".crt");
 
-      context.output.logger().info()
-          << "Imported CA '" << sanitized << "' into "
-          << trust_store->directory << std::endl;
+            BOOST_LOG_SEV(app_logger(), trivial::trace)
+                << "import_ca item '" << item.id << "' copying '"
+                << ca_pem_path << "' to '" << destination << "'";
 
-      if (!trust_store->update_command.empty()) {
-        int rc = std::system(trust_store->update_command.c_str());
-        if (rc != 0) {
-          auto err = monad::make_error(
-              my_errors::GENERAL::UNEXPECTED_RESULT,
-              fmt::format("command '{}' exited with status {}",
-                          trust_store->update_command, rc));
-          if (item.continue_on_error) {
-            log_warning(context, item, err.what);
-            continue;
-          }
-          return ReturnIO::fail(std::move(err));
-        }
-      }
+            if (auto err = copy_ca_material(ca_pem_path, destination)) {
+              auto error_obj = monad::make_error(
+                  my_errors::GENERAL::FILE_READ_WRITE, *err);
+              BOOST_LOG_SEV(app_logger(), trivial::error)
+                  << "import_ca item '" << item.id
+                  << "' copy_ca_material failed: " << *err;
+              if (item.continue_on_error) {
+                log_warning(output_, item, error_obj.what);
+                return ReturnIO::pure();
+              }
+              return ReturnIO::fail(std::move(error_obj));
+            }
+
+            output_.logger().info()
+                << "Imported CA '" << sanitized << "' into "
+                << trust.directory << std::endl;
+
+            BOOST_LOG_SEV(app_logger(), trivial::trace)
+                << "import_ca item '" << item.id
+                << "' completed filesystem copy";
+
+            if (!trust.update_command.empty()) {
+              BOOST_LOG_SEV(app_logger(), trivial::trace)
+                  << "import_ca item '" << item.id
+                  << "' executing update command: "
+                  << trust.update_command;
+              int rc = std::system(trust.update_command.c_str());
+              if (rc != 0) {
+                auto err = monad::make_error(
+                    my_errors::GENERAL::UNEXPECTED_RESULT,
+                    fmt::format("command '{}' exited with status {}",
+                                trust.update_command, rc));
+                BOOST_LOG_SEV(app_logger(), trivial::error)
+                    << "import_ca item '" << item.id
+                    << "' update command failed rc=" << rc;
+                if (item.continue_on_error) {
+                  log_warning(output_, item, err.what);
+                  return ReturnIO::pure();
+                }
+                return ReturnIO::fail(std::move(err));
+              }
+              BOOST_LOG_SEV(app_logger(), trivial::trace)
+                  << "import_ca item '" << item.id
+                  << "' update command succeeded";
+            }
+
+            return ReturnIO::pure();
+          })
+          .catch_then([this, item](monad::Error err) -> ReturnIO {
+            BOOST_LOG_SEV(app_logger(), trivial::error)
+                << "import_ca item '" << item.id
+                << "' caught error: " << err.what;
+            if (item.continue_on_error) {
+              log_warning(output_, item, err.what);
+              return ReturnIO::pure();
+            }
+            return ReturnIO::fail(std::move(err));
+          });
+    };
+
+    ReturnIO pipeline = ReturnIO::pure();
+    for (const auto &item : config.installs) {
+      auto item_copy = item;
+      pipeline = pipeline.then([process_item, item_copy]() mutable {
+        return process_item(item_copy);
+      });
     }
 
-    if (!processed_any) {
-      context.output.logger().debug()
-          << "No import_ca items present in plan" << std::endl;
-    }
-
-    return ReturnIO::pure();
+    return pipeline.then([this, processed_any]() -> ReturnIO {
+      if (!*processed_any) {
+        output_.logger().debug()
+            << "No import_ca items present in plan" << std::endl;
+      }
+      return ReturnIO::pure();
+    });
   } catch (const std::exception &ex) {
-  return ReturnIO::fail(
-    monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, ex.what()));
+    return ReturnIO::fail(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, ex.what()));
   }
 }
 

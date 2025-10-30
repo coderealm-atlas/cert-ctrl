@@ -5,6 +5,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <filesystem>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -19,6 +20,8 @@
 #include "handlers/i_handler.hpp"
 #include "handlers/install_config_apply_handler.hpp"
 #include "handlers/install_config_handler.hpp"
+#include "handlers/install_config_manager.hpp"
+#include "handlers/install_workflow/install_workflow_runner.hpp"
 #include "handlers/login_handler.hpp"
 #include "handlers/update_handler.hpp"
 #include "handlers/updates_polling_handler.hpp"
@@ -121,6 +124,22 @@ public:
             .to<certctrl::CertctrlConfigProviderFile>(),
         di::bind<cjj365::IHttpclientConfigProvider>()
             .to<cjj365::HttpclientConfigProviderFile>(),
+    di::bind<certctrl::InstallConfigManager>().to(
+        [](cjj365::ConfigSources &config_sources,
+           certctrl::ICertctrlConfigProvider &config_provider,
+           customio::ConsoleOutput &output,
+           client_async::HttpClientManager &http_client) {
+          auto runtime_dir = config_sources.paths_.empty()
+                                 ? std::filesystem::path{}
+                                 : config_sources.paths_.back();
+          return certctrl::InstallConfigManager(runtime_dir, config_provider,
+                                                output, &http_client);
+        }).in(di::singleton),
+    di::bind<certctrl::InstallWorkflowRunner>().to(
+        [](std::shared_ptr<certctrl::InstallConfigManager> manager,
+           customio::ConsoleOutput &output) {
+          return certctrl::InstallWorkflowRunner(std::move(manager), output);
+        }).in(di::singleton),
         di::bind<customio::IOutput>().to(output_hub),
         di::bind<certctrl::CliCtx>().to(cli_ctx_),
         // Register all handlers for aggregate injection; DI will convert to

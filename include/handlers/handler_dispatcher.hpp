@@ -14,6 +14,9 @@
 
 namespace certctrl {
 
+// Lifetime: instantiated via DI inside App::start and kept on the stack for
+// the duration of the CLI session. Owns a vector of shared_ptr<IHandler>
+// provided by DI; those handler instances live as long as the dispatcher.
 class HandlerDispatcher {
   customio::IOutput &output_;
   certctrl::CliCtx &cli_ctx_;

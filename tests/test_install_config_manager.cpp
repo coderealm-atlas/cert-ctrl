@@ -1,16 +1,25 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <fmt/format.h>
+#include <boost/asio.hpp>
+#include <boost/json.hpp>
 #include <random>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <optional>
+#include <unordered_map>
 
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
+#include "client_ssl_ctx.hpp"
+#include "http_client_manager.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
+#include "handlers/install_actions/function_adapters.hpp"
 #include "my_error_codes.hpp"
 #include "handlers/install_actions/copy_action.hpp"
 #include "handlers/install_config_manager.hpp"
@@ -19,6 +28,109 @@
 #include "result_monad.hpp"
 
 namespace {
+
+namespace asio = boost::asio;
+namespace json = boost::json;
+
+using certctrl::install_actions::FunctionResourceMaterializer;
+using certctrl::install_actions::IResourceMaterializer;
+
+IResourceMaterializer::Ptr make_noop_materializer() {
+  return std::make_shared<FunctionResourceMaterializer>(
+      [](const dto::InstallItem &)
+          -> monad::IO<void> { return monad::IO<void>::pure(); });
+}
+
+class InlineHttpclientConfigProvider
+    : public cjj365::IHttpclientConfigProvider {
+ public:
+  InlineHttpclientConfigProvider() {
+    json::object config_obj{{"threads_num", 1},
+                            {"ssl_method", "tlsv12_client"},
+                            {"insecure_skip_verify", true},
+                            {"verify_paths", json::array{}},
+                            {"certificates", json::array{}},
+                            {"certificate_files", json::array{}},
+                            {"proxy_pool", json::array{}}};
+    config_ = json::value_to<cjj365::HttpclientConfig>(json::value(config_obj));
+  }
+
+  const cjj365::HttpclientConfig &get() const override { return config_; }
+
+ private:
+  cjj365::HttpclientConfig config_;
+};
+
+class FailingCaServer {
+ public:
+  FailingCaServer()
+      : acceptor_(ioc_,
+                  asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"),
+                                          0)) {
+    port_ = acceptor_.local_endpoint().port();
+    thread_ = std::thread([this] { run(); });
+  }
+
+  ~FailingCaServer() { stop(); }
+
+  std::string base_url() const {
+    return fmt::format("http://127.0.0.1:{}", port_);
+  }
+
+  void stop() {
+    bool expected = false;
+    if (!stopped_.compare_exchange_strong(expected, true)) {
+      return;
+    }
+    boost::system::error_code ec;
+    acceptor_.close(ec);
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+ private:
+  void run() {
+    while (!stopped_.load()) {
+      boost::system::error_code ec;
+      asio::ip::tcp::socket socket(ioc_);
+      acceptor_.accept(socket, ec);
+      if (ec) {
+        if (stopped_.load()) {
+          break;
+        }
+        continue;
+      }
+      handle_connection(std::move(socket));
+    }
+  }
+
+  void handle_connection(asio::ip::tcp::socket socket) {
+    try {
+      boost::system::error_code ec;
+      boost::asio::streambuf request;
+      boost::asio::read_until(socket, request, "\r\n\r\n", ec);
+      const std::string response =
+          "HTTP/1.1 500 Internal Server Error\r\n"
+          "Content-Type: text/plain\r\n"
+          "Content-Length: 14\r\n"
+          "Connection: close\r\n"
+          "\r\n"
+          "bad allocation";
+      boost::asio::write(socket, boost::asio::buffer(response), ec);
+      socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+      socket.close(ec);
+    } catch (...) {
+      // Ignore socket errors during teardown.
+    }
+  }
+
+  asio::io_context ioc_;
+  asio::ip::tcp::acceptor acceptor_;
+  std::thread thread_;
+  std::atomic<bool> stopped_{false};
+  std::uint16_t port_{0};
+};
 
 class StubConfigProvider : public certctrl::ICertctrlConfigProvider {
  public:
@@ -257,14 +369,11 @@ TEST(InstallConfigManagerTest, CopyActionsAggregateFailures) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  certctrl::install_actions::InstallActionContext context{
-      runtime_dir,
-      output,
-      [](const dto::InstallItem &) { return std::nullopt; }};
-
   bool callback_invoked = false;
-  certctrl::install_actions::apply_copy_actions(context, config, std::nullopt,
-                                               std::nullopt)
+  auto materializer = make_noop_materializer();
+  certctrl::install_actions::CopyActionHandler handler(
+      runtime_dir, output, materializer);
+  handler.apply(config, std::nullopt, std::nullopt)
       .run([&](auto result) {
         callback_invoked = true;
         ASSERT_TRUE(result.is_err())
@@ -303,13 +412,6 @@ TEST(ImportCaActionTest, CopiesCaIntoOverrideDirectory) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  certctrl::install_actions::InstallActionContext context{
-      runtime_dir,
-      output,
-      [](const dto::InstallItem &) -> std::optional<monad::Error> {
-        return std::nullopt;
-      }};
-
   auto trust_dir = runtime_dir / "trust-anchors";
   ScopedEnvVar dir_env("CERTCTRL_CA_IMPORT_DIR", trust_dir.string());
 #if defined(_WIN32)
@@ -318,9 +420,10 @@ TEST(ImportCaActionTest, CopiesCaIntoOverrideDirectory) {
   ScopedEnvVar cmd_env("CERTCTRL_CA_UPDATE_COMMAND", "true");
 #endif
 
-  certctrl::install_actions::apply_import_ca_actions(context, config,
-                                                     std::nullopt,
-                                                     std::nullopt)
+  auto materializer = make_noop_materializer();
+  certctrl::install_actions::ImportCaActionHandler handler(
+      runtime_dir, output, materializer);
+  handler.apply(config, std::nullopt, std::nullopt)
       .run([&](auto result) {
         if (!result.is_ok()) {
           auto err = result.error();
@@ -332,6 +435,76 @@ TEST(ImportCaActionTest, CopiesCaIntoOverrideDirectory) {
   ASSERT_TRUE(std::filesystem::exists(expected));
   EXPECT_EQ(read_file(expected), "CA-PEM-DATA\n");
 
+  std::filesystem::remove_all(runtime_dir);
+}
+
+TEST(InstallConfigManagerTest, FailsCaImportWhenServerReturns500) {
+  auto runtime_dir = make_temp_runtime_dir();
+
+  FailingCaServer server;
+
+  StubConfigProvider provider;
+  provider.config_.runtime_dir = runtime_dir;
+  provider.config_.base_url = server.base_url();
+
+  InlineHttpclientConfigProvider http_config_provider;
+  cjj365::ClientSSLContext ssl_ctx(http_config_provider);
+  client_async::HttpClientManager http_manager(ssl_ctx, http_config_provider);
+
+  customio::ConsoleOutputWithColor sink(5);
+  customio::ConsoleOutput output(sink);
+
+  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
+                                         &http_manager);
+
+  std::filesystem::create_directories(runtime_dir / "state");
+  write_file(runtime_dir / "state" / "access_token.txt",
+             "test-access-token");
+
+  dto::DeviceInstallConfigDto config{};
+  dto::InstallItem ca_item{};
+  ca_item.id = "ca-fetch";
+  ca_item.type = "import_ca";
+  ca_item.ob_type = std::string{"ca"};
+  ca_item.ob_id = static_cast<std::int64_t>(99);
+  ca_item.ob_name = std::string{"Failing CA"};
+  ca_item.from = std::vector<std::string>{"ca.pem"};
+  config.installs.push_back(ca_item);
+
+  ScopedEnvVar dir_env("CERTCTRL_CA_IMPORT_DIR",
+                       (runtime_dir / "trust-anchors").string());
+#if defined(_WIN32)
+  ScopedEnvVar cmd_env("CERTCTRL_CA_UPDATE_COMMAND", "exit 0");
+#else
+  ScopedEnvVar cmd_env("CERTCTRL_CA_UPDATE_COMMAND", "true");
+#endif
+  std::filesystem::create_directories(runtime_dir / "trust-anchors");
+
+  bool callback_invoked = false;
+  monad::Error observed_error{};
+  manager.apply_import_ca_actions(config, std::nullopt, std::nullopt)
+      .run([&](auto result) {
+        callback_invoked = true;
+        ASSERT_TRUE(result.is_err())
+            << "Expected CA import to fail when server returns 500";
+        observed_error = result.error();
+      });
+
+  ASSERT_TRUE(callback_invoked);
+  EXPECT_EQ(observed_error.code, my_errors::NETWORK::READ_ERROR);
+  EXPECT_EQ(observed_error.response_status, 500);
+  auto *preview_field = observed_error.params.if_contains("response_body_preview");
+  ASSERT_NE(preview_field, nullptr);
+  ASSERT_TRUE(preview_field->is_string());
+  std::string preview = preview_field->as_string().c_str();
+  EXPECT_NE(preview.find("bad allocation"), std::string::npos);
+
+  auto ca_root = runtime_dir / "resources" / "cas" /
+                 std::to_string(*ca_item.ob_id) / "current";
+  EXPECT_FALSE(std::filesystem::exists(ca_root / "ca.pem"));
+
+  http_manager.stop();
+  server.stop();
   std::filesystem::remove_all(runtime_dir);
 }
 

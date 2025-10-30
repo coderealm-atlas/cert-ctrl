@@ -2,8 +2,10 @@
 
 #include <boost/json.hpp>
 #include <cctype>
+#include <iostream>
 #include <optional>
 #include <string>
+#include <type_traits>
 
 #include "api_response_result.hpp"
 #include "data/data_shape.hpp"
@@ -29,6 +31,38 @@ using LoginResponse = apihandler::ApiDataResponse<data::LoginSuccess>;
 using LoginResponseResult = apihandler::ApiResponseResult<data::LoginSuccess>;
 using loginSuccessResult = monad::MyResult<data::LoginSuccess>;
 using LoginSuccessIO = monad::IO<data::LoginSuccess>;
+
+inline std::string make_body_preview(const std::string &body,
+                                     std::size_t max_len = 512) {
+  if (body.size() <= max_len) {
+    return body;
+  }
+  std::string preview = body.substr(0, max_len);
+  preview.append("...");
+  return preview;
+}
+
+template <typename ExchangePtr>
+inline void log_http_response(const char *tag, const ExchangePtr &ex) {
+  if (!ex) {
+    std::cout << "[" << tag << "] exchange unavailable" << std::endl;
+    return;
+  }
+  if (ex->response.has_value()) {
+    const auto &res = *ex->response;
+    using BodyType = std::decay_t<decltype(res.body())>;
+    std::string preview;
+    if constexpr (std::is_same_v<BodyType, std::string>) {
+      preview = make_body_preview(res.body());
+    } else {
+      preview = "<non-string-body>";
+    }
+    std::cout << "[" << tag << "] status=" << res.result_int()
+              << " body_preview=" << preview << std::endl;
+  } else {
+    std::cout << "[" << tag << "] no HTTP response received" << std::endl;
+  }
+}
 
 inline std::optional<std::string> read_trimmed_env(const char *key) {
   if (const char *envv = std::getenv(key); envv && *envv) {
@@ -101,15 +135,18 @@ inline LoginSuccessIO login_io(client_async::HttpClientManager &mgr,
   std::string login_url =
       base_url + "/auth/general"; // unified multi-action endpoint
   return http_io<PostJsonTag>(login_url)
-      .map([email, password](auto ex) {
+      .map([email, password, login_url](auto ex) {
         json::object body{
             {"action", "login"}, {"email", email}, {"password", password}};
+        std::cout << "[login_io] POST " << login_url
+                  << " body=" << json::serialize(body) << std::endl;
         ex->setRequestJsonBody(std::move(body));
         ex->request.set(http::field::accept, "application/json");
         return ex;
       })
       .then(http_request_io<PostJsonTag>(mgr))
       .then([&](auto ex) {
+        log_http_response("login_io", ex);
         // Get the cookie value and construct the full cookie string
         auto cookie_value = ex->getResponseCookie().value_or("");
         auto auth_cookie = cookie_value.empty() ? std::string{} 

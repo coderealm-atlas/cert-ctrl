@@ -22,6 +22,11 @@ class HttpClientManager;
 
 namespace certctrl {
 
+// Lifetime: constructed per CLI session (via DI vector of handlers).
+// Owned by HandlerDispatcher for the duration of command processing.
+// Holds a shared_ptr InstallConfigManager created at construction time and
+// reused across user operations on this handler instance.
+
 class InstallConfigHandler : public IHandler {
 private:
   certctrl::CliCtx &cli_ctx_;
@@ -30,6 +35,10 @@ private:
   client_async::HttpClientManager &http_client_;
   certctrl::ICertctrlConfigProvider &config_provider_;
   std::shared_ptr<InstallConfigManager> install_config_manager_;
+
+  ~InstallConfigHandler() {
+    DEBUG_PRINT("DEBUG_PRINT: InstallConfigHandler destroyed");
+  }
 
   struct PullOptions {
     bool no_apply{false};
@@ -54,8 +63,15 @@ private:
     std::shared_ptr<const dto::DeviceInstallConfigDto> config,
     const PullOptions &options);
 
+  monad::IO<void> run_copy_stage();
+  monad::IO<void> run_import_stage();
+  void clear_active_context();
+
   monad::IO<void> show_usage(const std::string &error) const;
   monad::IO<void> show_usage() const;
+
+  std::shared_ptr<const dto::DeviceInstallConfigDto> active_config_;
+  std::optional<PullOptions> active_options_;
 
 public:
   InstallConfigHandler(cjj365::ConfigSources &config_sources,

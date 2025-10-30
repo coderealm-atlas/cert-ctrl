@@ -1,17 +1,38 @@
 #pragma once
 
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
-#include "util/my_logging.hpp"
 
-#include "handlers/install_actions/install_action_context.hpp"
+#include "customio/console_output.hpp"
+#include "data/install_config_dto.hpp"
+#include "handlers/install_actions/resource_materializer.hpp"
+#include "io_monad.hpp"
 
 namespace certctrl::install_actions {
 
-monad::IO<void> apply_copy_actions(
-    const InstallActionContext &context,
-    const dto::DeviceInstallConfigDto &config,
-    const std::optional<std::string> &target_ob_type,
-    std::optional<std::int64_t> target_ob_id);
+// Lifetime: short-lived helper created per invocation of
+// InstallConfigManager::apply_copy_actions. No shared ownership; safe to stack
+// allocate and discard after the IO pipeline resolves.
+class CopyActionHandler {
+public:
+    using Factory = std::function<std::unique_ptr<CopyActionHandler>()>;
+
+    CopyActionHandler(std::filesystem::path runtime_dir,
+                      customio::ConsoleOutput &output,
+                      IResourceMaterializer::Ptr resource_materializer);
+
+    monad::IO<void> apply(const dto::DeviceInstallConfigDto &config,
+                          const std::optional<std::string> &target_ob_type,
+                          std::optional<std::int64_t> target_ob_id);
+
+private:
+    std::filesystem::path runtime_dir_;
+    customio::ConsoleOutput &output_;
+    IResourceMaterializer::Ptr resource_materializer_;
+};
 
 } // namespace certctrl::install_actions

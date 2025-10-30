@@ -7,6 +7,13 @@
 
 namespace certctrl {
 
+// IHandlerFactory
+struct IHandlerFactory {
+  virtual ~IHandlerFactory() = default;
+  // Create a new instance of the handler
+  virtual std::shared_ptr<class IHandler> create() = 0;
+};
+
 // Minimal common contract for subcommand handlers
 struct IHandler {
   virtual ~IHandler() = default;
