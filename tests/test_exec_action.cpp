@@ -4,6 +4,9 @@
 #include "data/install_config_dto.hpp"
 #include "handlers/install_actions/exec_action.hpp"
 #include "handlers/install_actions/function_adapters.hpp"
+#include "conf/certctrl_config.hpp"
+#include "result_monad.hpp"
+#include <boost/json.hpp>
 
 #include <sstream>
 #include <cstdlib>
@@ -37,17 +40,46 @@ IExecEnvironmentResolver::Ptr make_env_resolver(
   return std::make_shared<FunctionExecEnvironmentResolver>(std::move(fn));
 }
 
-ExecActionHandler make_handler(
+struct TestConfigProvider : certctrl::ICertctrlConfigProvider {
+  explicit TestConfigProvider(std::filesystem::path runtime_dir) {
+    config.runtime_dir = std::move(runtime_dir);
+  }
+
+  const certctrl::CertctrlConfig &get() const override { return config; }
+  certctrl::CertctrlConfig &get() override { return config; }
+
+  monad::MyVoidResult save(const boost::json::object &) override {
+    return monad::MyVoidResult::Ok();
+  }
+
+  certctrl::CertctrlConfig config;
+};
+
+struct HandlerContext {
+  std::shared_ptr<TestConfigProvider> provider;
+  std::shared_ptr<ExecActionHandler> handler;
+};
+
+HandlerContext make_handler(
     customio::ConsoleOutput &cout,
     const std::filesystem::path &runtime_dir =
         std::filesystem::current_path(),
-    IResourceMaterializer::Ptr materializer = {},
-    IExecEnvironmentResolver::Ptr resolver = {}) {
-  if (!materializer) {
-    materializer = make_default_materializer();
+    IResourceMaterializer::Factory materializer_factory = {},
+    IExecEnvironmentResolver::Factory resolver_factory = {}) {
+  if (!materializer_factory) {
+    materializer_factory = []() {
+      return make_default_materializer();
+    };
   }
-  return ExecActionHandler(runtime_dir, cout, std::move(materializer),
-                           std::move(resolver));
+  if (!resolver_factory) {
+    resolver_factory = []() { return IExecEnvironmentResolver::Ptr{}; };
+  }
+
+  auto provider = std::make_shared<TestConfigProvider>(runtime_dir);
+  auto handler = std::make_shared<ExecActionHandler>(
+      *provider, cout, materializer_factory, resolver_factory);
+  handler->customize(runtime_dir, materializer_factory, resolver_factory);
+  return HandlerContext{std::move(provider), std::move(handler)};
 }
 
 } // namespace
@@ -99,8 +131,8 @@ TEST(ExecActionTest, RunsShellCmdAndCapturesSuccess) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto ctx = make_handler(cout);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -122,8 +154,8 @@ TEST(ExecActionTest, TimesOutOnLongSleep) {
   it.timeout_ms = 1000; // 1s
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto ctx = make_handler(cout);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_FALSE(result.is_ok());
   });
 }
@@ -141,8 +173,8 @@ TEST(ExecActionTest, ZeroTimeoutFallsBackToDefault) {
   it.timeout_ms = 0;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto ctx = make_handler(cout);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -166,8 +198,8 @@ TEST(ExecActionTest, RunsCmdArgvDirectly) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto ctx = make_handler(cout);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -199,9 +231,13 @@ TEST(ExecActionTest, SuppliesAdditionalEnvironmentFromContext) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout, std::filesystem::current_path(),
-                              make_default_materializer(), resolver);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto materializer_factory = [materializer = make_default_materializer()]() {
+    return materializer;
+  };
+  auto resolver_factory = [resolver]() { return resolver; };
+  auto ctx = make_handler(cout, std::filesystem::current_path(),
+                          materializer_factory, resolver_factory);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     ASSERT_TRUE(result.is_ok());
   });
 }
@@ -232,9 +268,13 @@ TEST(ExecActionTest, MergesItemEnvWithContextEnv) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout, std::filesystem::current_path(),
-                              make_default_materializer(), resolver);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto materializer_factory = [materializer = make_default_materializer()]() {
+    return materializer;
+  };
+  auto resolver_factory = [resolver]() { return resolver; };
+  auto ctx = make_handler(cout, std::filesystem::current_path(),
+                          materializer_factory, resolver_factory);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     ASSERT_TRUE(result.is_ok());
   });
 }
@@ -278,8 +318,8 @@ TEST(ExecActionTest, RunsMultipleCommandsFromSingleShellLine) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout, temp_dir);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto ctx = make_handler(cout, temp_dir);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     ASSERT_TRUE(result.is_ok());
   });
 
@@ -321,8 +361,8 @@ TEST(ExecActionTest, WindowsShellCmdRunsUnderCmdExe) {
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto ctx = make_handler(cout);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -344,8 +384,8 @@ TEST(ExecActionTest, WindowsPwshCmdArgvRunsWhenAvailable) {
   it.timeout_ms = 5000;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto ctx = make_handler(cout);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -370,8 +410,8 @@ TEST(ExecActionTest, WindowsPowerShellCmdArgvRunsWhenAvailable) {
   it.timeout_ms = 10000;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto ctx = make_handler(cout);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     EXPECT_TRUE(result.is_ok());
   });
 }
@@ -402,9 +442,13 @@ TEST(ExecActionTest, WindowsMergesItemEnvWithContextEnv) {
   it.timeout_ms = 4000;
   cfg.installs.push_back(it);
 
-  auto handler = make_handler(cout, std::filesystem::current_path(),
-                              make_default_materializer(), resolver);
-  handler.apply(cfg, std::nullopt).run([&](auto result) {
+  auto materializer_factory = [materializer = make_default_materializer()]() {
+    return materializer;
+  };
+  auto resolver_factory = [resolver]() { return resolver; };
+  auto ctx = make_handler(cout, std::filesystem::current_path(),
+                          materializer_factory, resolver_factory);
+  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
     ASSERT_TRUE(result.is_ok());
   });
 }

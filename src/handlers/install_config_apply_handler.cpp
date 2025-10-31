@@ -8,13 +8,13 @@
 namespace certctrl {
 
 InstallConfigApplyHandler::InstallConfigApplyHandler(
-    cjj365::ConfigSources &config_sources, certctrl::CliCtx &cli_ctx,
-    customio::ConsoleOutput &output,
-    client_async::HttpClientManager &http_client,
-    certctrl::ICertctrlConfigProvider &config_provider,
-    std::shared_ptr<InstallWorkflowRunner> workflow_runner)
-    : cli_ctx_(cli_ctx), output_(output),
-      config_provider_(config_provider),
+    cjj365::ConfigSources &config_sources,              //
+    certctrl::CliCtx &cli_ctx,                          //
+    customio::ConsoleOutput &output,                    //
+    client_async::HttpClientManager &http_client,       //
+    certctrl::ICertctrlConfigProvider &config_provider, //
+    std::unique_ptr<InstallWorkflowRunner> workflow_runner)
+    : cli_ctx_(cli_ctx), output_(output), config_provider_(config_provider),
       workflow_runner_(std::move(workflow_runner)) {
   (void)config_sources;
   (void)http_client;

@@ -1,7 +1,7 @@
 #include "handlers/install_actions/import_ca_action.hpp"
 
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fmt/format.h>
@@ -12,19 +12,40 @@
 #include <system_error>
 #include <utility>
 
-#include "util/my_logging.hpp"
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
+#include "util/my_logging.hpp"
 
 namespace certctrl::install_actions {
 
 ImportCaActionHandler::ImportCaActionHandler(
-    std::filesystem::path runtime_dir,
+    certctrl::ICertctrlConfigProvider &config_provider,
     customio::ConsoleOutput &output,
-    IResourceMaterializer::Ptr resource_materializer)
-    : runtime_dir_(std::move(runtime_dir)),
-      output_(output),
-      resource_materializer_(std::move(resource_materializer)) {}
+    install_actions::IResourceMaterializer::Factory
+        resource_materializer_factory)
+    : config_provider_(config_provider), output_(output),
+      runtime_dir_(config_provider.get().runtime_dir),
+      resource_materializer_factory_(std::move(resource_materializer_factory)) {
+}
+
+void ImportCaActionHandler::customize(
+    std::filesystem::path runtime_dir,
+    install_actions::IResourceMaterializer::Factory
+        resource_materializer_factory) {
+  runtime_dir_ = runtime_dir.empty() ? config_provider_.get().runtime_dir
+                                     : std::move(runtime_dir);
+  if (resource_materializer_factory) {
+    resource_materializer_factory_ = std::move(resource_materializer_factory);
+  }
+}
+
+// install_actions::IResourceMaterializer::Ptr
+// ImportCaActionHandler::make_resource_materializer() const {
+//   if (resource_materializer_factory_) {
+//     return resource_materializer_factory_();
+//   }
+//   return nullptr;
+// }
 
 namespace {
 
@@ -92,13 +113,13 @@ std::string generate_temp_suffix() {
   return fmt::format("{}.{}", now, random_part);
 }
 
-std::optional<std::string> copy_ca_material(
-    const std::filesystem::path &source,
-    const std::filesystem::path &destination) {
+std::optional<std::string>
+copy_ca_material(const std::filesystem::path &source,
+                 const std::filesystem::path &destination) {
   try {
     BOOST_LOG_SEV(app_logger(), trivial::trace)
-        << "copy_ca_material start source='" << source
-        << "' destination='" << destination << "'";
+        << "copy_ca_material start source='" << source << "' destination='"
+        << destination << "'";
     if (!std::filesystem::exists(source)) {
       BOOST_LOG_SEV(app_logger(), trivial::error)
           << "copy_ca_material missing source: " << source;
@@ -118,8 +139,8 @@ std::optional<std::string> copy_ca_material(
     temp_dest += ".tmp-";
     temp_dest += generate_temp_suffix();
 
-    std::filesystem::copy_file(source, temp_dest,
-                               std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(
+        source, temp_dest, std::filesystem::copy_options::overwrite_existing);
 
 #ifndef _WIN32
     std::filesystem::permissions(temp_dest, desired_public_permissions(),
@@ -142,8 +163,8 @@ std::optional<std::string> copy_ca_material(
 #endif
 
     BOOST_LOG_SEV(app_logger(), trivial::trace)
-        << "copy_ca_material finished source='" << source
-        << "' destination='" << destination << "'";
+        << "copy_ca_material finished source='" << source << "' destination='"
+        << destination << "'";
     return std::nullopt;
   } catch (const std::exception &ex) {
     BOOST_LOG_SEV(app_logger(), trivial::error)
@@ -209,8 +230,9 @@ std::optional<TrustStoreTarget> detect_system_trust_store() {
   return std::nullopt;
 }
 
-std::filesystem::path resource_root_for(const std::filesystem::path &runtime_dir,
-                                        const dto::InstallItem &item) {
+std::filesystem::path
+resource_root_for(const std::filesystem::path &runtime_dir,
+                  const dto::InstallItem &item) {
   std::filesystem::path root = runtime_dir / "resources";
   if (item.ob_type && *item.ob_type == "ca" && item.ob_id) {
     root /= "cas";
@@ -236,22 +258,24 @@ bool should_skip_item(const dto::InstallItem &item,
   return false;
 }
 
-void log_warning(customio::ConsoleOutput &output,
-         const dto::InstallItem &item, std::string_view message) {
+void log_warning(customio::ConsoleOutput &output, const dto::InstallItem &item,
+                 std::string_view message) {
   output.logger().warning()
-    << "import_ca item '" << item.id << "': " << message << std::endl;
+      << "import_ca item '" << item.id << "': " << message << std::endl;
 }
 
 } // namespace
 
-monad::IO<void> ImportCaActionHandler::apply(
-    const dto::DeviceInstallConfigDto &config,
-    const std::optional<std::string> &target_ob_type,
-    std::optional<std::int64_t> target_ob_id) {
+monad::IO<void>
+ImportCaActionHandler::apply(const dto::DeviceInstallConfigDto &config,
+                             const std::optional<std::string> &target_ob_type,
+                             std::optional<std::int64_t> target_ob_id) {
   using ReturnIO = monad::IO<void>;
+  auto self = shared_from_this();
 
   try {
-    if (!resource_materializer_) {
+    auto resource_materializer = resource_materializer_factory_();
+    if (!resource_materializer) {
       return ReturnIO::fail(monad::make_error(
           my_errors::GENERAL::INVALID_ARGUMENT,
           "ImportCaActionHandler missing resource materializer"));
@@ -260,8 +284,9 @@ monad::IO<void> ImportCaActionHandler::apply(
     auto processed_any = std::make_shared<bool>(false);
     auto target_ob_type_copy = target_ob_type;
 
-    auto process_item = [this, processed_any, target_ob_type_copy,
-                         target_ob_id](const dto::InstallItem &item) -> ReturnIO {
+    auto process_item =
+        [self, processed_any, target_ob_type_copy, target_ob_id,
+         resource_materializer](const dto::InstallItem &item) -> ReturnIO {
       if (item.type != "import_ca") {
         return ReturnIO::pure();
       }
@@ -275,11 +300,11 @@ monad::IO<void> ImportCaActionHandler::apply(
       }
 
       if (!item.ob_type || *item.ob_type != "ca" || !item.ob_id) {
-        auto err = monad::make_error(
-            my_errors::GENERAL::INVALID_ARGUMENT,
-            "import_ca item requires ob_type 'ca' and ob_id");
+        auto err =
+            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                              "import_ca item requires ob_type 'ca' and ob_id");
         if (item.continue_on_error) {
-          log_warning(output_, item, err.what);
+          log_warning(self->output_, item, err.what);
           return ReturnIO::pure();
         }
         return ReturnIO::fail(std::move(err));
@@ -289,9 +314,10 @@ monad::IO<void> ImportCaActionHandler::apply(
       if (!trust_store) {
         auto err = monad::make_error(
             my_errors::GENERAL::NOT_IMPLEMENTED,
-            "unable to locate a supported trust store directory; set CERTCTRL_CA_IMPORT_DIR to override");
+            "unable to locate a supported trust store directory; set "
+            "CERTCTRL_CA_IMPORT_DIR to override");
         if (item.continue_on_error) {
-          log_warning(output_, item, err.what);
+          log_warning(self->output_, item, err.what);
           return ReturnIO::pure();
         }
         return ReturnIO::fail(std::move(err));
@@ -299,23 +325,23 @@ monad::IO<void> ImportCaActionHandler::apply(
 
       auto trust = *trust_store;
 
-    BOOST_LOG_SEV(app_logger(), trivial::trace)
-      << "import_ca item '" << item.id
-      << "' resolved trust store target dir='" << trust.directory
-      << "' update_cmd='" << trust.update_command << "'";
-
-    return resource_materializer_->ensure_materialized(item)
-      .then([this, item, trust]() -> ReturnIO {
       BOOST_LOG_SEV(app_logger(), trivial::trace)
-        << "import_ca item '" << item.id
-        << "' resource materialization complete";
-            auto resource_root = resource_root_for(runtime_dir_, item);
+          << "import_ca item '" << item.id
+          << "' resolved trust store target dir='" << trust.directory
+          << "' update_cmd='" << trust.update_command << "'";
+
+      return resource_materializer->ensure_materialized(item)
+          .then([self, item, trust]() -> ReturnIO {
+            BOOST_LOG_SEV(app_logger(), trivial::trace)
+                << "import_ca item '" << item.id
+                << "' resource materialization complete";
+            auto resource_root = resource_root_for(self->runtime_dir_, item);
             if (resource_root.empty()) {
-              auto err = monad::make_error(
-                  my_errors::GENERAL::INVALID_ARGUMENT,
-                  "unable to resolve resource root for CA");
+              auto err =
+                  monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                                    "unable to resolve resource root for CA");
               if (item.continue_on_error) {
-                log_warning(output_, item, err.what);
+                log_warning(self->output_, item, err.what);
                 return ReturnIO::pure();
               }
               return ReturnIO::fail(std::move(err));
@@ -323,12 +349,12 @@ monad::IO<void> ImportCaActionHandler::apply(
 
             auto ca_pem_path = resource_root / "ca.pem";
             if (!std::filesystem::exists(ca_pem_path)) {
-              auto err = monad::make_error(
-                  my_errors::GENERAL::FILE_NOT_FOUND,
-                  fmt::format("expected CA PEM missing: {}",
-                              ca_pem_path.string()));
+              auto err =
+                  monad::make_error(my_errors::GENERAL::FILE_NOT_FOUND,
+                                    fmt::format("expected CA PEM missing: {}",
+                                                ca_pem_path.string()));
               if (item.continue_on_error) {
-                log_warning(output_, item, err.what);
+                log_warning(self->output_, item, err.what);
                 return ReturnIO::pure();
               }
               return ReturnIO::fail(std::move(err));
@@ -339,25 +365,25 @@ monad::IO<void> ImportCaActionHandler::apply(
             auto destination = trust.directory / (sanitized + ".crt");
 
             BOOST_LOG_SEV(app_logger(), trivial::trace)
-                << "import_ca item '" << item.id << "' copying '"
-                << ca_pem_path << "' to '" << destination << "'";
+                << "import_ca item '" << item.id << "' copying '" << ca_pem_path
+                << "' to '" << destination << "'";
 
             if (auto err = copy_ca_material(ca_pem_path, destination)) {
-              auto error_obj = monad::make_error(
-                  my_errors::GENERAL::FILE_READ_WRITE, *err);
+              auto error_obj =
+                  monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, *err);
               BOOST_LOG_SEV(app_logger(), trivial::error)
                   << "import_ca item '" << item.id
                   << "' copy_ca_material failed: " << *err;
               if (item.continue_on_error) {
-                log_warning(output_, item, error_obj.what);
+                log_warning(self->output_, item, error_obj.what);
                 return ReturnIO::pure();
               }
               return ReturnIO::fail(std::move(error_obj));
             }
 
-            output_.logger().info()
-                << "Imported CA '" << sanitized << "' into "
-                << trust.directory << std::endl;
+            self->output_.logger().info()
+                << "Imported CA '" << sanitized << "' into " << trust.directory
+                << std::endl;
 
             BOOST_LOG_SEV(app_logger(), trivial::trace)
                 << "import_ca item '" << item.id
@@ -366,8 +392,7 @@ monad::IO<void> ImportCaActionHandler::apply(
             if (!trust.update_command.empty()) {
               BOOST_LOG_SEV(app_logger(), trivial::trace)
                   << "import_ca item '" << item.id
-                  << "' executing update command: "
-                  << trust.update_command;
+                  << "' executing update command: " << trust.update_command;
               int rc = std::system(trust.update_command.c_str());
               if (rc != 0) {
                 auto err = monad::make_error(
@@ -378,7 +403,7 @@ monad::IO<void> ImportCaActionHandler::apply(
                     << "import_ca item '" << item.id
                     << "' update command failed rc=" << rc;
                 if (item.continue_on_error) {
-                  log_warning(output_, item, err.what);
+                  log_warning(self->output_, item, err.what);
                   return ReturnIO::pure();
                 }
                 return ReturnIO::fail(std::move(err));
@@ -390,12 +415,12 @@ monad::IO<void> ImportCaActionHandler::apply(
 
             return ReturnIO::pure();
           })
-          .catch_then([this, item](monad::Error err) -> ReturnIO {
+          .catch_then([self, item](monad::Error err) -> ReturnIO {
             BOOST_LOG_SEV(app_logger(), trivial::error)
                 << "import_ca item '" << item.id
                 << "' caught error: " << err.what;
             if (item.continue_on_error) {
-              log_warning(output_, item, err.what);
+              log_warning(self->output_, item, err.what);
               return ReturnIO::pure();
             }
             return ReturnIO::fail(std::move(err));

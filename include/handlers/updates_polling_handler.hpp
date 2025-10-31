@@ -136,8 +136,8 @@ public:
     auto runtime_dir = config_sources_.paths_.back();
     signal_dispatcher_ = std::make_unique<SignalDispatcher>(runtime_dir);
 
-    install_config_manager_ = std::make_shared<InstallConfigManager>(
-        runtime_dir, certctrl_config_provider_, output_hub_, &http_client_);
+    // install_config_manager_ = std::make_shared<InstallConfigManager>(
+    //     runtime_dir, certctrl_config_provider_, output_hub_, &http_client_);
 
     // Register signal handlers
     signal_dispatcher_->register_handler(

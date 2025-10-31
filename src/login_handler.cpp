@@ -6,18 +6,18 @@
 #include "util/device_fingerprint.hpp"
 #include "util/user_key_crypto.hpp"
 #include "version.h"
+#include <algorithm>
 #include <boost/asio/ip/udp.hpp>
 #include <boost/log/trivial.hpp>
-#include <boost/url.hpp>
 #include <boost/system/error_code.hpp>
+#include <boost/url.hpp>
 #include <chrono>
-#include <algorithm>
-#include <fmt/format.h>
+#include <exception>
 #include <filesystem>
+#include <fmt/format.h>
 #include <fstream>
 #include <iterator>
 #include <jwt-cpp/jwt.h>
-#include <exception>
 #ifndef _WIN32
 #include <sys/stat.h>
 #endif
@@ -177,9 +177,9 @@ LoginHandler::refresh_session_with_token(const std::string &refresh_token,
   auto payload_obj = std::make_shared<boost::json::object>(
       boost::json::object{{"refresh_token", refresh_token}});
 
-  auto write_text_0600 = [](const std::filesystem::path &p,
-                            const std::string &text)
-      -> std::optional<std::string> {
+  auto write_text_0600 =
+      [](const std::filesystem::path &p,
+         const std::string &text) -> std::optional<std::string> {
     try {
       std::error_code ec;
       if (auto parent = p.parent_path(); !parent.empty()) {
@@ -211,20 +211,19 @@ LoginHandler::refresh_session_with_token(const std::string &refresh_token,
         return ex;
       })
       .then(http_request_io<PostJsonTag>(http_client_))
-      .then([this, out_dir, refresh_url,
-             write_text_0600](auto ex) -> IO<bool> {
+      .then([this, out_dir, refresh_url, write_text_0600](auto ex) -> IO<bool> {
         if (!ex->is_2xx()) {
           std::string error_msg =
               std::string("Refresh token request failed via ") + refresh_url;
           if (ex->response) {
-            error_msg += " (HTTP " +
-                         std::to_string(ex->response->result_int()) + ")";
+            error_msg +=
+                " (HTTP " + std::to_string(ex->response->result_int()) + ")";
             if (!ex->response->body().empty()) {
               error_msg += ": " + std::string(ex->response->body());
             }
           }
-          const int status = static_cast<int>(
-              ex->response ? ex->response->result_int() : 500);
+          const int status =
+              static_cast<int>(ex->response ? ex->response->result_int() : 500);
           return IO<bool>::fail(
               monad::make_error(status, std::move(error_msg)));
         }
@@ -244,9 +243,9 @@ LoginHandler::refresh_session_with_token(const std::string &refresh_token,
           data_ptr = &data->as_object();
         }
 
-        auto get_string = [](const boost::json::object &obj,
-                             std::string_view key)
-            -> std::optional<std::string> {
+        auto get_string =
+            [](const boost::json::object &obj,
+               std::string_view key) -> std::optional<std::string> {
           if (auto *p = obj.if_contains(key); p && p->is_string()) {
             return boost::json::value_to<std::string>(*p);
           }
@@ -286,9 +285,8 @@ LoginHandler::refresh_session_with_token(const std::string &refresh_token,
           output_hub_.logger().warning() << *err << std::endl;
         }
         if (new_expires_in) {
-          output_hub_.printer().yellow()
-              << "Refreshed tokens; expires in " << *new_expires_in << "s"
-              << std::endl;
+          output_hub_.printer().yellow() << "Refreshed tokens; expires in "
+                                         << *new_expires_in << "s" << std::endl;
         } else {
           output_hub_.printer().yellow()
               << "Refreshed device tokens" << std::endl;
@@ -303,19 +301,19 @@ VoidPureIO LoginHandler::start() {
 
   return reuse_existing_session_if_possible().then([this](bool reused) {
     if (reused) {
-      output_hub_.printer().green()
-          << "Existing device session is still valid; skipping device authorization."
-          << std::endl;
+      output_hub_.printer().green() << "Existing device session is still "
+                                       "valid; skipping device authorization."
+                                    << std::endl;
       return VoidPureIO::pure();
     }
 
     return start_device_authorization().then([this](auto start_resp) {
-    output_hub_.printer().yellow()
-        << "Device Authorization started.\n"
-        << "User Code: " << start_resp.user_code << "\n"
-        << "Verification URI: " << start_resp.verification_uri << "\n"
-        << "Verification URI complete: "
-        << start_resp.verification_uri_complete << "\n"
+      output_hub_.printer().yellow()
+          << "Device Authorization started.\n"
+          << "User Code: " << start_resp.user_code << "\n"
+          << "Verification URI: " << start_resp.verification_uri << "\n"
+          << "Verification URI complete: "
+          << start_resp.verification_uri_complete << "\n"
           << "Complete the authorization in your browser." << std::endl;
       return poll();
     });
@@ -328,11 +326,13 @@ LoginHandler::start_device_authorization() {
   using ::data::deviceauth::StartResp;
   auto self = this->shared_from_this();
   return http_io<PostJsonTag>(device_auth_url_)
-      .map([](auto ex) {
+      .map([this](auto ex) {
         json::value body{{"action", "device_start"},
                          {"scopes", json::array{"openid", "profile", "email"}},
                          {"interval", 5},
                          {"expires_in", 900}};
+        output_hub_.logger().trace()
+            << "Starting device authorization with body: " << body << std::endl;
         ex->setRequestJsonBody(std::move(body));
         return ex;
       })
@@ -352,9 +352,9 @@ monad::IO<::data::deviceauth::PollResp> LoginHandler::poll_device_once() {
   using ::data::deviceauth::PollResp;
 
   if (!start_resp_) {
-  return monad::IO<PollResp>::fail(
-    monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-              "Device authorization has not been started"));
+    return monad::IO<PollResp>::fail(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "Device authorization has not been started"));
   }
 
   return http_io<PostJsonTag>(device_auth_url_)
@@ -380,15 +380,16 @@ VoidPureIO LoginHandler::poll() {
   using ::data::deviceauth::PollResp;
 
   if (!start_resp_) {
-    return IO<void>::fail(monad::make_error(
-        my_errors::GENERAL::INVALID_ARGUMENT,
-        "Device authorization has not been started"));
+    return IO<void>::fail(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "Device authorization has not been started"));
   }
 
   const int interval_seconds = std::max(1, start_resp_->interval);
   const auto interval = std::chrono::seconds(interval_seconds);
-  const int base_attempts =
-      start_resp_->expires_in > 0 ? start_resp_->expires_in / interval_seconds : 0;
+  const int base_attempts = start_resp_->expires_in > 0
+                                ? start_resp_->expires_in / interval_seconds
+                                : 0;
   const int max_retries = std::max(2, base_attempts + 1);
 
   auto spinner = std::make_shared<customio::Spinner>(
@@ -422,8 +423,7 @@ VoidPureIO LoginHandler::poll() {
             << "Final Status: " << resp.status << "\n"
             << "Expires In: " << resp.expires_in.value_or(0) << std::endl;
         poll_resp_ = std::move(resp);
-        if (poll_resp_->status == "ready" ||
-            poll_resp_->status == "approved") {
+        if (poll_resp_->status == "ready" || poll_resp_->status == "approved") {
           return register_device();
         }
         return VoidPureIO::pure();
@@ -444,9 +444,9 @@ VoidPureIO LoginHandler::register_device() {
   }
 
   if (!poll_resp_) {
-  return IO<void>::fail(monad::make_error(
-    my_errors::GENERAL::INVALID_ARGUMENT,
-    "Device authorization state unavailable"));
+    return IO<void>::fail(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "Device authorization state unavailable"));
   }
 
   const std::string status = poll_resp_->status;
@@ -456,23 +456,25 @@ VoidPureIO LoginHandler::register_device() {
     return IO<void>::pure();
   }
 
-  const std::string access_token = poll_resp_->access_token.value_or(std::string{});
-  const std::string refresh_token = poll_resp_->refresh_token.value_or(std::string{});
+  const std::string access_token =
+      poll_resp_->access_token.value_or(std::string{});
+  const std::string refresh_token =
+      poll_resp_->refresh_token.value_or(std::string{});
   const std::string registration_code =
       poll_resp_->registration_code.value_or(std::string{});
   const bool have_access_token = !access_token.empty();
   const bool have_registration_code = !registration_code.empty();
 
   if (!have_access_token && !have_registration_code) {
-  return IO<void>::fail(monad::make_error(
-    my_errors::GENERAL::INVALID_ARGUMENT,
-    "Device registration requires access_token or registration_code"));
+    return IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::INVALID_ARGUMENT,
+        "Device registration requires access_token or registration_code"));
   }
 
   if (!poll_resp_->user_id || poll_resp_->user_id->empty()) {
-  return IO<void>::fail(monad::make_error(
-    my_errors::GENERAL::UNEXPECTED_RESULT,
-    "Device authorization poll response missing user_id"));
+    return IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT,
+        "Device authorization poll response missing user_id"));
   }
   const std::string user_id = *poll_resp_->user_id;
 
@@ -491,9 +493,9 @@ VoidPureIO LoginHandler::register_device() {
   try {
     cjj365::cryptutil::sodium_init_or_throw();
   } catch (const std::exception &e) {
-    return IO<void>::fail(monad::make_error(
-        my_errors::GENERAL::UNEXPECTED_RESULT,
-        std::string{"libsodium init failed: "} + e.what()));
+    return IO<void>::fail(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                          std::string{"libsodium init failed: "} + e.what()));
   }
 
   // Determine output directory: last config source path
@@ -619,19 +621,19 @@ VoidPureIO LoginHandler::register_device() {
   }
 
   std::string dev_pk_b64 = base64_encode(
-    box_kp.public_key.data(), box_kp.public_key.size(), /*url=*/false);
-  std::string ip_for_payload = device_ip.empty() ? std::string{"unknown"}
-                         : std::move(device_ip);
+      box_kp.public_key.data(), box_kp.public_key.size(), /*url=*/false);
+  std::string ip_for_payload =
+      device_ip.empty() ? std::string{"unknown"} : std::move(device_ip);
 
-  boost::json::object payload{{"device_public_id", device_public_id},
-                {"platform", info.platform},
-                {"model", info.model},
-                {"app_version", MYAPP_VERSION},
-                {"name", std::string("CLI Device ") +
-                       info.hostname},
-                {"ip", ip_for_payload},
-                {"user_agent", info.user_agent},
-                {"dev_pk", dev_pk_b64}};
+  boost::json::object payload{
+      {"device_public_id", device_public_id},
+      {"platform", info.platform},
+      {"model", info.model},
+      {"app_version", MYAPP_VERSION},
+      {"name", std::string("CLI Device ") + info.hostname},
+      {"ip", ip_for_payload},
+      {"user_agent", info.user_agent},
+      {"dev_pk", dev_pk_b64}};
 
   try {
     auto numeric_user_id = std::stoll(user_id);
@@ -664,22 +666,19 @@ VoidPureIO LoginHandler::register_device() {
         ex->setRequestJsonBody(std::move(payload));
         return ex;
       })
-  .then(http_request_io<PostJsonTag>(http_client_))
-  .then([this, out_dir, write_text_0600](auto ex) mutable {
+      .then(http_request_io<PostJsonTag>(http_client_))
+      .then([this, out_dir, write_text_0600](auto ex) mutable {
         if (!ex->is_2xx()) {
           std::string error_msg = "Device registration failed";
           if (ex->response) {
-            error_msg += " (HTTP " +
-                         std::to_string(ex->response->result_int()) + ")";
+            error_msg +=
+                " (HTTP " + std::to_string(ex->response->result_int()) + ")";
             if (!ex->response->body().empty()) {
               error_msg += ": " + std::string(ex->response->body());
             }
           }
-          return IO<void>::fail(
-                          monad::make_error(
-              static_cast<int>(ex->response
-                                           ? ex->response->result_int()
-                                           : 500),
+          return IO<void>::fail(monad::make_error(
+              static_cast<int>(ex->response ? ex->response->result_int() : 500),
               std::move(error_msg)));
         }
 
@@ -695,17 +694,17 @@ VoidPureIO LoginHandler::register_device() {
           data_ptr = &data->as_object();
         }
 
-        auto get_string = [](const json::object &obj,
-                             std::string_view key)
-            -> std::optional<std::string> {
+        auto get_string =
+            [](const json::object &obj,
+               std::string_view key) -> std::optional<std::string> {
           if (auto *p = obj.if_contains(key); p && p->is_string()) {
             return json::value_to<std::string>(*p);
           }
           return std::nullopt;
         };
 
-        auto get_int = [](const json::object &obj, std::string_view key)
-            -> std::optional<int> {
+        auto get_int = [](const json::object &obj,
+                          std::string_view key) -> std::optional<int> {
           if (auto *p = obj.if_contains(key); p && p->is_number()) {
             return json::value_to<int>(*p);
           }
@@ -730,15 +729,13 @@ VoidPureIO LoginHandler::register_device() {
           const auto &device_obj = device_ptr->as_object();
           if (auto *p = device_obj.if_contains("id")) {
             if (p->is_number()) {
-              device_id_str =
-                  std::to_string(json::value_to<int64_t>(*p));
+              device_id_str = std::to_string(json::value_to<int64_t>(*p));
             } else if (p->is_string()) {
               device_id_str = json::value_to<std::string>(*p);
             }
           }
           if (!device_id_str) {
-            device_id_str =
-                get_string(device_obj, "device_public_id");
+            device_id_str = get_string(device_obj, "device_public_id");
           }
         }
 
@@ -753,8 +750,8 @@ VoidPureIO LoginHandler::register_device() {
         }
         poll_resp_->registration_code.reset();
 
-        auto decode_device_id = [](const std::string &token)
-            -> std::optional<std::string> {
+        auto decode_device_id =
+            [](const std::string &token) -> std::optional<std::string> {
           try {
             auto decoded = jwt::decode(token);
             if (decoded.has_payload_claim("device_id")) {
@@ -777,16 +774,14 @@ VoidPureIO LoginHandler::register_device() {
         if (!out_dir.empty()) {
           const auto state_dir = out_dir / "state";
           if (!effective_access.empty()) {
-            if (auto err =
-                    write_text_0600(state_dir / "access_token.txt",
-                                    effective_access)) {
+            if (auto err = write_text_0600(state_dir / "access_token.txt",
+                                           effective_access)) {
               output_hub_.logger().warning() << *err << std::endl;
             }
           }
           if (!effective_refresh.empty()) {
-            if (auto err =
-                    write_text_0600(state_dir / "refresh_token.txt",
-                                    effective_refresh)) {
+            if (auto err = write_text_0600(state_dir / "refresh_token.txt",
+                                           effective_refresh)) {
               output_hub_.logger().warning() << *err << std::endl;
             }
           }

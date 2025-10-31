@@ -3,16 +3,16 @@
 #include "util/my_logging.hpp"
 #include <boost/algorithm/string/join.hpp>
 #include <chrono>
-#include <filesystem>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <filesystem>
 #include <memory>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
-#include <vector>
 #include <utility>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <errno.h>
@@ -32,14 +32,45 @@
 
 namespace certctrl::install_actions {
 
-ExecActionHandler::ExecActionHandler(std::filesystem::path runtime_dir,
-                   customio::ConsoleOutput &output,
-                   IResourceMaterializer::Ptr resource_materializer,
-                   IExecEnvironmentResolver::Ptr exec_env_resolver)
-  : runtime_dir_(std::move(runtime_dir)),
-  output_(output),
-  resource_materializer_(std::move(resource_materializer)),
-  exec_env_resolver_(std::move(exec_env_resolver)) {}
+ExecActionHandler::ExecActionHandler(
+    certctrl::ICertctrlConfigProvider &config_provider,
+    customio::ConsoleOutput &output,
+    IResourceMaterializer::Factory resource_materializer_factory,
+    IExecEnvironmentResolver::Factory exec_env_resolver_factory)
+    : config_provider_(config_provider), output_(output),
+      runtime_dir_(config_provider.get().runtime_dir),
+      resource_materializer_factory_(std::move(resource_materializer_factory)),
+      exec_env_resolver_factory_(std::move(exec_env_resolver_factory)) {}
+
+void ExecActionHandler::customize(
+    std::filesystem::path runtime_dir,
+    IResourceMaterializer::Factory resource_materializer_factory,
+    IExecEnvironmentResolver::Factory exec_env_resolver_factory) {
+      is_customized_ = true;
+  runtime_dir_ = runtime_dir;
+  if (resource_materializer_factory) {
+    resource_materializer_factory_ = std::move(resource_materializer_factory);
+  }
+  if (exec_env_resolver_factory) {
+    exec_env_resolver_factory_ = std::move(exec_env_resolver_factory);
+  }
+}
+
+// IResourceMaterializer::Ptr
+// ExecActionHandler::make_resource_materializer() const {
+//   if (resource_materializer_factory_) {
+//     return resource_materializer_factory_();
+//   }
+//   return nullptr;
+// }
+
+// IExecEnvironmentResolver::Ptr
+// ExecActionHandler::make_exec_env_resolver() const {
+//   if (exec_env_resolver_factory_) {
+//     return exec_env_resolver_factory_();
+//   }
+//   return nullptr;
+// }
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -309,9 +340,21 @@ run_item_cmd(const dto::InstallItem &item,
 #else
 // Helper: run a single InstallItem cmd/cmd_argv synchronously with timeout.
 // Returns nullopt on success, or an error string on failure.
-static std::optional<std::string> run_item_cmd(
-  const dto::InstallItem &item,
-  const IExecEnvironmentResolver::Ptr &resolver) {
+static std::unordered_map<std::string, std::string>
+resolve_exec_environment(const IExecEnvironmentResolver::Ptr &resolver,
+                         const dto::InstallItem &item) {
+  if (!resolver) {
+    return {};
+  }
+  if (auto result = resolver->resolve(item)) {
+    return std::move(*result);
+  }
+  return {};
+}
+
+static std::optional<std::string>
+run_item_cmd(const dto::InstallItem &item,
+             const IExecEnvironmentResolver::Ptr &resolver) {
   // Determine command form
   std::vector<std::string> argv;
   bool use_shell = false;
@@ -410,7 +453,7 @@ static std::optional<std::string> run_item_cmd(
   int status = 0;
   auto start = std::chrono::steady_clock::now();
   const auto effective_timeout_ms =
-    (item.timeout_ms && *item.timeout_ms > 0) ? *item.timeout_ms : 30000;
+      (item.timeout_ms && *item.timeout_ms > 0) ? *item.timeout_ms : 30000;
   const auto timeout = std::chrono::milliseconds(effective_timeout_ms);
 
   while (true) {
@@ -453,15 +496,21 @@ static std::optional<std::string> run_item_cmd(
 #endif
 
 monad::IO<void> ExecActionHandler::apply(
-  const dto::DeviceInstallConfigDto &config,
-  std::optional<std::vector<std::string>> allowed_types) {
+    const dto::DeviceInstallConfigDto &config,
+    std::optional<std::vector<std::string>> allowed_types) {
   using ReturnIO = monad::IO<void>;
   try {
-    if (!resource_materializer_) {
-      return ReturnIO::fail(monad::make_error(
-          my_errors::GENERAL::INVALID_ARGUMENT,
-          "ExecActionHandler missing resource materializer"));
-    }
+    auto self = shared_from_this();
+    auto resource_materializer = resource_materializer_factory_();
+    //  make_resource_materializer();
+    // if (!resource_materializer) {
+    //   return ReturnIO::fail(
+    //       monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+    //                         "ExecActionHandler missing resource materializer"));
+    // }
+
+    auto exec_env_resolver = exec_env_resolver_factory_();
+    // make_exec_env_resolver();
 
     auto processed_any = std::make_shared<bool>(false);
 
@@ -493,52 +542,53 @@ monad::IO<void> ExecActionHandler::apply(
       }
 
       auto item_copy = item;
-      pipeline = pipeline.then([this, processed_any, item_copy]() mutable {
-        using ReturnIO = monad::IO<void>;
-        *processed_any = true;
+      pipeline =
+          pipeline.then([self, processed_any, item_copy, resource_materializer,
+                         exec_env_resolver]() mutable {
+            using ReturnIO = monad::IO<void>;
+            *processed_any = true;
+            return resource_materializer->ensure_materialized(item_copy)
+                .then([self, resource_materializer, item_copy, exec_env_resolver]() -> ReturnIO {
+                  if (auto err = run_item_cmd(item_copy, exec_env_resolver)) {
+                    if (item_copy.continue_on_error) {
+                      self->output_.logger().warning()
+                          << "exec item '" << item_copy.id
+                          << "' failed: " << *err << std::endl;
+                      return ReturnIO::pure();
+                    }
+                    auto error_obj = monad::make_error(
+                        my_errors::GENERAL::UNEXPECTED_RESULT, *err);
+                    error_obj.params["stage"] = "exec";
+                    return ReturnIO::fail(std::move(error_obj));
+                  }
 
-        return resource_materializer_->ensure_materialized(item_copy)
-            .then([this, item_copy]() -> ReturnIO {
-              if (auto err = run_item_cmd(item_copy, exec_env_resolver_)) {
-                if (item_copy.continue_on_error) {
-                  output_.logger().warning()
-                      << "exec item '" << item_copy.id
-                      << "' failed: " << *err << std::endl;
+                  self->output_.logger().info()
+                      << "Executed exec item '" << item_copy.id
+                      << "' successfully" << std::endl;
                   return ReturnIO::pure();
-                }
-                auto error_obj = monad::make_error(
-                    my_errors::GENERAL::UNEXPECTED_RESULT, *err);
-                error_obj.params["stage"] = "exec";
-                return ReturnIO::fail(std::move(error_obj));
-              }
+                })
+                .catch_then([self, item_copy, resource_materializer](monad::Error err) -> ReturnIO {
+                  if (auto *stage = err.params.if_contains("stage")) {
+                    if (stage->is_string() && stage->as_string() == "exec") {
+                      return ReturnIO::fail(std::move(err));
+                    }
+                  }
 
-              output_.logger().info()
-                  << "Executed exec item '" << item_copy.id
-                  << "' successfully" << std::endl;
-              return ReturnIO::pure();
-            })
-            .catch_then([this, item_copy](monad::Error err) -> ReturnIO {
-              if (auto *stage = err.params.if_contains("stage")) {
-                if (stage->is_string() && stage->as_string() == "exec") {
+                  if (item_copy.continue_on_error) {
+                    self->output_.logger().warning()
+                        << "exec item '" << item_copy.id
+                        << "' resource materialize failed: " << err.what
+                        << std::endl;
+                    return ReturnIO::pure();
+                  }
                   return ReturnIO::fail(std::move(err));
-                }
-              }
-
-              if (item_copy.continue_on_error) {
-                output_.logger().warning()
-                    << "exec item '" << item_copy.id
-                    << "' resource materialize failed: " << err.what
-                    << std::endl;
-                return ReturnIO::pure();
-              }
-              return ReturnIO::fail(std::move(err));
-            });
-      });
+                });
+          });
     }
 
-    return pipeline.then([this, processed_any]() -> ReturnIO {
+    return pipeline.then([self, processed_any]() -> ReturnIO {
       if (!*processed_any) {
-        output_.logger().debug()
+        self->output_.logger().debug()
             << "No exec items present in plan" << std::endl;
       }
       return ReturnIO::pure();

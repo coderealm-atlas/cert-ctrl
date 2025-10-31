@@ -33,8 +33,9 @@ fs::path get_env_path(const char *name) {
   return {};
 }
 
-// Resolve default configuration and runtime directory paths with environment variable support.
-// 
+// Resolve default configuration and runtime directory paths with environment
+// variable support.
+//
 // Environment variable precedence (highest to lowest):
 // 1. CERTCTRL_CONFIG_DIR + CERTCTRL_RUNTIME_DIR - Direct path overrides
 // 2. CERTCTRL_BASE_DIR - Base directory override (appends /config and /runtime)
@@ -49,16 +50,19 @@ DefaultPaths resolve_default_paths() {
   // Check for environment variable overrides first
   fs::path config_override = get_env_path("CERTCTRL_CONFIG_DIR");
   fs::path runtime_override = get_env_path("CERTCTRL_RUNTIME_DIR");
-  
+
   if (!config_override.empty() && !runtime_override.empty()) {
     return {config_override, runtime_override};
   }
-  
+
   // Check for base directory override
   fs::path base_override = get_env_path("CERTCTRL_BASE_DIR");
   if (!base_override.empty()) {
-    fs::path config_dir = config_override.empty() ? (base_override / "config") : config_override;
-    fs::path runtime_dir = runtime_override.empty() ? (base_override / "runtime") : runtime_override;
+    fs::path config_dir =
+        config_override.empty() ? (base_override / "config") : config_override;
+    fs::path runtime_dir = runtime_override.empty()
+                               ? (base_override / "runtime")
+                               : runtime_override;
     return {config_dir, runtime_dir};
   }
 
@@ -68,18 +72,25 @@ DefaultPaths resolve_default_paths() {
     program_data = fs::path("C:/ProgramData");
   }
   auto base = program_data / "certctrl";
-  fs::path config_dir = config_override.empty() ? (base / "config") : config_override;
-  fs::path runtime_dir = runtime_override.empty() ? (base / "runtime") : runtime_override;
+  fs::path config_dir =
+      config_override.empty() ? (base / "config") : config_override;
+  fs::path runtime_dir =
+      runtime_override.empty() ? (base / "runtime") : runtime_override;
   return {config_dir, runtime_dir};
 #elif defined(__APPLE__)
   fs::path base("/Library/Application Support/certctrl");
-  fs::path config_dir = config_override.empty() ? (base / "config") : config_override;
-  fs::path runtime_dir = runtime_override.empty() ? (base / "runtime") : runtime_override;
+  fs::path config_dir =
+      config_override.empty() ? (base / "config") : config_override;
+  fs::path runtime_dir =
+      runtime_override.empty() ? (base / "runtime") : runtime_override;
   return {config_dir, runtime_dir};
 #else
   // Linux/Unix defaults
-  fs::path config_dir = config_override.empty() ? fs::path("/etc/certctrl") : config_override;
-  fs::path runtime_dir = runtime_override.empty() ? fs::path("/var/lib/certctrl") : runtime_override;
+  fs::path config_dir =
+      config_override.empty() ? fs::path("/etc/certctrl") : config_override;
+  fs::path runtime_dir = runtime_override.empty()
+                             ? fs::path("/var/lib/certctrl")
+                             : runtime_override;
   return {config_dir, runtime_dir};
 #endif
 }
@@ -123,7 +134,8 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
         {"verbose", "info"},
         {"interval_seconds", 300},
         {"url_base", "https://api.cjj365.cc"},
-        {"update_check_url", "https://install.lets-script.com/api/version/check"},
+        {"update_check_url",
+         "https://install.lets-script.com/api/version/check"},
         {"runtime_dir", runtime_dir.string()}};
     write_json_if_missing(config_dir / "application.json", application);
 
@@ -254,10 +266,11 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
          "offset") //
         ("limit", po::value<size_t>(&cli_params.limit)->default_value(10),
          "limit") //
-        ("url-base", po::value<std::string>()->value_name("URL")
-                          ->notifier([&](const std::string &value) {
-                            cli_params.url_base_override = value;
-                          }),
+        ("url-base",
+         po::value<std::string>()->value_name("URL")->notifier(
+             [&](const std::string &value) {
+               cli_params.url_base_override = value;
+             }),
          "override the API base URL for this run without persisting") //
         ("keep-running",
          po::bool_switch(&cli_params.keep_running)->default_value(false),
@@ -267,7 +280,8 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
          "suppress warning when running without root privileges.") //
         ("yes,y",
          po::bool_switch(&cli_params.confirm_update)->default_value(false),
-         "automatically confirm update without prompting (for update subcommand).") //
+         "automatically confirm update without prompting (for update "
+         "subcommand).") //
         ("help,h", "Print help");
 
     po::options_description hidden_desc("Hidden options");
@@ -290,7 +304,6 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
     po::store(parsed, vm);
     po::notify(vm);
 
-
     std::vector<std::string> positionals =
         vm["positionals"].as<std::vector<std::string>>();
     if (positionals.size() > 0) {
@@ -302,11 +315,13 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
 
     auto showUsage = [&]() {
       std::cerr << generic_desc << std::endl;
-  std::cerr << "Subcommands:" << std::endl;
-  std::cerr << "  login          Login the device." << std::endl;
-  std::cerr << "  conf           Configure the device." << std::endl;
-  std::cerr << "  install-config Manage install configuration (pull/apply/show/clear-cache)." << std::endl
-        << std::endl;
+      std::cerr << "Subcommands:" << std::endl;
+      std::cerr << "  login          Login the device." << std::endl;
+      std::cerr << "  conf           Configure the device." << std::endl;
+      std::cerr << "  install-config Manage install configuration "
+                   "(pull/apply/show/clear-cache)."
+                << std::endl
+                << std::endl;
       std::cerr << "Default behavior:" << std::endl;
       std::cerr << "  No subcommand -> agent update check followed by a device "
                    "updates poll."
@@ -371,15 +386,15 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
     cli_params.runtime_dir = resolved_runtime_dir;
 
     std::map<std::string, std::string> cli_overrides;
-    if (cli_params.url_base_override && !cli_params.url_base_override->empty()) {
+    if (cli_params.url_base_override &&
+        !cli_params.url_base_override->empty()) {
       cli_overrides.emplace("url_base", *cli_params.url_base_override);
       std::cerr << "Using runtime URL base override: "
                 << *cli_params.url_base_override << std::endl;
     }
 
-    static cjj365::ConfigSources config_sources(cli_params.config_dirs,
-                                                cli_params.profiles,
-                                                std::move(cli_overrides));
+    static cjj365::ConfigSources config_sources(
+        cli_params.config_dirs, cli_params.profiles, std::move(cli_overrides));
     {
       auto log_config_result = config_sources.json_content("log_config");
       if (log_config_result.is_err()) {

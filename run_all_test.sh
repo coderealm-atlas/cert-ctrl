@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
-PRESET="debug"
+PRESET="debug-asan"
 JOBS=""
 CONFIGURE_FIRST=true
 BUILD_FIRST=true
@@ -17,7 +17,7 @@ usage() {
 Usage: ./run_all_test.sh [options]
 
 Options:
-  --preset <name>     CMake configure/build preset to use (default: debug)
+  --preset <name>     CMake configure/build preset to use (default: debug-asan)
   --jobs <n>          Override parallelism passed to CTest (CTEST_PARALLEL_LEVEL)
   --skip-configure    Skip the cmake --preset <name> configure step
   --skip-build        Skip the cmake --build step (requires artifacts already built)

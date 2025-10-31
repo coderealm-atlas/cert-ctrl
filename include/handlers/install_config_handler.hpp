@@ -27,18 +27,16 @@ namespace certctrl {
 // Holds a shared_ptr InstallConfigManager created at construction time and
 // reused across user operations on this handler instance.
 
-class InstallConfigHandler : public IHandler {
+class InstallConfigHandler
+    : public IHandler,
+      public std::enable_shared_from_this<InstallConfigHandler> {
 private:
   certctrl::CliCtx &cli_ctx_;
   customio::ConsoleOutput &output_;
   cjj365::ConfigSources &config_sources_;
   client_async::HttpClientManager &http_client_;
   certctrl::ICertctrlConfigProvider &config_provider_;
-  std::shared_ptr<InstallConfigManager> install_config_manager_;
-
-  ~InstallConfigHandler() {
-    DEBUG_PRINT("DEBUG_PRINT: InstallConfigHandler destroyed");
-  }
+  std::unique_ptr<InstallConfigManager> install_config_manager_;
 
   struct PullOptions {
     bool no_apply{false};
@@ -55,13 +53,13 @@ private:
   monad::IO<void> handle_show();
   monad::IO<void> handle_clear_cache();
 
-  static std::optional<std::int64_t> get_optional_id(
-      const boost::program_options::variables_map &vm,
-      const char *name);
+  static std::optional<std::int64_t>
+  get_optional_id(const boost::program_options::variables_map &vm,
+                  const char *name);
 
   monad::IO<void> apply_copy_and_import(
-    std::shared_ptr<const dto::DeviceInstallConfigDto> config,
-    const PullOptions &options);
+      std::shared_ptr<const dto::DeviceInstallConfigDto> config,
+      const PullOptions &options);
 
   monad::IO<void> run_copy_stage();
   monad::IO<void> run_import_stage();
@@ -74,11 +72,17 @@ private:
   std::optional<PullOptions> active_options_;
 
 public:
-  InstallConfigHandler(cjj365::ConfigSources &config_sources,
-                       certctrl::CliCtx &cli_ctx,
-                       customio::ConsoleOutput &output,
-                       client_async::HttpClientManager &http_client,
-                       certctrl::ICertctrlConfigProvider &config_provider);
+  InstallConfigHandler(
+      cjj365::ConfigSources &config_sources,  //
+      certctrl::CliCtx &cli_ctx, //
+      customio::ConsoleOutput &output, //
+      client_async::HttpClientManager &http_client, //
+      std::unique_ptr<InstallConfigManager> install_config_manager,//
+      certctrl::ICertctrlConfigProvider &config_provider);
+
+  ~InstallConfigHandler() {
+    DEBUG_PRINT("DEBUG_PRINT: InstallConfigHandler destroyed");
+  }
 
   std::string command() const override;
   monad::IO<void> start() override;
