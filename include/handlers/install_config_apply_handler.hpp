@@ -20,12 +20,14 @@ class HttpClientManager;
 
 namespace certctrl {
 
-class InstallConfigApplyHandler : public IHandler {
+class InstallConfigApplyHandler : public IHandler, 
+                                 public std::enable_shared_from_this<
+                                     InstallConfigApplyHandler> {
 private:
   certctrl::CliCtx &cli_ctx_;
   customio::ConsoleOutput &output_;
   certctrl::ICertctrlConfigProvider &config_provider_;
-  std::shared_ptr<InstallWorkflowRunner> workflow_runner_;
+  std::unique_ptr<InstallWorkflowRunner> workflow_runner_;
 
 public:
   InstallConfigApplyHandler(cjj365::ConfigSources &config_sources,
@@ -33,7 +35,7 @@ public:
                             customio::ConsoleOutput &output,
                             client_async::HttpClientManager &http_client,
                             certctrl::ICertctrlConfigProvider &config_provider,
-                            std::shared_ptr<InstallWorkflowRunner> workflow_runner);
+                            std::unique_ptr<InstallWorkflowRunner> workflow_runner);
 
   std::string command() const override;
   monad::IO<void> start() override;

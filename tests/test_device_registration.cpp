@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <cstdlib>
 #include <boost/di.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
@@ -16,8 +15,8 @@
 #include <vector>
 
 #include "certctrl_common.hpp"
-#include "data/device_auth_types.hpp"
 #include "conf/certctrl_config.hpp"
+#include "data/device_auth_types.hpp"
 #include "handlers/login_handler.hpp"
 #include "http_client_config_provider.hpp"
 #include "http_client_manager.hpp"
@@ -34,7 +33,7 @@ namespace {
 
 bool real_server_tests_enabled() {
   const char *flag = std::getenv("CERTCTRL_REAL_SERVER_TESTS");
-  return flag && *flag;
+  return flag && flag[0] != '\0' && flag[0] != '0';
 }
 
 std::string make_unique_dir_name() {
@@ -80,12 +79,13 @@ protected:
 
   void SetUp() override {
     if (!real_server_tests_enabled()) {
-      GTEST_SKIP() << "Set CERTCTRL_REAL_SERVER_TESTS=1 to enable real server end-to-end tests.";
+      GTEST_SKIP() << "Set CERTCTRL_REAL_SERVER_TESTS=1 to enable real server "
+                      "end-to-end tests.";
     }
 
     base_url_ = testutil::url_base();
 
-  json::object app_json{{"auto_apply_config", false},
+    json::object app_json{{"auto_apply_config", false},
                           {"verbose", "info"},
                           {"url_base", base_url_}};
     write_json_file(temp_dir_.path / "application.json", app_json);
@@ -161,11 +161,11 @@ protected:
     ASSERT_GT(user_id_, 0) << "login returned invalid user_id";
 
 #ifdef _WIN32
-  _putenv_s("DEVICE_ACCESS_TOKEN", "");
-  _putenv_s("DEVICE_REFRESH_TOKEN", "");
+    _putenv_s("DEVICE_ACCESS_TOKEN", "");
+    _putenv_s("DEVICE_REFRESH_TOKEN", "");
 #else
-  ::unsetenv("DEVICE_ACCESS_TOKEN");
-  ::unsetenv("DEVICE_REFRESH_TOKEN");
+    ::unsetenv("DEVICE_ACCESS_TOKEN");
+    ::unsetenv("DEVICE_REFRESH_TOKEN");
 #endif
   }
 
@@ -217,26 +217,29 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
   misc::ThreadNotifier verify_notifier(60000);
   std::optional<monad::MyResult<data::deviceauth::VerifyResp>> verify_result;
   testutil::device_verify_io(*http_client_manager_, base_url_, session_cookie_,
-               start_resp.user_code)
-    .run([&](auto r) {
-    verify_result = std::move(r);
-    verify_notifier.notify();
-    });
+                             start_resp.user_code)
+      .run([&](auto r) {
+        verify_result = std::move(r);
+        verify_notifier.notify();
+      });
   verify_notifier.waitForNotification();
 
-  ASSERT_TRUE(verify_result.has_value())
-    << "device_verify produced no result";
+  ASSERT_TRUE(verify_result.has_value()) << "device_verify produced no result";
   if (verify_result->is_err()) {
-    std::cerr << "Verify error code: " << verify_result->error().code << std::endl;
-    std::cerr << "Verify error what: " << verify_result->error().what << std::endl;
-    std::cerr << "Verify error response_status: " << verify_result->error().response_status << std::endl;
+    std::cerr << "Verify error code: " << verify_result->error().code
+              << std::endl;
+    std::cerr << "Verify error what: " << verify_result->error().what
+              << std::endl;
+    std::cerr << "Verify error response_status: "
+              << verify_result->error().response_status << std::endl;
     if (verify_result->error().params.contains("response_body_preview")) {
-      std::cerr << "Response body preview: " 
-                << verify_result->error().params.at("response_body_preview") << std::endl;
+      std::cerr << "Response body preview: "
+                << verify_result->error().params.at("response_body_preview")
+                << std::endl;
     }
   }
   ASSERT_FALSE(verify_result->is_err())
-    << "device_verify failed: " << verify_result->error().what;
+      << "device_verify failed: " << verify_result->error().what;
   EXPECT_EQ(verify_result->value().status, "approved");
 
   const auto poll_sleep =
@@ -283,8 +286,8 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
       FAIL() << "ready status missing registration_code or access_token";
     }
 
-    if (last_status == "authorization_pending" ||
-        last_status == "slow_down" || last_status == "pending") {
+    if (last_status == "authorization_pending" || last_status == "slow_down" ||
+        last_status == "pending") {
       std::this_thread::sleep_for(poll_sleep);
       continue;
     }
@@ -301,9 +304,9 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
         << "registration_code should not be empty";
   }
   ASSERT_TRUE(successful_poll->user_id.has_value())
-    << "ready poll response missing user_id";
+      << "ready poll response missing user_id";
   EXPECT_FALSE(successful_poll->user_id->empty())
-    << "ready poll response contained empty user_id";
+      << "ready poll response contained empty user_id";
 
   misc::ThreadNotifier register_notifier(60000);
   std::optional<monad::MyVoidResult> register_result;
@@ -319,10 +322,12 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
       << "device_register failed: " << register_result->error().what;
 
   // Verify the device was registered by querying the user's devices
-  std::cerr << "Verifying device registration by querying devices list..." << std::endl;
+  std::cerr << "Verifying device registration by querying devices list..."
+            << std::endl;
   misc::ThreadNotifier devices_notifier(60000);
   std::optional<monad::MyResult<json::array>> devices_result;
-  testutil::list_user_devices_io(*http_client_manager_, base_url_, session_cookie_, user_id_)
+  testutil::list_user_devices_io(*http_client_manager_, base_url_,
+                                 session_cookie_, user_id_)
       .run([&](auto r) {
         devices_result = std::move(r);
         devices_notifier.notify();
@@ -334,11 +339,12 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
   ASSERT_FALSE(devices_result->is_err())
       << "list_user_devices failed: " << devices_result->error().what;
 
-  const auto& devices = devices_result->value();
-  std::cerr << "Found " << devices.size() << " device(s) for user " << user_id_ << std::endl;
-  
+  const auto &devices = devices_result->value();
+  std::cerr << "Found " << devices.size() << " device(s) for user " << user_id_
+            << std::endl;
+
   // Print device details for debugging
-  for (const auto& device : devices) {
+  for (const auto &device : devices) {
     std::cerr << "Device: " << json::serialize(device) << std::endl;
   }
 

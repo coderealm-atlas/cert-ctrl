@@ -1,14 +1,16 @@
 #pragma once
 
 #include <algorithm>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <filesystem>
-#include <type_traits>
+#include <stdexcept>
 #include <utility>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include "boost/di.hpp"
 #include "certctrl_common.hpp"
@@ -18,6 +20,13 @@
 #include "handlers/conf_handler.hpp"
 #include "handlers/handler_dispatcher.hpp"
 #include "handlers/i_handler.hpp"
+#include "handlers/install_actions/copy_action.hpp"
+#include "handlers/install_actions/exec_action.hpp"
+#include "handlers/install_actions/exec_environment_resolver.hpp"
+#include "handlers/install_actions/function_adapters.hpp"
+#include "handlers/install_actions/import_ca_action.hpp"
+#include "handlers/install_actions/install_resource_materializer.hpp"
+#include "handlers/install_actions/resource_materializer.hpp"
 #include "handlers/install_config_apply_handler.hpp"
 #include "handlers/install_config_handler.hpp"
 #include "handlers/install_config_manager.hpp"
@@ -31,6 +40,10 @@
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
 #include "version.h"
+
+#ifdef to
+#error "macro to defined"
+#endif
 
 namespace di = boost::di;
 namespace certctrl {
@@ -115,36 +128,137 @@ public:
     static customio::ConsoleOutputWithColor output_hub(
         cli_ctx_.verbosity_level());
 
-    auto injector = di::make_injector(
-        di::bind<cjj365::ConfigSources>().to(config_sources_),
+    auto handler_module = []() {
+      return di::make_injector(
+          di::bind<certctrl::ConfHandler>().in(di::unique),
+          di::bind<certctrl::InstallConfigHandler>().in(di::unique),
+          di::bind<certctrl::LoginHandler>().in(di::unique),
+          di::bind<certctrl::UpdateHandler>().in(di::unique),
+          di::bind<certctrl::UpdatesPollingHandler>().in(di::unique),
+          di::bind<certctrl::InstallConfigApplyHandler>().in(di::unique),
+          di::bind<certctrl::IHandlerFactory>().to(
+              [](const auto &inj) -> certctrl::IHandlerFactory & {
+                static certctrl::HandlerFactoryImpl factory(
+                    [&inj](const std::string &subcmd)
+                        -> std::shared_ptr<certctrl::IHandler> {
+                      if (subcmd == "conf") {
+                        return inj.template create<
+                            std::shared_ptr<certctrl::ConfHandler>>();
+                      } else if (subcmd == "install-config") {
+                        return inj.template create<
+                            std::shared_ptr<certctrl::InstallConfigHandler>>();
+                      } else if (subcmd == "login") {
+                        return inj.template create<
+                            std::shared_ptr<certctrl::LoginHandler>>();
+                      } else if (subcmd == "update") {
+                        return inj.template create<
+                            std::shared_ptr<certctrl::UpdateHandler>>();
+                      } else if (subcmd == "updates-polling") {
+                        return inj.template create<
+                            std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+                      } else if (subcmd == "install") {
+                        return inj.template create<std::shared_ptr<
+                            certctrl::InstallConfigApplyHandler>>();
+                      } else {
+                        throw std::runtime_error("Unsupported subcommand: " +
+                                                 subcmd);
+                      }
+                    });
+                return factory;
+              }));
+    };
 
+    auto injector = di::make_injector(
+  handler_module(),
+        di::bind<cjj365::ConfigSources>().to(config_sources_),
         di::bind<cjj365::IIocConfigProvider>()
             .to<cjj365::IocConfigProviderFile>(),
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>(),
         di::bind<cjj365::IHttpclientConfigProvider>()
             .to<cjj365::HttpclientConfigProviderFile>(),
-    di::bind<certctrl::InstallConfigManager>().to(
-        [](cjj365::ConfigSources &config_sources,
-           certctrl::ICertctrlConfigProvider &config_provider,
-           customio::ConsoleOutput &output,
-           client_async::HttpClientManager &http_client) {
-          auto runtime_dir = config_sources.paths_.empty()
-                                 ? std::filesystem::path{}
-                                 : config_sources.paths_.back();
-          return certctrl::InstallConfigManager(runtime_dir, config_provider,
-                                                output, &http_client);
-        }).in(di::singleton),
-    di::bind<certctrl::InstallWorkflowRunner>().to(
-        [](std::shared_ptr<certctrl::InstallConfigManager> manager,
-           customio::ConsoleOutput &output) {
-          return certctrl::InstallWorkflowRunner(std::move(manager), output);
-        }).in(di::singleton),
+        di::bind<certctrl::install_actions::InstallResourceMaterializer>().in(
+            di::unique),
+        di::bind<certctrl::install_actions::IResourceMaterializer::Factory>()
+            .to([](const auto &inj) {
+              return certctrl::install_actions::IResourceMaterializer::Factory{
+                  [&inj]() {
+                    return inj.template create<
+                        std::shared_ptr<certctrl::install_actions::
+                                            InstallResourceMaterializer>>();
+                  }};
+            }),
+        di::bind<certctrl::install_actions::CopyActionHandler>().in(di::unique),
+        di::bind<certctrl::install_actions::CopyActionHandler::Factory>()
+            .to([](const auto &inj) {
+              return certctrl::install_actions::CopyActionHandler::Factory{
+                  [&inj]() {
+                    return inj.template create<std::shared_ptr<
+                        certctrl::install_actions::CopyActionHandler>>();
+                  }};
+            }),
+        di::bind<certctrl::install_actions::IExecEnvironmentResolver::Factory>()
+            .to([](const auto &inj) {
+              return certctrl::install_actions::IExecEnvironmentResolver::Factory{
+                  [&inj]() {
+                    return inj.template create<std::shared_ptr<
+                        certctrl::install_actions::FunctionExecEnvironmentResolver>>();
+                  }};
+            }),
+        di::bind<certctrl::install_actions::ExecActionHandler>().in(di::unique),
+        di::bind<certctrl::install_actions::ExecActionHandler::Factory>()
+            .to([](const auto &inj) {
+              return certctrl::install_actions::ExecActionHandler::Factory{
+                  [&inj]() {
+                    return inj.template create<std::shared_ptr<
+                        certctrl::install_actions::ExecActionHandler>>();
+                  }};
+            }),
+        di::bind<certctrl::install_actions::ImportCaActionHandler>().in(
+            di::unique),
+        di::bind<certctrl::install_actions::ImportCaActionHandler::Factory>()
+            .to([](const auto &inj) {
+              return certctrl::install_actions::ImportCaActionHandler::Factory{
+                  [&inj]() {
+                    return inj.template create<std::shared_ptr<
+                        certctrl::install_actions::ImportCaActionHandler>>();
+                  }};
+            }),
+
+        // di_utils::safe_factory_binding_for<
+        //     certctrl::install_actions::IResourceMaterializer,
+        //     certctrl::install_actions::InstallResourceMaterializer,
+        //     certctrl::ICertctrlConfigProvider&,
+        //                       customio::ConsoleOutput&,
+        //                       client_async::HttpClientManager*>(),
+        // di::bind<certctrl::InstallConfigManager>()
+        //     .to([](cjj365::ConfigSources &config_sources,
+        //            certctrl::ICertctrlConfigProvider &config_provider,
+        //            customio::ConsoleOutput &output,
+        //            client_async::HttpClientManager &http_client) {
+        //       auto runtime_dir = config_sources.paths_.empty()
+        //                              ? std::filesystem::path{}
+        //                              : config_sources.paths_.back();
+        //       return certctrl::InstallConfigManager(
+        //           runtime_dir, config_provider, output, &http_client);
+        //     })
+        //     .in(di::singleton),
+        // di::bind<certctrl::InstallWorkflowRunner>()
+        //     .to([](std::shared_ptr<certctrl::InstallConfigManager> manager,
+        //            customio::ConsoleOutput &output) {
+        //       return certctrl::InstallWorkflowRunner(std::move(manager),
+        //                                              output);
+        //     })
+        //     .in(di::singleton),
         di::bind<customio::IOutput>().to(output_hub),
-        di::bind<certctrl::CliCtx>().to(cli_ctx_),
-        // Register all handlers for aggregate injection; DI will convert to
-        // vector<unique_ptr<IHandler>>
-        di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler, certctrl::InstallConfigHandler, certctrl::LoginHandler, certctrl::UpdateHandler, certctrl::UpdatesPollingHandler>());
+        di::bind<certctrl::CliCtx>().to(cli_ctx_));
+    // Register all handlers for aggregate injection; DI will convert to
+    // vector<unique_ptr<IHandler>>
+    // di::bind<certctrl::IHandler *[]>.to<certctrl::ConfHandler,
+    // certctrl::InstallConfigHandler,
+    //  certctrl::LoginHandler,
+    //  certctrl::UpdateHandler,
+    //  certctrl::UpdatesPollingHandler>());
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
@@ -155,6 +269,28 @@ public:
         &injector.template create<client_async::HttpClientManager &>();
     output_hub_ = &injector.template create<customio::ConsoleOutput &>();
     auto self = this->shared_from_this();
+    {
+
+      auto resource_materializer_factory = injector.template create<
+          certctrl::install_actions::IResourceMaterializer::Factory>();
+      auto resource_materializer_factory_1 = injector.template create<
+          certctrl::install_actions::IResourceMaterializer::Factory>();
+      assert(&resource_materializer_factory !=
+             &resource_materializer_factory_1);
+      auto import_ca_action_handler_factory = injector.template create<
+          certctrl::install_actions::ImportCaActionHandler::Factory>();
+      auto import_ca_action_handler_factory_1 = injector.template create<
+          certctrl::install_actions::ImportCaActionHandler::Factory>();
+      assert(&import_ca_action_handler_factory !=
+             &import_ca_action_handler_factory_1);
+      auto import_ca_action_handler = import_ca_action_handler_factory();
+      auto import_ca_action_handler_1 = import_ca_action_handler_factory();
+      assert(import_ca_action_handler.get() != import_ca_action_handler_1.get());
+
+      auto resource_materializer = resource_materializer_factory();
+      auto resource_materializer_1 = resource_materializer_factory();
+      assert(resource_materializer.get() != resource_materializer_1.get());
+    }
 
     detail::register_shutdown_handler([weak_self = std::weak_ptr<App>(self)] {
       if (auto shared = weak_self.lock()) {
@@ -165,7 +301,7 @@ public:
     // output the sources
     output_hub_->logger().info() << "Config source directories:" << std::endl;
     for (const auto &source : config_sources_.paths_) {
-      output_hub_->logger().info() << " - " << source << std::endl;
+      output_hub_->logger().info() << " - " << source.string() << std::endl;
     }
     // log file
     if (config_sources_.logging_config().is_err()) {
@@ -261,15 +397,16 @@ public:
             << "Running in keep running mode." << std::endl;
       } else {
         // Build available commands string
-        std::string cmds;
-        auto v = dispatcher.commands();
-        for (size_t i = 0; i < v.size(); ++i) {
-          if (i)
-            cmds += ", ";
-          cmds += v[i];
-        }
+        // std::string cmds;
+        // auto v = dispatcher.commands();
+        // for (size_t i = 0; i < v.size(); ++i) {
+        //   if (i)
+        //     cmds += ", ";
+        //   cmds += v[i];
+        // }
         output_hub_->logger().error()
-            << "No valid subcommand provided. Available: " << cmds
+            << "No valid subcommand provided. Available: "
+            << "conf, install-config, login, update, updates-polling"
             << ". Also 'account' (TBD)." << std::endl;
         return shutdown();
       }

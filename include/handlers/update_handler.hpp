@@ -13,7 +13,8 @@
 
 namespace certctrl {
 
-class UpdateHandler : public IHandler {
+class UpdateHandler : public IHandler, 
+                      public std::enable_shared_from_this<UpdateHandler> {
 private:
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;

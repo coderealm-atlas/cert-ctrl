@@ -1,30 +1,33 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <fmt/format.h>
 #include <boost/asio.hpp>
 #include <boost/json.hpp>
+#include <cstdlib>
+#include <filesystem>
+#include <fmt/format.h>
+#include <fstream>
+#include <iostream>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <optional>
-#include <unordered_map>
+#include <utility>
 
+#include "client_ssl_ctx.hpp"
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
-#include "client_ssl_ctx.hpp"
-#include "http_client_manager.hpp"
-#include "handlers/install_actions/import_ca_action.hpp"
-#include "handlers/install_actions/function_adapters.hpp"
-#include "my_error_codes.hpp"
 #include "handlers/install_actions/copy_action.hpp"
+#include "handlers/install_actions/function_adapters.hpp"
+#include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_config_manager.hpp"
+#include "http_client_manager.hpp"
+#include "include/install_config_manager_test_utils.hpp"
 #include "io_monad.hpp"
 #include "log_stream.hpp"
+#include "misc_util.hpp"
+#include "my_error_codes.hpp"
 #include "result_monad.hpp"
 
 namespace {
@@ -34,16 +37,19 @@ namespace json = boost::json;
 
 using certctrl::install_actions::FunctionResourceMaterializer;
 using certctrl::install_actions::IResourceMaterializer;
+using certctrl::test_utils::make_default_install_manager_factories;
+using certctrl::test_utils::make_fixed_resource_factory;
 
 IResourceMaterializer::Ptr make_noop_materializer() {
   return std::make_shared<FunctionResourceMaterializer>(
-      [](const dto::InstallItem &)
-          -> monad::IO<void> { return monad::IO<void>::pure(); });
+      [](const dto::InstallItem &) -> monad::IO<void> {
+        return monad::IO<void>::pure();
+      });
 }
 
 class InlineHttpclientConfigProvider
     : public cjj365::IHttpclientConfigProvider {
- public:
+public:
   InlineHttpclientConfigProvider() {
     json::object config_obj{{"threads_num", 1},
                             {"ssl_method", "tlsv12_client"},
@@ -57,16 +63,15 @@ class InlineHttpclientConfigProvider
 
   const cjj365::HttpclientConfig &get() const override { return config_; }
 
- private:
+private:
   cjj365::HttpclientConfig config_;
 };
 
 class FailingCaServer {
- public:
+public:
   FailingCaServer()
-      : acceptor_(ioc_,
-                  asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"),
-                                          0)) {
+      : acceptor_(ioc_, asio::ip::tcp::endpoint(
+                            asio::ip::make_address("127.0.0.1"), 0)) {
     port_ = acceptor_.local_endpoint().port();
     thread_ = std::thread([this] { run(); });
   }
@@ -83,18 +88,18 @@ class FailingCaServer {
       return;
     }
     boost::system::error_code ec;
-    acceptor_.close(ec);
+    [[maybe_unused]] auto close_status = acceptor_.close(ec);
     if (thread_.joinable()) {
       thread_.join();
     }
   }
 
- private:
+private:
   void run() {
     while (!stopped_.load()) {
       boost::system::error_code ec;
       asio::ip::tcp::socket socket(ioc_);
-      acceptor_.accept(socket, ec);
+      [[maybe_unused]] auto accept_status = acceptor_.accept(socket, ec);
       if (ec) {
         if (stopped_.load()) {
           break;
@@ -110,16 +115,16 @@ class FailingCaServer {
       boost::system::error_code ec;
       boost::asio::streambuf request;
       boost::asio::read_until(socket, request, "\r\n\r\n", ec);
-      const std::string response =
-          "HTTP/1.1 500 Internal Server Error\r\n"
-          "Content-Type: text/plain\r\n"
-          "Content-Length: 14\r\n"
-          "Connection: close\r\n"
-          "\r\n"
-          "bad allocation";
+      const std::string response = "HTTP/1.1 500 Internal Server Error\r\n"
+                                   "Content-Type: text/plain\r\n"
+                                   "Content-Length: 14\r\n"
+                                   "Connection: close\r\n"
+                                   "\r\n"
+                                   "bad allocation";
       boost::asio::write(socket, boost::asio::buffer(response), ec);
-      socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-      socket.close(ec);
+      [[maybe_unused]] auto shutdown_status =
+          socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+      [[maybe_unused]] auto close_status = socket.close(ec);
     } catch (...) {
       // Ignore socket errors during teardown.
     }
@@ -133,12 +138,10 @@ class FailingCaServer {
 };
 
 class StubConfigProvider : public certctrl::ICertctrlConfigProvider {
- public:
+public:
   certctrl::CertctrlConfig config_;
 
-  StubConfigProvider() {
-    config_.base_url = "https://api.example.test";
-  }
+  StubConfigProvider() { config_.base_url = "https://api.example.test"; }
 
   const certctrl::CertctrlConfig &get() const override { return config_; }
   certctrl::CertctrlConfig &get() override { return config_; }
@@ -165,11 +168,12 @@ void write_file(const std::filesystem::path &path, std::string_view content) {
 
 std::string read_file(const std::filesystem::path &path) {
   std::ifstream ifs(path, std::ios::binary);
-  return {std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>()};
+  return {std::istreambuf_iterator<char>(ifs),
+          std::istreambuf_iterator<char>()};
 }
 
 class ScopedEnvVar {
- public:
+public:
   ScopedEnvVar(const char *name, const std::string &value) : name_(name) {
 #ifdef _WIN32
     _putenv_s(name, value.c_str());
@@ -186,14 +190,60 @@ class ScopedEnvVar {
 #endif
   }
 
- private:
+private:
   std::string name_;
+};
+
+std::unique_ptr<certctrl::InstallConfigManager>
+make_manager(certctrl::ICertctrlConfigProvider &provider,
+             customio::ConsoleOutput &output,
+             client_async::HttpClientManager *http_client = nullptr,
+             certctrl::install_actions::IResourceMaterializer::Factory
+                 resource_factory = {},
+             certctrl::install_actions::IExecEnvironmentResolver::Factory
+                 exec_env_factory = {}) {
+  auto factories = make_default_install_manager_factories(
+      provider, output, resource_factory, exec_env_factory);
+  return std::make_unique<certctrl::InstallConfigManager>(
+    provider, output, http_client, factories.resource_materializer_factory,
+    factories.import_ca_handler_factory,
+    factories.exec_action_handler_factory,
+    factories.copy_action_handler_factory,
+    factories.exec_env_resolver_factory);
+}
+
+class InstallConfigManagerFixture : public ::testing::Test {
+protected:
+  StubConfigProvider provider_;
+  customio::ConsoleOutputWithColor sink_{5};
+  customio::ConsoleOutput output_{sink_};
+
+  std::filesystem::path prepare_runtime_dir() {
+    auto dir = make_temp_runtime_dir();
+    provider_.config_.runtime_dir = dir;
+    return dir;
+  }
+
+  std::unique_ptr<certctrl::InstallConfigManager>
+  build_manager(client_async::HttpClientManager *http_client = nullptr,
+                certctrl::install_actions::IResourceMaterializer::Factory
+                    resource_factory = {},
+                certctrl::install_actions::IExecEnvironmentResolver::Factory
+                    exec_env_factory = {}) {
+    return make_manager(provider_, output_, http_client,
+                        std::move(resource_factory),
+                        std::move(exec_env_factory));
+  }
+
+  StubConfigProvider &provider() { return provider_; }
+  customio::ConsoleOutput &output() { return output_; }
 };
 
 } // namespace
 
-TEST(InstallConfigManagerTest, AppliesCopyActionsFullPlan) {
-  auto runtime_dir = make_temp_runtime_dir();
+TEST_F(InstallConfigManagerFixture, AppliesCopyActionsFullPlan) {
+  misc::ThreadNotifier notifier;
+  auto runtime_dir = prepare_runtime_dir();
 
   auto resource_dir = runtime_dir / "resources" / "certs" / "123" / "current";
   write_file(resource_dir / "private.key", "PRIVATE-KEY-CONTENT\n");
@@ -212,17 +262,15 @@ TEST(InstallConfigManagerTest, AppliesCopyActionsFullPlan) {
   copy_item.ob_id = static_cast<std::int64_t>(123);
   copy_item.from = std::vector<std::string>{"private.key", "fullchain.pem"};
   auto dest_key = runtime_dir / "deploy" / "certs" / "service" / "private.key";
-  auto dest_chain = runtime_dir / "deploy" / "certs" / "service" / "fullchain.pem";
-  copy_item.to = std::vector<std::string>{dest_key.string(), dest_chain.string()};
+  auto dest_chain =
+      runtime_dir / "deploy" / "certs" / "service" / "fullchain.pem";
+  copy_item.to =
+      std::vector<std::string>{dest_key.string(), dest_chain.string()};
   config.installs.push_back(copy_item);
 
-  StubConfigProvider provider;
-  provider.config_.runtime_dir = runtime_dir;
-  customio::ConsoleOutputWithColor sink(5);
-  customio::ConsoleOutput output(sink);
-
-  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
-                                 const std::optional<std::string> &expected_hash)
+  auto fetch_override =
+      [config](std::optional<std::int64_t> expected_version,
+               const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
     dto::DeviceInstallConfigDto copy = config;
     if (expected_version) {
@@ -234,8 +282,9 @@ TEST(InstallConfigManagerTest, AppliesCopyActionsFullPlan) {
     return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
-  auto resource_override = [resource_dir](const dto::InstallItem &item)
-      -> std::optional<std::string> {
+  [[maybe_unused]] auto resource_override =
+      [resource_dir](
+          const dto::InstallItem &item) -> std::optional<std::string> {
     if (!item.ob_type || *item.ob_type != "cert") {
       return std::nullopt;
     }
@@ -249,23 +298,23 @@ TEST(InstallConfigManagerTest, AppliesCopyActionsFullPlan) {
     return content;
   };
 
-  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
-                                         nullptr, fetch_override);
+  auto manager = build_manager();
+  manager->customize(runtime_dir, fetch_override);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
-  manager.ensure_config_version(config.version, config.installs_hash)
+  manager->ensure_config_version(config.version, config.installs_hash)
       .run([&](auto result) {
         ASSERT_TRUE(result.is_ok());
         plan = result.value();
       });
   ASSERT_TRUE(plan);
 
-  manager.apply_copy_actions(*plan, std::nullopt, std::nullopt)
+  manager->apply_copy_actions(*plan, std::nullopt, std::nullopt)
       .run([&](auto result) {
         if (!result.is_ok()) {
           auto err = result.error();
-          std::cerr << "apply_copy_actions error code=" << err.code
-                    << " msg='" << err.what << "'" << std::endl;
+          std::cerr << "apply_copy_actions error code=" << err.code << " msg='"
+                    << err.what << "'" << std::endl;
           FAIL() << "apply_copy_actions failed: " << err.what;
         }
       });
@@ -317,8 +366,9 @@ TEST(InstallConfigManagerTest, SkipsCopyActionsWithEmptyDestinations) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
-                                 const std::optional<std::string> &expected_hash)
+  auto fetch_override =
+      [config](std::optional<std::int64_t> expected_version,
+               const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
     dto::DeviceInstallConfigDto copy = config;
     if (expected_version) {
@@ -330,11 +380,11 @@ TEST(InstallConfigManagerTest, SkipsCopyActionsWithEmptyDestinations) {
     return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
-  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
-                                         nullptr, fetch_override);
+  auto manager = make_manager(provider, output);
+  manager->customize(runtime_dir, fetch_override);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
-  manager.ensure_config_version(config.version, std::nullopt)
+  manager->ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
         ASSERT_TRUE(result.is_ok());
         plan = result.value();
@@ -344,7 +394,7 @@ TEST(InstallConfigManagerTest, SkipsCopyActionsWithEmptyDestinations) {
 
   auto dest_path = runtime_dir / "deploy" / "fullchain.pem";
 
-  manager.apply_copy_actions(*plan, std::nullopt, std::nullopt)
+  manager->apply_copy_actions(*plan, std::nullopt, std::nullopt)
       .run([&](auto result) { ASSERT_TRUE(result.is_ok()); });
 
   EXPECT_FALSE(std::filesystem::exists(dest_path));
@@ -363,30 +413,35 @@ TEST(InstallConfigManagerTest, CopyActionsAggregateFailures) {
   copy_item.ob_id = static_cast<std::int64_t>(4242);
   copy_item.from = std::vector<std::string>{"missing.pem", "also-missing.pem"};
   auto absolute_dest = runtime_dir / "deploy" / "certs" / "missing.pem";
-  copy_item.to = std::vector<std::string>{"relative-dest.pem", absolute_dest.string()};
+  copy_item.to =
+      std::vector<std::string>{"relative-dest.pem", absolute_dest.string()};
   config.installs.push_back(copy_item);
 
+  StubConfigProvider provider;
+  provider.config_.runtime_dir = runtime_dir;
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
   bool callback_invoked = false;
   auto materializer = make_noop_materializer();
-  certctrl::install_actions::CopyActionHandler handler(
-      runtime_dir, output, materializer);
-  handler.apply(config, std::nullopt, std::nullopt)
-      .run([&](auto result) {
-        callback_invoked = true;
-        ASSERT_TRUE(result.is_err())
-            << "Expected aggregated failures but copy actions succeeded";
-        auto err = result.error();
-        EXPECT_EQ(err.code, my_errors::GENERAL::FILE_READ_WRITE);
-        std::string_view message(err.what);
-        EXPECT_NE(message.find("destination path 'relative-dest.pem' is not absolute"),
-                  std::string_view::npos)
-            << "Missing relative path diagnostic";
-        EXPECT_NE(message.find("Source file"), std::string_view::npos)
-            << "Missing source not found diagnostic";
-      });
+  auto resource_factory = make_fixed_resource_factory(materializer);
+  certctrl::install_actions::CopyActionHandler handler(provider, output,
+                                                       resource_factory);
+  handler.customize(runtime_dir, resource_factory);
+  handler.apply(config, std::nullopt, std::nullopt).run([&](auto result) {
+    callback_invoked = true;
+    ASSERT_TRUE(result.is_err())
+        << "Expected aggregated failures but copy actions succeeded";
+    auto err = result.error();
+    EXPECT_EQ(err.code, my_errors::GENERAL::FILE_READ_WRITE);
+    std::string_view message(err.what);
+    EXPECT_NE(
+        message.find("destination path 'relative-dest.pem' is not absolute"),
+        std::string_view::npos)
+        << "Missing relative path diagnostic";
+    EXPECT_NE(message.find("Source file"), std::string_view::npos)
+        << "Missing source not found diagnostic";
+  });
 
   ASSERT_TRUE(callback_invoked);
   EXPECT_FALSE(std::filesystem::exists(absolute_dest))
@@ -420,16 +475,20 @@ TEST(ImportCaActionTest, CopiesCaIntoOverrideDirectory) {
   ScopedEnvVar cmd_env("CERTCTRL_CA_UPDATE_COMMAND", "true");
 #endif
 
+  StubConfigProvider provider;
+  provider.config_.runtime_dir = runtime_dir;
+
   auto materializer = make_noop_materializer();
-  certctrl::install_actions::ImportCaActionHandler handler(
-      runtime_dir, output, materializer);
-  handler.apply(config, std::nullopt, std::nullopt)
-      .run([&](auto result) {
-        if (!result.is_ok()) {
-          auto err = result.error();
-          FAIL() << "apply_import_ca_actions failed: " << err.what;
-        }
-      });
+  auto resource_factory = make_fixed_resource_factory(materializer);
+  certctrl::install_actions::ImportCaActionHandler handler(provider, output,
+                                                           resource_factory);
+  handler.customize(runtime_dir, resource_factory);
+  handler.apply(config, std::nullopt, std::nullopt).run([&](auto result) {
+    if (!result.is_ok()) {
+      auto err = result.error();
+      FAIL() << "apply_import_ca_actions failed: " << err.what;
+    }
+  });
 
   std::filesystem::path expected = trust_dir / "example-root-ca.crt";
   ASSERT_TRUE(std::filesystem::exists(expected));
@@ -440,7 +499,7 @@ TEST(ImportCaActionTest, CopiesCaIntoOverrideDirectory) {
 
 TEST(InstallConfigManagerTest, FailsCaImportWhenServerReturns500) {
   auto runtime_dir = make_temp_runtime_dir();
-
+  misc::ThreadNotifier notifier(3000);
   FailingCaServer server;
 
   StubConfigProvider provider;
@@ -454,12 +513,10 @@ TEST(InstallConfigManagerTest, FailsCaImportWhenServerReturns500) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
-                                         &http_manager);
+  auto manager = make_manager(provider, output, &http_manager);
 
   std::filesystem::create_directories(runtime_dir / "state");
-  write_file(runtime_dir / "state" / "access_token.txt",
-             "test-access-token");
+  write_file(runtime_dir / "state" / "access_token.txt", "test-access-token");
 
   dto::DeviceInstallConfigDto config{};
   dto::InstallItem ca_item{};
@@ -480,39 +537,42 @@ TEST(InstallConfigManagerTest, FailsCaImportWhenServerReturns500) {
 #endif
   std::filesystem::create_directories(runtime_dir / "trust-anchors");
 
-  bool callback_invoked = false;
-  monad::Error observed_error{};
-  manager.apply_import_ca_actions(config, std::nullopt, std::nullopt)
+  monad::MyVoidResult r;
+  manager->apply_import_ca_actions(config, std::nullopt, std::nullopt)
       .run([&](auto result) {
-        callback_invoked = true;
-        ASSERT_TRUE(result.is_err())
-            << "Expected CA import to fail when server returns 500";
-        observed_error = result.error();
+        r = std::move(result);
+        notifier.notify();
       });
+  notifier.waitForNotification();
+  EXPECT_TRUE(r.is_err())
+      << "Expected CA import to fail when server returns 500";
 
-  ASSERT_TRUE(callback_invoked);
-  EXPECT_EQ(observed_error.code, my_errors::NETWORK::READ_ERROR);
-  EXPECT_EQ(observed_error.response_status, 500);
-  auto *preview_field = observed_error.params.if_contains("response_body_preview");
-  ASSERT_NE(preview_field, nullptr);
-  ASSERT_TRUE(preview_field->is_string());
+  EXPECT_EQ(r.error().code, my_errors::GENERAL::FILE_NOT_FOUND);
+  EXPECT_EQ(r.error().response_status, 500);
+  auto *preview_field = r.error().params.if_contains("response_body_preview");
+  EXPECT_NE(preview_field, nullptr);
+  EXPECT_TRUE(preview_field->is_string());
   std::string preview = preview_field->as_string().c_str();
   EXPECT_NE(preview.find("bad allocation"), std::string::npos);
 
   auto ca_root = runtime_dir / "resources" / "cas" /
                  std::to_string(*ca_item.ob_id) / "current";
   EXPECT_FALSE(std::filesystem::exists(ca_root / "ca.pem"));
-
+  std::cerr << "Before stopping server" << std::endl;
   http_manager.stop();
+  std::cerr << "Stopping server" << std::endl;
   server.stop();
+  std::cerr << "Server stopped" << std::endl;
   std::filesystem::remove_all(runtime_dir);
 }
 
 TEST(InstallConfigManagerTest, FiltersCopyActionsByResource) {
   auto runtime_dir = make_temp_runtime_dir();
 
-  auto resource_dir_123 = runtime_dir / "resources" / "certs" / "123" / "current";
-  auto resource_dir_456 = runtime_dir / "resources" / "certs" / "456" / "current";
+  auto resource_dir_123 =
+      runtime_dir / "resources" / "certs" / "123" / "current";
+  auto resource_dir_456 =
+      runtime_dir / "resources" / "certs" / "456" / "current";
   write_file(resource_dir_123 / "fullchain.pem", "CHAIN123\n");
   write_file(resource_dir_456 / "fullchain.pem", "CHAIN456\n");
 
@@ -547,8 +607,9 @@ TEST(InstallConfigManagerTest, FiltersCopyActionsByResource) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
-                                 const std::optional<std::string> &expected_hash)
+  auto fetch_override =
+      [config](std::optional<std::int64_t> expected_version,
+               const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
     dto::DeviceInstallConfigDto copy = config;
     if (expected_version) {
@@ -560,30 +621,42 @@ TEST(InstallConfigManagerTest, FiltersCopyActionsByResource) {
     return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
-  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
-                                         nullptr, fetch_override);
+  auto manager = make_manager(provider, output, nullptr);
+  manager->customize(runtime_dir, fetch_override);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
-  manager.ensure_config_version(config.version, std::nullopt)
+  std::optional<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+      op_r;
+  manager->ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
-        ASSERT_TRUE(result.is_ok());
+        op_r = std::move(result);
         plan = result.value();
       });
 
+  ASSERT_TRUE(op_r.has_value());
+  ASSERT_TRUE(op_r->is_ok());
   ASSERT_TRUE(plan);
 
   // First apply only cert 123
-  manager.apply_copy_actions(*plan, std::string("cert"), static_cast<std::int64_t>(123))
-      .run([&](auto result) { ASSERT_TRUE(result.is_ok()); });
+  monad::MyVoidResult void_r;
+  manager
+      ->apply_copy_actions(*plan, std::string("cert"),
+                           static_cast<std::int64_t>(123))
+      .run([&](auto result) { void_r = std::move(result); });
 
+  ASSERT_TRUE(void_r.is_ok());
   EXPECT_TRUE(std::filesystem::exists(dest_a));
   EXPECT_FALSE(std::filesystem::exists(dest_b));
   EXPECT_EQ(read_file(dest_a), "CHAIN123\n");
 
   // Now apply only cert 456
-  manager.apply_copy_actions(*plan, std::string("cert"), static_cast<std::int64_t>(456))
-      .run([&](auto result) { ASSERT_TRUE(result.is_ok()); });
+  manager
+      ->apply_copy_actions(*plan, std::string("cert"),
+                           static_cast<std::int64_t>(456))
+      .run([&](auto result) { void_r = std::move(result); });
 
+  ASSERT_TRUE(void_r.is_ok());
   EXPECT_TRUE(std::filesystem::exists(dest_b));
   EXPECT_EQ(read_file(dest_b), "CHAIN456\n");
 
@@ -595,21 +668,21 @@ TEST(InstallConfigManagerTest, HandlesMasterOnlyPlaintextBundle) {
 
   const std::int64_t cert_id = 321;
   const std::string private_key_pem =
-    "-----BEGIN PRIVATE KEY-----\n"
-    "MC4CAQAwBQYDK2VwBCIEIC+BYXto9Jw4/dZElWXKfW6hDqmUC8Uh7xiw5J2wGxmh\n"
-    "-----END PRIVATE KEY-----\n";
+      "-----BEGIN PRIVATE KEY-----\n"
+      "MC4CAQAwBQYDK2VwBCIEIC+BYXto9Jw4/dZElWXKfW6hDqmUC8Uh7xiw5J2wGxmh\n"
+      "-----END PRIVATE KEY-----\n";
 
   const std::string certificate_pem =
-    "-----BEGIN CERTIFICATE-----\n"
-    "MIIBVTCCAQegAwIBAgIUNaR75E43mHngKYNdCa8JOW/d7dEwBQYDK2VwMCAxHjAc\n"
-    "BgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAeFw0yNTEwMjUxMTA3NTBaFw0y\n"
-    "NjEwMjUxMTA3NTBaMCAxHjAcBgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAq\n"
-    "MAUGAytlcAMhABceLDKOiP/CqZAfwi/uDcA4UO/1Kv5bect8to8uuVoLo1MwUTAd\n"
-    "BgNVHQ4EFgQUaZ/x7IAcuGgUL6gSG+8//Kf1JRswHwYDVR0jBBgwFoAUaZ/x7IAc\n"
-    "uGgUL6gSG+8//Kf1JRswDwYDVR0TAQH/BAUwAwEB/zAFBgMrZXADQQBeHFmFCaDL\n"
-    "7Ary5Uhf27nkdLdiq/QpOr5oiOEG7jnW5NwaJhj9kRo45MmK5yDGYLpUYmpb+Bnn\n"
-    "futpyqmphkYC\n"
-    "-----END CERTIFICATE-----\n";
+      "-----BEGIN CERTIFICATE-----\n"
+      "MIIBVTCCAQegAwIBAgIUNaR75E43mHngKYNdCa8JOW/d7dEwBQYDK2VwMCAxHjAc\n"
+      "BgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAeFw0yNTEwMjUxMTA3NTBaFw0y\n"
+      "NjEwMjUxMTA3NTBaMCAxHjAcBgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAq\n"
+      "MAUGAytlcAMhABceLDKOiP/CqZAfwi/uDcA4UO/1Kv5bect8to8uuVoLo1MwUTAd\n"
+      "BgNVHQ4EFgQUaZ/x7IAcuGgUL6gSG+8//Kf1JRswHwYDVR0jBBgwFoAUaZ/x7IAc\n"
+      "uGgUL6gSG+8//Kf1JRswDwYDVR0TAQH/BAUwAwEB/zAFBgMrZXADQQBeHFmFCaDL\n"
+      "7Ary5Uhf27nkdLdiq/QpOr5oiOEG7jnW5NwaJhj9kRo45MmK5yDGYLpUYmpb+Bnn\n"
+      "futpyqmphkYC\n"
+      "-----END CERTIFICATE-----\n";
 
   boost::json::object deploy_data;
   deploy_data["enc_scheme"] = "plaintext";
@@ -642,8 +715,9 @@ TEST(InstallConfigManagerTest, HandlesMasterOnlyPlaintextBundle) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
-                                 const std::optional<std::string> &expected_hash)
+  auto fetch_override =
+      [config](std::optional<std::int64_t> expected_version,
+               const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
     dto::DeviceInstallConfigDto copy = config;
     if (expected_version) {
@@ -655,20 +729,19 @@ TEST(InstallConfigManagerTest, HandlesMasterOnlyPlaintextBundle) {
     return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
-  auto resource_override = [payload](const dto::InstallItem &item)
-      -> std::optional<std::string> {
+  auto resource_override =
+      [payload](const dto::InstallItem &item) -> std::optional<std::string> {
     if (!item.ob_type || *item.ob_type != "cert") {
       return std::nullopt;
     }
     return boost::json::serialize(payload);
   };
 
-  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
-                                         nullptr, fetch_override,
-                                         resource_override);
+  auto manager = make_manager(provider, output, nullptr);
+  manager->customize(runtime_dir, fetch_override, resource_override);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
-  manager.ensure_config_version(config.version, std::nullopt)
+  manager->ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
         ASSERT_TRUE(result.is_ok());
         plan = result.value();
@@ -678,7 +751,7 @@ TEST(InstallConfigManagerTest, HandlesMasterOnlyPlaintextBundle) {
 
   bool apply_ok = false;
   monad::Error apply_err{};
-  manager.apply_copy_actions(*plan, std::nullopt, std::nullopt)
+  manager->apply_copy_actions(*plan, std::nullopt, std::nullopt)
       .run([&](auto result) {
         apply_ok = result.is_ok();
         if (!apply_ok) {
@@ -699,21 +772,21 @@ TEST(InstallConfigManagerTest, GeneratesMaterialsFromCertificateDetailOnly) {
 
   const std::int64_t cert_id = 654321;
   const std::string private_key_pem =
-    "-----BEGIN PRIVATE KEY-----\n"
-    "MC4CAQAwBQYDK2VwBCIEIC+BYXto9Jw4/dZElWXKfW6hDqmUC8Uh7xiw5J2wGxmh\n"
-    "-----END PRIVATE KEY-----\n";
+      "-----BEGIN PRIVATE KEY-----\n"
+      "MC4CAQAwBQYDK2VwBCIEIC+BYXto9Jw4/dZElWXKfW6hDqmUC8Uh7xiw5J2wGxmh\n"
+      "-----END PRIVATE KEY-----\n";
 
   const std::string leaf_cert =
-    "-----BEGIN CERTIFICATE-----\n"
-    "MIIBVTCCAQegAwIBAgIUNaR75E43mHngKYNdCa8JOW/d7dEwBQYDK2VwMCAxHjAc\n"
-    "BgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAeFw0yNTEwMjUxMTA3NTBaFw0y\n"
-    "NjEwMjUxMTA3NTBaMCAxHjAcBgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAq\n"
-    "MAUGAytlcAMhABceLDKOiP/CqZAfwi/uDcA4UO/1Kv5bect8to8uuVoLo1MwUTAd\n"
-    "BgNVHQ4EFgQUaZ/x7IAcuGgUL6gSG+8//Kf1JRswHwYDVR0jBBgwFoAUaZ/x7IAc\n"
-    "uGgUL6gSG+8//Kf1JRswDwYDVR0TAQH/BAUwAwEB/zAFBgMrZXADQQBeHFmFCaDL\n"
-    "7Ary5Uhf27nkdLdiq/QpOr5oiOEG7jnW5NwaJhj9kRo45MmK5yDGYLpUYmpb+Bnn\n"
-    "futpyqmphkYC\n"
-    "-----END CERTIFICATE-----\n";
+      "-----BEGIN CERTIFICATE-----\n"
+      "MIIBVTCCAQegAwIBAgIUNaR75E43mHngKYNdCa8JOW/d7dEwBQYDK2VwMCAxHjAc\n"
+      "BgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAeFw0yNTEwMjUxMTA3NTBaFw0y\n"
+      "NjEwMjUxMTA3NTBaMCAxHjAcBgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAq\n"
+      "MAUGAytlcAMhABceLDKOiP/CqZAfwi/uDcA4UO/1Kv5bect8to8uuVoLo1MwUTAd\n"
+      "BgNVHQ4EFgQUaZ/x7IAcuGgUL6gSG+8//Kf1JRswHwYDVR0jBBgwFoAUaZ/x7IAc\n"
+      "uGgUL6gSG+8//Kf1JRswDwYDVR0TAQH/BAUwAwEB/zAFBgMrZXADQQBeHFmFCaDL\n"
+      "7Ary5Uhf27nkdLdiq/QpOr5oiOEG7jnW5NwaJhj9kRo45MmK5yDGYLpUYmpb+Bnn\n"
+      "futpyqmphkYC\n"
+      "-----END CERTIFICATE-----\n";
 
   const std::string chain_cert = leaf_cert;
 
@@ -738,9 +811,8 @@ TEST(InstallConfigManagerTest, GeneratesMaterialsFromCertificateDetailOnly) {
   copy_item.ob_type = std::string{"cert"};
   copy_item.ob_id = cert_id;
   copy_item.from = std::vector<std::string>{
-      "private.key",   "certificate.pem", "chain.pem",
-      "fullchain.pem", "certificate.der", "bundle.pfx",
-      "meta.json"};
+      "private.key",     "certificate.pem", "chain.pem", "fullchain.pem",
+      "certificate.der", "bundle.pfx",      "meta.json"};
 
   auto install_root = runtime_dir / "install";
   copy_item.to = std::vector<std::string>{
@@ -758,8 +830,9 @@ TEST(InstallConfigManagerTest, GeneratesMaterialsFromCertificateDetailOnly) {
   customio::ConsoleOutputWithColor sink(5);
   customio::ConsoleOutput output(sink);
 
-  auto fetch_override = [config](std::optional<std::int64_t> expected_version,
-                                 const std::optional<std::string> &expected_hash)
+  auto fetch_override =
+      [config](std::optional<std::int64_t> expected_version,
+               const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
     dto::DeviceInstallConfigDto copy = config;
     if (expected_version) {
@@ -771,20 +844,19 @@ TEST(InstallConfigManagerTest, GeneratesMaterialsFromCertificateDetailOnly) {
     return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
-  auto resource_override = [payload](const dto::InstallItem &item)
-      -> std::optional<std::string> {
+  auto resource_override =
+      [payload](const dto::InstallItem &item) -> std::optional<std::string> {
     if (!item.ob_type || *item.ob_type != "cert") {
       return std::nullopt;
     }
     return boost::json::serialize(payload);
   };
 
-  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
-                                         nullptr, fetch_override,
-                                         resource_override);
+  auto manager = make_manager(provider, output, nullptr);
+  manager->customize(runtime_dir, fetch_override, resource_override);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
-  manager.ensure_config_version(config.version, std::nullopt)
+  manager->ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
         ASSERT_TRUE(result.is_ok());
         plan = result.value();
@@ -794,7 +866,7 @@ TEST(InstallConfigManagerTest, GeneratesMaterialsFromCertificateDetailOnly) {
 
   bool apply_ok = false;
   monad::Error apply_err{};
-  manager.apply_copy_actions(*plan, std::nullopt, std::nullopt)
+  manager->apply_copy_actions(*plan, std::nullopt, std::nullopt)
       .run([&](auto result) {
         apply_ok = result.is_ok();
         if (!apply_ok) {
@@ -805,8 +877,7 @@ TEST(InstallConfigManagerTest, GeneratesMaterialsFromCertificateDetailOnly) {
   ASSERT_TRUE(apply_ok) << "apply_copy_actions failed: " << apply_err.what;
 
   auto resource_root =
-      runtime_dir / "resources" / "certs" / std::to_string(cert_id) /
-      "current";
+      runtime_dir / "resources" / "certs" / std::to_string(cert_id) / "current";
   ASSERT_TRUE(std::filesystem::exists(resource_root));
   EXPECT_EQ(read_file(resource_root / "private.key"), private_key_pem);
   EXPECT_EQ(read_file(resource_root / "certificate.pem"), leaf_cert);
@@ -857,15 +928,15 @@ TEST(InstallConfigManagerTest, RetriesUntilExpectedVersionAvailable) {
   customio::ConsoleOutput output(sink);
 
   int call_count = 0;
-  auto fetch_override = [&config, &call_count](
-                            std::optional<std::int64_t> expected_version,
-                            const std::optional<std::string> &expected_hash)
+  auto fetch_override =
+      [&config, &call_count](std::optional<std::int64_t> expected_version,
+                             const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
     dto::DeviceInstallConfigDto copy = config;
     ++call_count;
     if (expected_version) {
-      copy.version = (call_count < 3) ? (*expected_version - 1)
-                                     : *expected_version;
+      copy.version =
+          (call_count < 3) ? (*expected_version - 1) : *expected_version;
     }
     if (expected_hash) {
       copy.installs_hash = *expected_hash;
@@ -873,11 +944,11 @@ TEST(InstallConfigManagerTest, RetriesUntilExpectedVersionAvailable) {
     return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
-  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
-                                         nullptr, fetch_override);
+  auto manager = make_manager(provider, output, nullptr);
+  manager->customize(runtime_dir, fetch_override);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
-  manager.ensure_config_version(config.version, std::nullopt)
+  manager->ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
         ASSERT_TRUE(result.is_ok());
         plan = result.value();
@@ -885,13 +956,14 @@ TEST(InstallConfigManagerTest, RetriesUntilExpectedVersionAvailable) {
 
   ASSERT_TRUE(plan);
   EXPECT_EQ(call_count, 3);
-  ASSERT_TRUE(manager.local_version());
-  EXPECT_EQ(*manager.local_version(), config.version);
+  ASSERT_TRUE(manager->local_version());
+  EXPECT_EQ(*manager->local_version(), config.version);
 
   std::filesystem::remove_all(runtime_dir);
 }
 
 TEST(InstallConfigManagerTest, FailsWhenExpectedVersionNeverArrives) {
+  misc::ThreadNotifier notifier(3000);
   auto runtime_dir = make_temp_runtime_dir();
 
   dto::DeviceInstallConfigDto config{};
@@ -905,9 +977,9 @@ TEST(InstallConfigManagerTest, FailsWhenExpectedVersionNeverArrives) {
   customio::ConsoleOutput output(sink);
 
   int call_count = 0;
-  auto fetch_override = [&config, &call_count](
-                            std::optional<std::int64_t> expected_version,
-                            const std::optional<std::string> &expected_hash)
+  auto fetch_override =
+      [&config, &call_count](std::optional<std::int64_t> expected_version,
+                             const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
     dto::DeviceInstallConfigDto copy = config;
     ++call_count;
@@ -920,21 +992,23 @@ TEST(InstallConfigManagerTest, FailsWhenExpectedVersionNeverArrives) {
     return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
   };
 
-  certctrl::InstallConfigManager manager(runtime_dir, provider, output,
-                                         nullptr, fetch_override);
+  auto manager = make_manager(provider, output, nullptr);
+  manager->customize(runtime_dir, fetch_override);
 
-  bool completed = false;
-  monad::Error observed_error{};
-  manager.ensure_config_version(config.version, std::nullopt)
+  std::optional<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+      op_r;
+  manager->ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
-        completed = true;
-        ASSERT_TRUE(result.is_err());
-        observed_error = result.error();
+        op_r = std::move(result);
+        notifier.notify();
       });
+  notifier.waitForNotification();
+  ASSERT_TRUE(op_r.has_value());
+  ASSERT_TRUE(op_r->is_err());
 
-  ASSERT_TRUE(completed);
-  EXPECT_EQ(observed_error.code, my_errors::GENERAL::UNEXPECTED_RESULT);
-  EXPECT_FALSE(manager.local_version());
+  EXPECT_EQ(op_r->error().code, my_errors::GENERAL::UNEXPECTED_RESULT);
+  EXPECT_FALSE(manager->local_version());
   EXPECT_GE(call_count, 4);
 
   std::filesystem::remove_all(runtime_dir);

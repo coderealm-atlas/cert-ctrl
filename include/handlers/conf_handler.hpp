@@ -28,7 +28,8 @@ namespace certctrl {
 
 struct ConfHandlerOptions {};
 
-class ConfHandler : public certctrl::IHandler {
+class ConfHandler : public certctrl::IHandler, 
+                    public std::enable_shared_from_this<ConfHandler> {
   asio::io_context &ioc_;
   certctrl::ICertctrlConfigProvider &certctrl_config_provider_;
   customio::ConsoleOutput &output_hub_;

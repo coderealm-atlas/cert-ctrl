@@ -1,44 +1,43 @@
 #include "handlers/install_config_manager.hpp"
 #include "handlers/install_actions/copy_action.hpp"
-#include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_actions/exec_action.hpp"
 #include "handlers/install_actions/function_adapters.hpp"
+#include "handlers/install_actions/import_ca_action.hpp"
+#include "handlers/install_actions/install_resource_materializer.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/json.hpp>
-#include <boost/system/error_code.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/system/error_code.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
-#include <fstream>
 #include <cstring>
 #include <fmt/format.h>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <random>
-#include <thread>
-#include <unordered_map>
-#include <array>
 #include <sstream>
 #include <string_view>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <sodium.h>
 
+#include "base64.h"
 #include "http_client_monad.hpp"
 #include "my_error_codes.hpp"
-#include "result_monad.hpp"
-#include "base64.h"
 #include "openssl/crypt_util.hpp"
 #include "openssl/openssl_raii.hpp"
+#include "result_monad.hpp"
 #include "util/secret_util.hpp"
 #include "util/user_key_crypto.hpp"
 
 namespace certctrl {
-
-using monad::Error;
 
 namespace {
 
@@ -55,12 +54,14 @@ std::string generate_temp_suffix() {
 
 std::string to_lower_copy(const std::string &value) {
   std::string lower = value;
-  std::transform(lower.begin(), lower.end(), lower.begin(),
-                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  std::transform(
+      lower.begin(), lower.end(), lower.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   return lower;
 }
 
-std::optional<std::string> read_file_as_string(const std::filesystem::path &path) {
+std::optional<std::string>
+read_file_as_string(const std::filesystem::path &path) {
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs.is_open()) {
     return std::nullopt;
@@ -93,7 +94,8 @@ std::optional<std::string> join_pem_entries(const boost::json::value &value) {
   std::ostringstream oss;
   bool first = true;
   for (const auto &entry : value.as_array()) {
-    if (!entry.is_string()) continue;
+    if (!entry.is_string())
+      continue;
     if (!first) {
       oss << '\n';
     }
@@ -101,7 +103,8 @@ std::optional<std::string> join_pem_entries(const boost::json::value &value) {
     first = false;
   }
   auto result = oss.str();
-  if (result.empty()) return std::nullopt;
+  if (result.empty())
+    return std::nullopt;
   return result;
 }
 
@@ -146,8 +149,8 @@ std::string join_cert_blocks(const std::vector<std::string> &blocks,
   return result;
 }
 
-std::optional<std::vector<unsigned char>> decode_base64_to_bytes(
-    const boost::json::value &value) {
+std::optional<std::vector<unsigned char>>
+decode_base64_to_bytes(const boost::json::value &value) {
   if (!value.is_string()) {
     return std::nullopt;
   }
@@ -160,8 +163,8 @@ std::optional<std::vector<unsigned char>> decode_base64_to_bytes(
   }
 }
 
-std::optional<std::vector<unsigned char>> decode_base64_string_raw(
-    const std::string &value) {
+std::optional<std::vector<unsigned char>>
+decode_base64_string_raw(const std::string &value) {
   try {
     auto decoded = base64_decode(value);
     return std::vector<unsigned char>(decoded.begin(), decoded.end());
@@ -175,8 +178,9 @@ struct DeviceKeyPair {
   std::array<unsigned char, crypto_box_SECRETKEYBYTES> sk{};
 };
 
-std::optional<DeviceKeyPair> load_device_keypair_from_paths(
-    const std::vector<std::filesystem::path> &paths, std::string &error_out) {
+std::optional<DeviceKeyPair>
+load_device_keypair_from_paths(const std::vector<std::filesystem::path> &paths,
+                               std::string &error_out) {
   if (sodium_init() < 0) {
     error_out = "libsodium initialization failed";
     return std::nullopt;
@@ -203,11 +207,14 @@ std::optional<DeviceKeyPair> load_device_keypair_from_paths(
         return out;
       }
       std::string text(raw.begin(), raw.end());
-      text.erase(std::remove_if(text.begin(), text.end(), [](char ch) {
-                    return ch == '\n' || ch == '\r' || ch == ' ' || ch == '\t';
-                  }),
+      text.erase(std::remove_if(text.begin(), text.end(),
+                                [](char ch) {
+                                  return ch == '\n' || ch == '\r' ||
+                                         ch == ' ' || ch == '\t';
+                                }),
                  text.end());
-      if (text.empty()) return std::nullopt;
+      if (text.empty())
+        return std::nullopt;
       try {
         auto decoded = base64_decode(text);
         if (decoded.size() != crypto_box_SECRETKEYBYTES) {
@@ -241,8 +248,9 @@ std::optional<DeviceKeyPair> load_device_keypair_from_paths(
   return std::nullopt;
 }
 
-std::optional<std::string> convert_der_private_key_to_pem(
-    const std::vector<unsigned char> &der, std::string &error_out) {
+std::optional<std::string>
+convert_der_private_key_to_pem(const std::vector<unsigned char> &der,
+                               std::string &error_out) {
   if (der.empty()) {
     error_out = "DER private key payload is empty";
     return std::nullopt;
@@ -262,11 +270,12 @@ std::optional<std::string> convert_der_private_key_to_pem(
   }
 }
 
-std::optional<std::string> extract_private_key_from_detail(
-    const boost::json::object &detail_obj, std::string &error_out) {
-  auto get_string_field = [](const boost::json::object &obj,
-                             std::string_view key)
-      -> std::optional<std::string> {
+std::optional<std::string>
+extract_private_key_from_detail(const boost::json::object &detail_obj,
+                                std::string &error_out) {
+  auto get_string_field =
+      [](const boost::json::object &obj,
+         std::string_view key) -> std::optional<std::string> {
     if (auto *val = obj.if_contains(key)) {
       if (val->is_string()) {
         auto str = val->as_string();
@@ -292,9 +301,9 @@ std::optional<std::string> extract_private_key_from_detail(
     return pem;
   }
 
-  auto decode_der_field = [&](const boost::json::object &source,
-                              std::string_view key)
-      -> std::optional<std::string> {
+  auto decode_der_field =
+      [&](const boost::json::object &source,
+          std::string_view key) -> std::optional<std::string> {
     if (auto encoded = get_string_field(source, key)) {
       if (auto bytes = decode_base64_string_raw(*encoded)) {
         std::string local_error;
@@ -331,11 +340,11 @@ std::optional<std::string> extract_private_key_from_detail(
   return std::nullopt;
 }
 
-std::optional<std::string> decrypt_private_key_pem(
-    const boost::json::object &bundle_data,
-    const std::filesystem::path &runtime_dir,
-    const std::filesystem::path &state_dir,
-    std::string &error_out) {
+std::optional<std::string>
+decrypt_private_key_pem(const boost::json::object &bundle_data,
+                        const std::filesystem::path &runtime_dir,
+                        const std::filesystem::path &state_dir,
+                        std::string &error_out) {
   std::string enc_scheme;
   if (auto *enc_scheme_val = bundle_data.if_contains("enc_scheme")) {
     if (enc_scheme_val->is_string()) {
@@ -386,8 +395,8 @@ std::optional<std::string> decrypt_private_key_pem(
             return std::nullopt;
           }
         } catch (const std::exception &ex) {
-          error_out = std::string("Failed to fingerprint device key: ") +
-                      ex.what();
+          error_out =
+              std::string("Failed to fingerprint device key: ") + ex.what();
           return std::nullopt;
         }
       }
@@ -426,8 +435,8 @@ std::optional<std::string> decrypt_private_key_pem(
             std::string(reinterpret_cast<const char *>(nonce->data()),
                         nonce->size()),
             std::string(reinterpret_cast<const char *>(enc_key->data()),
-      enc_key->size()),
-      decrypted, std::string_view{})) {
+                        enc_key->size()),
+            decrypted, std::string_view{})) {
       error_out = "Failed to decrypt AES-GCM private key";
       return std::nullopt;
     }
@@ -444,8 +453,8 @@ std::optional<std::string> decrypt_private_key_pem(
   return std::nullopt;
 }
 
-std::optional<std::vector<unsigned char>> extract_bundle_pfx_bytes(
-    const boost::json::object &bundle_data) {
+std::optional<std::vector<unsigned char>>
+extract_bundle_pfx_bytes(const boost::json::object &bundle_data) {
   if (auto *pfx_val = bundle_data.if_contains("bundle_pfx_b64")) {
     return decode_base64_to_bytes(*pfx_val);
   }
@@ -455,8 +464,8 @@ std::optional<std::vector<unsigned char>> extract_bundle_pfx_bytes(
   return std::nullopt;
 }
 
-std::optional<boost::json::object> load_bundle_object(
-    const std::filesystem::path &resource_root) {
+std::optional<boost::json::object>
+load_bundle_object(const std::filesystem::path &resource_root) {
   auto raw_path = resource_root.parent_path() / "bundle_raw.json";
   auto raw_content = read_file_as_string(raw_path);
   if (!raw_content) {
@@ -480,16 +489,43 @@ std::filesystem::perms default_directory_perms() {
 } // namespace
 
 InstallConfigManager::InstallConfigManager(
-    const std::filesystem::path &runtime_dir,
     certctrl::ICertctrlConfigProvider &config_provider,
     customio::ConsoleOutput &output,
     client_async::HttpClientManager *http_client,
-    FetchOverrideFn fetch_override,
-    ResourceFetchOverrideFn resource_fetch_override)
-    : runtime_dir_(runtime_dir), config_provider_(config_provider),
-      output_(output), http_client_(http_client),
-      fetch_override_(std::move(fetch_override)),
-      resource_fetch_override_(std::move(resource_fetch_override)) {
+    install_actions::IResourceMaterializer::Factory
+        resource_materializer_factory,
+    install_actions::ImportCaActionHandler::Factory
+        import_ca_action_handler_factory,
+    install_actions::ExecActionHandler::Factory exec_handler_factory,
+    certctrl::install_actions::CopyActionHandler::Factory copy_handler_factory,
+    install_actions::IExecEnvironmentResolver::Factory
+        exec_env_resolver_factory,
+    boost::asio::io_context *io_context)
+    : runtime_dir_(std::move(config_provider.get().runtime_dir)),
+      config_provider_(config_provider), output_(output),
+      http_client_(http_client),
+      resource_materializer_factory_(std::move(resource_materializer_factory)),
+      import_ca_action_handler_factory_(
+          std::move(import_ca_action_handler_factory)),
+      exec_handler_factory_(std::move(exec_handler_factory)),
+      exec_env_resolver_factory_(std::move(exec_env_resolver_factory)),
+      copy_handler_factory_(std::move(copy_handler_factory)),
+      io_context_(io_context) {
+
+  if (!io_context_) {
+    owned_io_context_ = std::make_unique<boost::asio::io_context>();
+    owned_io_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
+        boost::asio::io_context::executor_type>>(
+        boost::asio::make_work_guard(*owned_io_context_));
+    io_context_ = owned_io_context_.get();
+    owned_io_thread_ = std::thread([ctx = io_context_]() {
+      if (!ctx) {
+        return;
+      }
+      ctx->run();
+    });
+  }
+
   if (!runtime_dir_.empty()) {
     try {
       std::filesystem::create_directories(state_dir());
@@ -499,8 +535,7 @@ InstallConfigManager::InstallConfigManager(
 #endif
     } catch (const std::exception &e) {
       output_.logger().warning()
-          << "Failed to prepare runtime state dir: " << e.what()
-          << std::endl;
+          << "Failed to prepare runtime state dir: " << e.what() << std::endl;
     }
   }
 
@@ -508,6 +543,56 @@ InstallConfigManager::InstallConfigManager(
     cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(
         std::move(config.value()));
     local_version_ = cached_config_->version;
+  }
+}
+
+InstallConfigManager::~InstallConfigManager() {
+  if (owned_io_work_guard_) {
+    owned_io_work_guard_->reset();
+  }
+  if (owned_io_context_) {
+    owned_io_context_->stop();
+  }
+  if (owned_io_thread_.joinable()) {
+    owned_io_thread_.join();
+  }
+}
+
+void InstallConfigManager::customize(
+    std::filesystem::path runtime_dir, FetchOverrideFn fetch_override,
+    ResourceFetchOverrideFn resource_fetch_override) {
+  customized_ = true;
+  runtime_dir_ = std::move(runtime_dir);
+  if (fetch_override) {
+    fetch_override_ = std::move(fetch_override);
+  }
+  if (resource_fetch_override) {
+    resource_fetch_override_ = std::move(resource_fetch_override);
+  }
+
+  cached_config_.reset();
+  local_version_.reset();
+  cached_access_token_.reset();
+  cached_access_token_mtime_.reset();
+  bundle_passwords_.clear();
+
+  if (!runtime_dir_.empty()) {
+    try {
+      std::filesystem::create_directories(state_dir());
+#ifndef _WIN32
+      std::filesystem::permissions(state_dir(), default_directory_perms(),
+                                   std::filesystem::perm_options::replace);
+#endif
+    } catch (const std::exception &e) {
+      output_.logger().warning()
+          << "Failed to prepare runtime state dir: " << e.what() << std::endl;
+    }
+
+    if (auto config = load_from_disk()) {
+      cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(
+          std::move(config.value()));
+      local_version_ = cached_config_->version;
+    }
   }
 }
 
@@ -529,9 +614,58 @@ InstallConfigManager::cached_config_snapshot() {
   return cached_config_;
 }
 
+// void InstallConfigManager::configure_resource_materializer(
+//     const install_actions::IResourceMaterializer::Ptr &materializer) {
+//   if (!materializer) {
+//     return;
+//   }
+
+//   auto concrete =
+//       std::dynamic_pointer_cast<install_actions::InstallResourceMaterializer>(
+//           materializer);
+//   if (!concrete) {
+//     return;
+//   }
+
+//   install_actions::InstallResourceMaterializer::RuntimeConfig runtime_cfg{
+//       runtime_dir_,
+//       [this]() { return load_access_token(); },
+//       resource_fetch_override_,
+//       [this](const std::string &type, std::int64_t id) {
+//         return lookup_bundle_password(type, id);
+//       },
+//       [this](const std::string &type, std::int64_t id,
+//              const std::string &password) {
+//         remember_bundle_password(type, id, password);
+//       },
+//       [this](const std::string &type, std::int64_t id) {
+//         forget_bundle_password(type, id);
+//       }};
+
+//   concrete->customize(std::move(runtime_cfg));
+// }
+
+// install_actions::IResourceMaterializer::Ptr
+// InstallConfigManager::make_resource_materializer() {
+//   install_actions::IResourceMaterializer::Ptr materializer;
+//   if (resource_materializer_factory_) {
+//     materializer = resource_materializer_factory_();
+//   }
+
+//   if (!materializer) {
+//     materializer =
+//         std::make_shared<install_actions::InstallResourceMaterializer>(
+//             config_provider_, output_, http_client_);
+//   }
+
+//   configure_resource_materializer(materializer);
+//   return materializer;
+// }
+
 monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
 InstallConfigManager::ensure_cached_config() {
-  using ReturnIO = monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>;
+  using ReturnIO =
+      monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>;
   if (cached_config_) {
     return ReturnIO::pure(cached_config_);
   }
@@ -603,8 +737,8 @@ InstallConfigManager::refresh_from_remote(
     }
 
     const auto &cfg = config_provider_.get();
-    std::string url = fmt::format("{}/apiv1/devices/self/install-config",
-                                  cfg.base_url);
+    std::string url =
+        fmt::format("{}/apiv1/devices/self/install-config", cfg.base_url);
 
     return http_io<monad::GetStringTag>(url)
         .map([token = *token_opt](auto ex) {
@@ -643,61 +777,86 @@ InstallConfigManager::refresh_from_remote(
   constexpr int kMaxAttempts = 4;
   constexpr std::chrono::milliseconds kBaseRetryDelay{200};
 
-  auto attempt_ref = std::make_shared<std::function<ReturnIO(int)>>();
+  if (!io_context_) {
+    auto err = make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "InstallConfigManager requires io_context for retry");
+    return ReturnIO::fail(std::move(err));
+  }
 
-  *attempt_ref = [this, expected_version, expected_hash, perform_fetch,
-                  attempt_ref, kMaxAttempts, kBaseRetryDelay](int attempt)
-      -> ReturnIO {
-    return perform_fetch()
-        .then([this, expected_version, expected_hash, attempt, attempt_ref,
-               kMaxAttempts, kBaseRetryDelay](
-                  dto::DeviceInstallConfigDto config) -> ReturnIO {
-          if (expected_version && config.version < *expected_version) {
-            output_.logger().warning()
-                << "Fetched install-config version " << config.version
-                << " is older than expected " << *expected_version
-                << std::endl;
+  auto retry_count = std::make_shared<int>(0);
+  auto next_delay =
+      std::make_shared<std::chrono::milliseconds>(kBaseRetryDelay);
 
-            if (attempt + 1 < kMaxAttempts) {
-              auto delay = kBaseRetryDelay * (attempt + 1);
-              output_.logger().info()
-                  << "Retrying install-config fetch (attempt "
-                  << (attempt + 2) << "/" << kMaxAttempts
-                  << ") after " << delay.count() << "ms" << std::endl;
-              std::this_thread::sleep_for(delay);
-              return (*attempt_ref)(attempt + 1);
-            }
+  auto validated_fetch =
+      perform_fetch().then([this, expected_version,
+                            expected_hash](dto::DeviceInstallConfigDto config)
+                               -> monad::IO<dto::DeviceInstallConfigDto> {
+        if (expected_version && config.version < *expected_version) {
+          output_.logger().warning()
+              << "Fetched install-config version " << config.version
+              << " is older than expected " << *expected_version << std::endl;
 
-            auto err = make_error(
-                my_errors::GENERAL::UNEXPECTED_RESULT,
-                fmt::format(
-                    "install-config fetch returned stale version {} (expected >= {})",
-                    config.version, *expected_version));
-            err.params["expected_version"] = std::to_string(*expected_version);
-            err.params["observed_version"] = std::to_string(config.version);
-            return ReturnIO::fail(std::move(err));
-          }
+          auto err = make_error(
+              my_errors::GENERAL::UNEXPECTED_RESULT,
+              fmt::format("install-config fetch returned stale version {} "
+                          "(expected >= {})",
+                          config.version, *expected_version));
+          err.params["expected_version"] = std::to_string(*expected_version);
+          err.params["observed_version"] = std::to_string(config.version);
+          err.params["retry_reason"] = "stale_version";
+          return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
+        }
 
-          if (expected_version && config.version > *expected_version) {
-            output_.logger().info()
-                << "Fetched install-config version " << config.version
-                << " (ahead of expected " << *expected_version << ")"
-                << std::endl;
-          }
+        if (expected_version && config.version > *expected_version) {
+          output_.logger().info() << "Fetched install-config version "
+                                  << config.version << " (ahead of expected "
+                                  << *expected_version << ")" << std::endl;
+        }
 
-          if (expected_hash && !config.installs_hash.empty() &&
-              config.installs_hash != *expected_hash) {
-            output_.logger().warning()
-                << "Fetched install-config hash mismatch" << std::endl;
-          }
+        if (expected_hash && !config.installs_hash.empty() &&
+            config.installs_hash != *expected_hash) {
+          output_.logger().warning()
+              << "Fetched install-config hash mismatch" << std::endl;
+        }
 
-          return persist_config(config).then([this]() -> ReturnIO {
-            return ReturnIO::pure(cached_config_);
-          });
-        });
+        return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(config));
+      });
+
+  auto should_retry = [this, retry_count, next_delay,
+                       kMaxAttempts](const monad::Error &err) -> bool {
+    auto *reason = err.params.if_contains("retry_reason");
+    if (!reason || !reason->is_string() ||
+        reason->as_string() != "stale_version") {
+      return false;
+    }
+
+    const int current_attempt = *retry_count;
+    const bool can_retry = (current_attempt + 1) < kMaxAttempts;
+    if (can_retry) {
+      auto delay = *next_delay;
+      output_.logger().info()
+          << "Retrying install-config fetch (attempt " << (current_attempt + 2)
+          << "/" << kMaxAttempts << ") after " << delay.count() << "ms"
+          << std::endl;
+      *next_delay = *next_delay * 2;
+    } else {
+      output_.logger().warning()
+          << "install-config fetch exhausted retries for stale version"
+          << std::endl;
+    }
+
+    ++(*retry_count);
+    return can_retry;
   };
 
-  return (*attempt_ref)(0);
+  return std::move(validated_fetch)
+      .retry_exponential_if(kMaxAttempts, kBaseRetryDelay, *io_context_,
+                            should_retry)
+      .then([this](dto::DeviceInstallConfigDto config) -> ReturnIO {
+        return persist_config(std::move(config)).then([this]() -> ReturnIO {
+          return ReturnIO::pure(cached_config_);
+        });
+      });
 }
 
 std::optional<dto::DeviceInstallConfigDto>
@@ -724,8 +883,8 @@ InstallConfigManager::load_from_disk() {
   }
 }
 
-monad::IO<void>
-InstallConfigManager::persist_config(const dto::DeviceInstallConfigDto &config) {
+monad::IO<void> InstallConfigManager::persist_config(
+    const dto::DeviceInstallConfigDto &config) {
   using ReturnIO = monad::IO<void>;
   try {
     std::filesystem::create_directories(state_dir());
@@ -746,11 +905,10 @@ InstallConfigManager::persist_config(const dto::DeviceInstallConfigDto &config) 
     std::filesystem::rename(tmp_name, config_file_path());
 
 #ifndef _WIN32
-    std::filesystem::permissions(
-        config_file_path(),
-        std::filesystem::perms::owner_read |
-            std::filesystem::perms::owner_write,
-        std::filesystem::perm_options::replace);
+    std::filesystem::permissions(config_file_path(),
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace);
 #endif
 
     // Update version file
@@ -763,21 +921,19 @@ InstallConfigManager::persist_config(const dto::DeviceInstallConfigDto &config) 
     }
     std::filesystem::rename(version_tmp, version_file_path());
 #ifndef _WIN32
-    std::filesystem::permissions(
-        version_file_path(),
-        std::filesystem::perms::owner_read |
-            std::filesystem::perms::owner_write,
-        std::filesystem::perm_options::replace);
+    std::filesystem::permissions(version_file_path(),
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace);
 #endif
 
-    cached_config_ =
-        std::make_shared<dto::DeviceInstallConfigDto>(config);
+    cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(config);
     local_version_ = config.version;
 
     return ReturnIO::pure();
   } catch (const std::exception &e) {
-  return ReturnIO::fail(
-    monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, e.what()));
+    return ReturnIO::fail(
+        monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, e.what()));
   }
 }
 
@@ -835,8 +991,9 @@ std::filesystem::path InstallConfigManager::version_file_path() const {
   return state_dir() / "install_version.txt";
 }
 
-std::filesystem::path InstallConfigManager::resource_current_dir(
-    const std::string &ob_type, std::int64_t ob_id) const {
+std::filesystem::path
+InstallConfigManager::resource_current_dir(const std::string &ob_type,
+                                           std::int64_t ob_id) const {
   std::filesystem::path resource_root = runtime_dir_ / "resources";
   if (ob_type == "cert") {
     resource_root /= "certs";
@@ -850,791 +1007,24 @@ std::filesystem::path InstallConfigManager::resource_current_dir(
   return resource_root;
 }
 
-monad::IO<void> InstallConfigManager::ensure_resource_materialized(
-    const dto::InstallItem &item) {
-  auto result = ensure_resource_materialized_impl(item);
-  if (result.has_value()) {
-    return monad::IO<void>::fail(std::move(*result));
-  }
-  return monad::IO<void>::pure();
-}
-
-std::optional<monad::Error>
-InstallConfigManager::ensure_resource_materialized_impl(
-    const dto::InstallItem &item) {
-  using monad::GetStringTag;
-  using monad::http_io;
-  using monad::http_request_io;
-  using ExchangePtr = monad::ExchangePtrFor<GetStringTag>;
-  using ResultType = monad::Result<ExchangePtr, monad::Error>;
-
-  if (!item.ob_type || !item.ob_id) {
-    return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                             "Resource reference missing ob_type/ob_id");
-  }
-
-  BOOST_LOG_SEV(lg, trivial::trace)
-    << "ensure_resource_materialized start ob_type=" << *item.ob_type
-      << " ob_id=" << *item.ob_id;
-
-  const std::string ob_type = *item.ob_type;
-  const std::int64_t ob_id = *item.ob_id;
-  const bool is_cert = (ob_type == "cert");
-
-  auto current_dir = resource_current_dir(*item.ob_type, *item.ob_id);
-
-  if (runtime_dir_.empty()) {
-    return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                             "Runtime directory is not configured");
-  }
-
-  bool all_present = true;
-  bool bundle_requested = false;
-  if (item.from) {
-    for (const auto &virtual_name : *item.from) {
-      if (!virtual_name.empty()) {
-        if (virtual_name == "bundle.pfx") {
-          bundle_requested = true;
-        }
-        if (!std::filesystem::exists(current_dir / virtual_name)) {
-          all_present = false;
-          break;
-        }
-      }
-    }
-  }
-
-  DEBUG_PRINT("ensure_resource_materialized_impl check ob_type=" << ob_type
-               << " ob_id=" << ob_id << " all_present=" << all_present
-               << " bundle_requested=" << bundle_requested);
-
-  if (all_present) {
-    if (is_cert && bundle_requested && !lookup_bundle_password(ob_type, ob_id)) {
-      all_present = false;
-    }
-  }
-
-  if (all_present) {
-    BOOST_LOG_SEV(lg, trivial::trace)
-        << "ensure_resource_materialized_impl short-circuit ob_type="
-        << ob_type << " ob_id=" << ob_id
-        << " materials in place";
-    BOOST_LOG_SEV(lg, trivial::trace)
-        << "Resource already materialized ob_type=" << ob_type
-        << " ob_id=" << ob_id;
-    return std::nullopt;
-  }
-
-  auto parse_enveloped_object = [](const std::string &raw,
-                                   const char *context,
-                                   boost::json::object &out)
-      -> std::optional<monad::Error> {
-    boost::system::error_code ec;
-    auto parsed = boost::json::parse(raw, ec);
-    if (ec || !parsed.is_object()) {
-      return monad::make_error(
-          my_errors::GENERAL::UNEXPECTED_RESULT,
-          fmt::format("{} response not a JSON object: {}", context, ec ? ec.message() : ""));
-    }
-    auto &obj = parsed.as_object();
-    if (auto *data = obj.if_contains("data")) {
-      if (data->is_object()) {
-        out = data->as_object();
-        return std::nullopt;
-      }
-    }
-    return monad::make_error(
-        my_errors::GENERAL::UNEXPECTED_RESULT,
-        fmt::format("{} response missing data object", context));
-  };
-
-  auto get_string_field = [](const boost::json::object &obj,
-                             std::string_view key) -> std::optional<std::string> {
-    if (auto *value = obj.if_contains(key)) {
-      if (value->is_string()) {
-        return value->as_string().c_str();
-      }
-    }
-    return std::nullopt;
-  };
-
-  auto decode_base64_string = [](const std::string &encoded)
-      -> std::optional<std::vector<unsigned char>> {
-    try {
-      std::string decoded = base64_decode(encoded);
-      return std::vector<unsigned char>(decoded.begin(), decoded.end());
-    } catch (...) {
-      return std::nullopt;
-    }
-  };
-
-  auto extract_pem = [](const boost::json::object &obj,
-                        std::string_view key) -> std::optional<std::string> {
-    if (auto *value = obj.if_contains(key)) {
-      if (value->is_string()) {
-        return value->as_string().c_str();
-      }
-      if (auto merged = join_pem_entries(*value)) {
-        return merged;
-      }
-    }
-    return std::nullopt;
-  };
-
-  auto fetch_http_body = [&](const std::string &url,
-                             const std::string &token,
-                             std::string &out_body) -> std::optional<monad::Error> {
-    namespace http = boost::beast::http;
-
-    constexpr int kMaxAttempts = 12;
-    constexpr std::chrono::seconds kRetryBaseDelay{3};
-
-    auto attempt_counter = std::make_shared<int>(0);
-
-    auto fetch_once = http_io<GetStringTag>(url)
-                          .map([&, token](auto ex) {
-                            const int current_attempt = ++(*attempt_counter);
-                            BOOST_LOG_SEV(lg, trivial::trace)
-                                << "fetch_http_body attempt "
-                                << current_attempt << '/' << kMaxAttempts
-                                << " for url=" << url;
-                            ex->request.set(http::field::authorization,
-                                            std::string("Bearer ") + token);
-                            return ex;
-                          })
-                          .then(http_request_io<GetStringTag>(*http_client_))
-                          .then([&, url](ExchangePtr ex) -> monad::IO<std::string> {
-                            if (!ex->response.has_value()) {
-                              BOOST_LOG_SEV(lg, trivial::warning)
-                                  << "fetch_http_body received empty response for url="
-                                  << url;
-                              return monad::IO<std::string>::fail(
-                                  monad::make_error(
-                                      my_errors::NETWORK::READ_ERROR,
-                                      "No response while fetching resource"));
-                            }
-
-                            int status = ex->response->result_int();
-                            std::string body = ex->response->body();
-
-                            if (status == 200) {
-                              DEBUG_PRINT("fetch_http_body success status=200 url="
-                                           << url << " bytes=" << body.size());
-                              BOOST_LOG_SEV(lg, trivial::trace)
-                                  << "fetch_http_body succeeded for url=" << url
-                                  << " (status=200, bytes=" << body.size() << ')';
-                              return monad::IO<std::string>::pure(std::move(body));
-                            }
-
-                            DEBUG_PRINT("fetch_http_body failure status=" << status
-                                         << " url=" << url
-                                         << " preview=" << body.substr(0, 128));
-
-              auto err = monad::make_error(
-                my_errors::NETWORK::READ_ERROR,
-                fmt::format("Resource fetch HTTP {}", status));
-                            err.response_status = status;
-                            err.params["response_body_preview"] = body.substr(0, 512);
-
-                            if (status == 503) {
-                              auto preview = body.substr(0, 512);
-                              output_.logger().info()
-                                  << "Resource fetch 503 for URL '" << url
-                                  << "' (attempt " << *attempt_counter << "/"
-                                  << kMaxAttempts << ") response preview: "
-                                  << preview << std::endl;
-
-                              const auto next_delay = kRetryBaseDelay *
-                                                      (1 << std::max(0, *attempt_counter - 1));
-                              if (*attempt_counter < kMaxAttempts) {
-                                output_.logger().info()
-                                    << "Retrying after " << next_delay.count()
-                                    << " seconds for server availability" << std::endl;
-                              } else {
-                                BOOST_LOG_SEV(lg, trivial::warning)
-                                    << "fetch_http_body exhausted retries for url=" << url
-                                    << " last_status=503";
-                              }
-                            } else {
-                              BOOST_LOG_SEV(lg, trivial::warning)
-                                  << "fetch_http_body aborting on status=" << status
-                                  << " for url=" << url;
-                            }
-
-                            BOOST_LOG_SEV(lg, trivial::error)
-                                << "fetch_http_body error status=" << status
-                                << " url=" << url << " what=" << err.what;
-                            return monad::IO<std::string>::fail(std::move(err));
-                          });
-
-    boost::asio::io_context retry_ioc;
-    retry_ioc.restart();
-
-    auto should_retry = [attempt_counter, kMaxAttempts](const monad::Error &err) {
-      return err.response_status == 503 && *attempt_counter < kMaxAttempts;
-    };
-
-    std::promise<monad::Result<std::string, monad::Error>> promise;
-    auto future = promise.get_future();
-
-    std::move(fetch_once)
-        .retry_exponential_if(kMaxAttempts, kRetryBaseDelay, retry_ioc, should_retry)
-        .run([&promise](monad::Result<std::string, monad::Error> result) {
-          promise.set_value(std::move(result));
-        });
-
-    while (future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
-      auto processed = retry_ioc.poll_one();
-      if (processed == 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      }
-    }
-
-    retry_ioc.restart();
-    retry_ioc.poll();
-
-    auto result = future.get();
-    if (result.is_ok()) {
-      out_body = std::move(result.value());
-      return std::nullopt;
-    }
-
-    DEBUG_PRINT("fetch_http_body final error status="
-                 << result.error().response_status << " url=" << url);
-
-    if (result.error().response_status != 503) {
-      BOOST_LOG_SEV(lg, trivial::debug)
-          << "fetch_http_body received status=" << result.error().response_status
-          << " for url=" << url;
-    }
-
-    auto err = result.error();
-    BOOST_LOG_SEV(lg, trivial::error)
-        << "fetch_http_body giving up url=" << url
-        << " status=" << err.response_status
-        << " what=" << err.what;
-    return err;
-  };
-
-  std::unordered_map<std::string, std::string> text_outputs;
-  std::unordered_map<std::string, std::vector<unsigned char>> binary_outputs;
-
-  std::string deploy_raw_json;
-  std::string detail_raw_json;
-  std::string ca_raw_json;
-  boost::json::object deploy_obj;
-  boost::json::object detail_obj;
-
-  if (!item.ob_type) {
-    return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                             "Install item missing ob_type");
-  }
-
-  if (resource_fetch_override_ && *item.ob_type == "cert") {
-    auto override_body = resource_fetch_override_(item);
-    if (!override_body) {
-      return monad::make_error(
-          my_errors::GENERAL::INVALID_ARGUMENT,
-          "Resource fetch override returned empty body");
-    }
-
-    boost::system::error_code ec;
-    auto parsed = boost::json::parse(*override_body, ec);
-    if (ec || !parsed.is_object()) {
-      return monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
-                               "Override payload for cert is not an object");
-    }
-    auto &obj = parsed.as_object();
-    if (auto *deploy = obj.if_contains("deploy")) {
-      if (deploy->is_object()) {
-        deploy_obj = deploy->as_object();
-      }
-    }
-    if (auto *detail = obj.if_contains("detail")) {
-      if (detail->is_object()) {
-        detail_obj = detail->as_object();
-      }
-    }
-    if (deploy_obj.empty() && obj.if_contains("data") && obj["data"].is_object()) {
-      deploy_obj = obj["data"].as_object();
-    }
-    if (detail_obj.empty() && obj.if_contains("certificate") && obj["certificate"].is_object()) {
-      detail_obj = obj["certificate"].as_object();
-    }
-    if (detail_obj.empty()) {
-      return monad::make_error(
-          my_errors::GENERAL::UNEXPECTED_RESULT,
-          "Override payload missing certificate detail object");
-    }
-    deploy_raw_json = boost::json::serialize(boost::json::object{{"data", deploy_obj}});
-    detail_raw_json = boost::json::serialize(boost::json::object{{"data", detail_obj}});
-    if (deploy_obj.empty()) {
-      boost::json::object placeholder;
-      placeholder["note"] =
-          "resource override missing deploy materials; generated locally";
-      deploy_raw_json = boost::json::serialize(
-          boost::json::object{{"data", placeholder}});
-    }
-  } else if (*item.ob_type == "cert") {
-    if (!http_client_) {
-      auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                   "InstallConfigManager requires HTTP client");
-      BOOST_LOG_SEV(lg, trivial::error)
-          << "ensure_resource_materialized_impl cert fetch missing http_client ob_id="
-          << *item.ob_id;
-      return err;
-    }
-
-    auto token_opt = load_access_token();
-    if (!token_opt || token_opt->empty()) {
-      auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                   "Device access token unavailable");
-      BOOST_LOG_SEV(lg, trivial::error)
-          << "ensure_resource_materialized_impl cert fetch missing token ob_id="
-          << *item.ob_id;
-      return err;
-    }
-
-    const auto &cfg = config_provider_.get();
-    std::string detail_url = fmt::format(
-        "{}/apiv1/devices/self/certificates/{}", cfg.base_url, *item.ob_id);
-    std::string deploy_url = fmt::format(
-        "{}/apiv1/devices/self/certificates/{}/deploy-materials",
-        cfg.base_url, *item.ob_id);
-
-    if (auto err = fetch_http_body(detail_url, *token_opt, detail_raw_json)) {
-      BOOST_LOG_SEV(lg, trivial::error)
-          << "ensure_resource_materialized_impl detail fetch failed cert ob_id="
-          << *item.ob_id << " status=" << err->response_status
-          << " what=" << err->what;
-      return err;
-    }
-
-    bool deploy_available = true;
-    if (auto err = fetch_http_body(deploy_url, *token_opt, deploy_raw_json)) {
-      if (err->response_status == 404 || err->response_status == 204) {
-        deploy_available = false;
-        deploy_raw_json.clear();
-        output_.logger().info()
-            << "Deploy materials endpoint unavailable for cert "
-            << *item.ob_id << " (status=" << err->response_status
-            << "); falling back to certificate detail payload" << std::endl;
-        boost::json::object placeholder;
-        placeholder["note"] =
-            "no deploy materials provided; generated locally by agent";
-        deploy_raw_json =
-            boost::json::serialize(boost::json::object{{"data", placeholder}});
-      } else {
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl deploy fetch failed cert ob_id="
-            << *item.ob_id << " status=" << err->response_status
-            << " what=" << err->what;
-        return err;
-      }
-    }
-
-    if (auto err = parse_enveloped_object(detail_raw_json,
-                                           "certificate detail", detail_obj)) {
-      BOOST_LOG_SEV(lg, trivial::error)
-          << "ensure_resource_materialized_impl parse detail failed cert ob_id="
-          << *item.ob_id << " what=" << err->what;
-      return err;
-    }
-    if (deploy_available) {
-      if (auto err = parse_enveloped_object(
-              deploy_raw_json, "deploy materials", deploy_obj)) {
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl parse deploy failed cert ob_id="
-            << *item.ob_id << " what=" << err->what;
-        return err;
-      }
-    }
-  }
-
-  std::string ca_body;
-  boost::json::object ca_obj;
-  if (*item.ob_type == "ca") {
-    if (resource_fetch_override_) {
-      auto override_body = resource_fetch_override_(item);
-      if (!override_body) {
-        auto err = monad::make_error(
-            my_errors::GENERAL::INVALID_ARGUMENT,
-            "Resource fetch override returned empty body");
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl CA override empty ob_id="
-            << *item.ob_id;
-        return err;
-      }
-      ca_body = std::move(*override_body);
-    } else {
-      if (!http_client_) {
-        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                     "InstallConfigManager requires HTTP client");
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl CA fetch missing http_client ob_id="
-            << *item.ob_id;
-        return err;
-      }
-
-      auto token_opt = load_access_token();
-      if (!token_opt || token_opt->empty()) {
-        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                     "Device access token unavailable");
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl CA fetch missing token ob_id="
-            << *item.ob_id;
-        return err;
-      }
-
-      const auto &cfg = config_provider_.get();
-      std::string url = fmt::format(
-          "{}/apiv1/devices/self/cas/{}/bundle?pack=download", cfg.base_url,
-          *item.ob_id);
-      if (auto err = fetch_http_body(url, *token_opt, ca_body)) {
-        DEBUG_PRINT("CA fetch error status=" << err->response_status
-                     << " url=" << url);
-        BOOST_LOG_SEV(lg, trivial::warning)
-            << "Failed to fetch CA bundle ob_type=" << *item.ob_type
-            << " ob_id=" << *item.ob_id
-            << " status=" << err->response_status;
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl CA fetch failed ob_id="
-            << *item.ob_id << " status=" << err->response_status
-            << " what=" << err->what;
-        return err;
-      }
-
-      DEBUG_PRINT("CA fetch bytes=" << ca_body.size() << " url=" << url);
-    }
-
-    auto bundle_data = parse_bundle_data(ca_body);
-    if (!bundle_data) {
-      DEBUG_PRINT("CA bundle parse failed ob_type=" << *item.ob_type
-                   << " ob_id=" << *item.ob_id
-                   << " preview=" << ca_body.substr(0, 128));
-      BOOST_LOG_SEV(lg, trivial::warning)
-          << "CA bundle missing expected data ob_type=" << *item.ob_type
-          << " ob_id=" << *item.ob_id;
-      auto err = monad::make_error(
-          my_errors::GENERAL::UNEXPECTED_RESULT,
-          "CA bundle response missing expected data");
-      BOOST_LOG_SEV(lg, trivial::error)
-          << "ensure_resource_materialized_impl CA bundle parse failure ob_id="
-          << *item.ob_id;
-      return err;
-    }
-    DEBUG_PRINT("CA bundle parsed keys=" << bundle_data->size()
-                 << " ob_type=" << *item.ob_type << " ob_id=" << *item.ob_id);
-    ca_obj = *bundle_data;
-  }
-
-  try {
-    std::filesystem::create_directories(current_dir);
-
-    if (item.from) {
-      if (*item.ob_type == "cert") {
-        std::string decrypt_error;
-        std::optional<std::string> private_key_pem;
-        if (!deploy_obj.empty()) {
-          private_key_pem =
-              decrypt_private_key_pem(deploy_obj, runtime_dir_, state_dir(),
-                                      decrypt_error);
-        }
-
-        std::string fallback_error;
-        if (!private_key_pem) {
-          private_key_pem = extract_private_key_from_detail(detail_obj,
-                                                            fallback_error);
-        }
-
-        if (!private_key_pem) {
-          std::string message =
-              fmt::format("Failed to materialize private key for cert {}",
-                          *item.ob_id);
-          if (!decrypt_error.empty()) {
-            message += "; deploy materials: " + decrypt_error;
-          }
-          if (!fallback_error.empty()) {
-            message += "; detail fallback: " + fallback_error;
-          }
-          return monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
-                                   std::move(message));
-        }
-
-        text_outputs["private.key"] = *private_key_pem;
-
-        const boost::json::object *detail_view = &detail_obj;
-        if (auto *cert_node = detail_obj.if_contains("certificate")) {
-          if (cert_node->is_object()) {
-            detail_view = &cert_node->as_object();
-          }
-        }
-
-        std::optional<std::string> cert_source =
-            extract_pem(*detail_view, "certificate_pem");
-        if (!cert_source) {
-          cert_source = extract_pem(*detail_view, "cert");
-        }
-
-        if (!cert_source || cert_source->empty()) {
-          return monad::make_error(
-              my_errors::GENERAL::UNEXPECTED_RESULT,
-              fmt::format(
-                  "Certificate detail missing PEM payload for cert {}",
-                  *item.ob_id));
-        }
-
-        auto pem_blocks = split_pem_certificates(*cert_source);
-        if (pem_blocks.empty()) {
-          pem_blocks.emplace_back(*cert_source);
-        }
-
-        std::string leaf_pem = pem_blocks.front();
-        std::string chain_pem = join_cert_blocks(pem_blocks, 1);
-
-        if (auto chain_field = extract_pem(*detail_view, "chain_pem")) {
-          if (!chain_field->empty()) {
-            chain_pem = *chain_field;
-          }
-        }
-
-        std::string fullchain_pem;
-        if (auto fullchain_field = extract_pem(*detail_view, "fullchain_pem")) {
-          fullchain_pem = *fullchain_field;
-        }
-
-        if (fullchain_pem.empty()) {
-          fullchain_pem = leaf_pem;
-          if (!fullchain_pem.empty() && fullchain_pem.back() != '\n') {
-            fullchain_pem.push_back('\n');
-          }
-          if (!chain_pem.empty()) {
-            fullchain_pem += chain_pem;
-          }
-        }
-
-        if (chain_pem.empty()) {
-          auto derived_chain_blocks = split_pem_certificates(fullchain_pem);
-          if (derived_chain_blocks.size() > 1) {
-            chain_pem = join_cert_blocks(derived_chain_blocks, 1);
-          }
-        }
-
-        bool chain_required = false;
-        if (item.from) {
-          chain_required = std::find(item.from->begin(), item.from->end(),
-                                     std::string("chain.pem")) !=
-                           item.from->end();
-        }
-        if (chain_required && chain_pem.empty()) {
-          chain_pem = leaf_pem;
-        }
-
-        text_outputs["certificate.pem"] = leaf_pem;
-        if (!chain_pem.empty()) {
-          text_outputs["chain.pem"] = chain_pem;
-        }
-        text_outputs["fullchain.pem"] = fullchain_pem;
-
-    if (binary_outputs.find("certificate.der") ==
-      binary_outputs.end()) {
-          std::vector<unsigned char> der_bytes;
-          if (cjj365::opensslutil::convert_pem_string_to_der(leaf_pem,
-                                                             der_bytes)) {
-            binary_outputs["certificate.der"] = std::move(der_bytes);
-          }
-        }
-
-        if (binary_outputs.find("bundle.pfx") == binary_outputs.end()) {
-          try {
-            auto pkey =
-                cjj365::opensslutil::load_private_key(*private_key_pem, false);
-            if (!pkey) {
-              return monad::make_error(
-                  my_errors::GENERAL::UNEXPECTED_RESULT,
-                  "Failed to load private key for PKCS#12 generation");
-            }
-
-            std::string pfx_chain = fullchain_pem;
-            if (pfx_chain.empty()) {
-              pfx_chain = leaf_pem;
-            }
-
-            std::string alias = "Certificate";
-            if (auto name = detail_view->if_contains("domain_name")) {
-              if (name->is_string() && !name->as_string().empty()) {
-                alias = std::string(name->as_string().c_str());
-              }
-            } else if (auto name = detail_obj.if_contains("domain_name")) {
-              if (name->is_string() && !name->as_string().empty()) {
-                alias = std::string(name->as_string().c_str());
-              }
-            }
-
-            std::string pfx_password;
-            if (auto existing = lookup_bundle_password(ob_type, ob_id)) {
-              pfx_password = *existing;
-            } else {
-              pfx_password = cjj365::cryptutil::generateApiSecret(40);
-            }
-
-            std::string pkcs12 = cjj365::opensslutil::create_pkcs12_string(
-                pkey, pfx_chain, alias, pfx_password);
-            binary_outputs["bundle.pfx"] =
-                std::vector<unsigned char>(pkcs12.begin(), pkcs12.end());
-            remember_bundle_password(ob_type, ob_id, pfx_password);
-          } catch (const std::exception &ex) {
-            return monad::make_error(
-                my_errors::GENERAL::UNEXPECTED_RESULT,
-                fmt::format("Failed to create PKCS#12 bundle: {}",
-                            ex.what()));
-          }
-        }
-
-    if (binary_outputs.find("certificate.der") ==
-      binary_outputs.end()) {
-          if (auto der_b64 =
-                  get_string_field(*detail_view, "certificate_der_b64")) {
-            if (auto bytes = decode_base64_string(*der_b64)) {
-              binary_outputs["certificate.der"] = std::move(*bytes);
-            }
-          } else if (auto *der_val =
-                         detail_view->if_contains("certificate_der_b64")) {
-            if (auto bytes = decode_base64_to_bytes(*der_val)) {
-              binary_outputs["certificate.der"] = std::move(*bytes);
-            }
-          }
-        }
-
-        if (binary_outputs.find("bundle.pfx") == binary_outputs.end()) {
-          if (auto *pfx_val = detail_view->if_contains("bundle_pfx_b64")) {
-            if (auto bytes = decode_base64_to_bytes(*pfx_val)) {
-              binary_outputs["bundle.pfx"] = std::move(*bytes);
-              forget_bundle_password(ob_type, ob_id);
-            }
-          } else if (auto *pfx_val = detail_view->if_contains("pkcs12_b64")) {
-            if (auto bytes = decode_base64_to_bytes(*pfx_val)) {
-              binary_outputs["bundle.pfx"] = std::move(*bytes);
-              forget_bundle_password(ob_type, ob_id);
-            }
-          }
-        }
-
-        boost::json::object meta_root;
-        meta_root["certificate"] = detail_obj;
-        meta_root["deploy_materials"] = deploy_obj;
-        text_outputs["meta.json"] = boost::json::serialize(meta_root);
-
-        auto raw_path = current_dir.parent_path() / "bundle_raw.json";
-        {
-          std::ofstream ofs(raw_path, std::ios::binary | std::ios::trunc);
-          ofs << deploy_raw_json;
-        }
-
-        auto detail_dump = current_dir.parent_path() / "certificate_detail.json";
-        {
-          std::ofstream ofs(detail_dump, std::ios::binary | std::ios::trunc);
-          ofs << detail_raw_json;
-        }
-      } else if (*item.ob_type == "ca") {
-        if (auto *pem = ca_obj.if_contains("ca_certificate_pem")) {
-          text_outputs["ca.pem"] = boost::json::value_to<std::string>(*pem);
-        }
-        if (auto *der = ca_obj.if_contains("ca_certificate_der_b64")) {
-          if (auto bytes = decode_base64_to_bytes(*der)) {
-            binary_outputs["ca.der"] = std::move(*bytes);
-          }
-        }
-        boost::json::object meta_root;
-        meta_root["ca_bundle"] = ca_obj;
-        text_outputs["meta.json"] = boost::json::serialize(meta_root);
-
-        auto raw_path = current_dir.parent_path() / "bundle_raw.json";
-        {
-          std::ofstream ofs(raw_path, std::ios::binary | std::ios::trunc);
-          ofs << ca_body;
-        }
-      } else {
-        return monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                 fmt::format("Unsupported ob_type '{}'",
-                                             *item.ob_type));
-      }
-
-      std::vector<std::string> missing;
-      for (const auto &virtual_name : *item.from) {
-        if (virtual_name.empty()) {
-          continue;
-        }
-        bool present = binary_outputs.count(virtual_name) ||
-                        text_outputs.count(virtual_name);
-        if (!present) {
-          missing.push_back(virtual_name);
-        }
-      }
-      if (!missing.empty()) {
-        std::ostringstream oss;
-        oss << "Missing deploy materials: ";
-        for (std::size_t i = 0; i < missing.size(); ++i) {
-          if (i != 0) {
-            oss << ", ";
-          }
-          oss << missing[i];
-        }
-        return monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
-                                 oss.str());
-      }
-
-      for (const auto &virtual_name : *item.from) {
-        if (virtual_name.empty()) {
-          continue;
-        }
-        auto file_path = current_dir / virtual_name;
-        if (auto binary_it = binary_outputs.find(virtual_name);
-            binary_it != binary_outputs.end()) {
-          std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
-          ofs.write(reinterpret_cast<const char *>(binary_it->second.data()),
-                    static_cast<std::streamsize>(binary_it->second.size()));
-        } else if (auto text_it = text_outputs.find(virtual_name);
-                   text_it != text_outputs.end()) {
-          std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
-          ofs << text_it->second;
-        }
-      }
-    }
-
-    output_.logger().debug()
-        << "Fetched resource " << *item.ob_type << "/" << *item.ob_id
-        << " (materials cached)" << std::endl;
-  BOOST_LOG_SEV(lg, trivial::trace)
-    << "ensure_resource_materialized complete ob_type=" << ob_type
-        << " ob_id=" << ob_id;
-  } catch (const std::exception &e) {
-    BOOST_LOG_SEV(lg, trivial::error)
-        << "Failed to write resource materials ob_type=" << ob_type
-        << " ob_id=" << ob_id << " error=" << e.what();
-    return monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, e.what());
-  }
-
-  return std::nullopt;
-}
-
 monad::IO<void> InstallConfigManager::apply_copy_actions(
     const dto::DeviceInstallConfigDto &config,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
-  auto resource_materializer =
-      std::make_shared<install_actions::FunctionResourceMaterializer>(
-          [this](const dto::InstallItem &item) {
-            return ensure_resource_materialized(item);
-          });
 
-  install_actions::CopyActionHandler copy_handler(
-      runtime_dir_, output_, resource_materializer);
+  auto copy_handler = copy_handler_factory_();
+  if (!copy_handler) {
+    return monad::IO<void>::fail(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                          "CopyActionHandler factory returned null"));
+  }
+  if (customized_)
+    copy_handler->customize(runtime_dir_, resource_materializer_factory_);
 
   // First perform copy actions
-  return copy_handler
-      .apply(config, target_ob_type, target_ob_id)
-      .then([this, &config, &target_ob_type, target_ob_id]() {
+  return copy_handler->apply(config, target_ob_type, target_ob_id)
+      .then([this, copy_handler, &config, &target_ob_type, target_ob_id]() {
+        (void)copy_handler;
         BOOST_LOG_SEV(lg, trivial::trace)
             << "apply_copy_actions exec stage start target_ob_type="
             << (target_ob_type ? *target_ob_type : std::string("<none>"))
@@ -1647,29 +1037,19 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
         if (target_ob_type) {
           allowed_types = std::vector<std::string>{*target_ob_type};
         }
-        auto exec_resource_materializer =
-            std::make_shared<install_actions::FunctionResourceMaterializer>(
-                [this](const dto::InstallItem &item) {
-                  return ensure_resource_materialized(item);
-                });
-        auto exec_env_resolver =
-            std::make_shared<install_actions::FunctionExecEnvironmentResolver>(
-                [this](const dto::InstallItem &item)
-                    -> std::optional<std::unordered_map<std::string, std::string>> {
-                  return resolve_exec_env_for_item(item);
-                });
 
-        install_actions::ExecActionHandler exec_handler(
-            runtime_dir_, output_, exec_resource_materializer,
-            exec_env_resolver);
-        return exec_handler.apply(config, allowed_types);
+        auto exec_handler = exec_handler_factory_();
+        if (customized_)
+          exec_handler->customize(runtime_dir_, resource_materializer_factory_,
+                                  exec_env_resolver_factory_);
+        return exec_handler->apply(config, allowed_types);
       })
-  .catch_then([this](monad::Error err) {
+      .catch_then([this, copy_handler](monad::Error err) {
+        (void)copy_handler;
         BOOST_LOG_SEV(lg, trivial::error)
             << "apply_copy_actions encountered error code=" << err.code
-            << " status=" << err.response_status
-    << " what=" << err.what
-    << " params=" << boost::json::serialize(err.params);
+            << " status=" << err.response_status << " what=" << err.what
+            << " params=" << boost::json::serialize(err.params);
         return monad::IO<void>::fail(std::move(err));
       });
 }
@@ -1678,51 +1058,44 @@ monad::IO<void> InstallConfigManager::apply_import_ca_actions(
     const dto::DeviceInstallConfigDto &config,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
-  auto resource_materializer =
-      std::make_shared<install_actions::FunctionResourceMaterializer>(
-          [this](const dto::InstallItem &item) {
-            return ensure_resource_materialized(item);
-          });
+  if (!import_ca_action_handler_factory_) {
+    return monad::IO<void>::fail(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "ImportCaActionHandler factory not configured"));
+  }
 
-  install_actions::ImportCaActionHandler import_handler(
-      runtime_dir_, output_, resource_materializer);
+  auto import_handler = import_ca_action_handler_factory_();
+  if (!import_handler) {
+    return monad::IO<void>::fail(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                          "ImportCaActionHandler factory returned null"));
+  }
 
   BOOST_LOG_SEV(lg, trivial::trace)
-    << "apply_import_ca_actions start target_ob_type="
-    << (target_ob_type ? *target_ob_type : std::string("<none>"))
-    << " target_ob_id="
-    << (target_ob_id ? std::to_string(*target_ob_id) : "<none>");
+      << "apply_import_ca_actions start target_ob_type="
+      << (target_ob_type ? *target_ob_type : std::string("<none>"))
+      << " target_ob_id="
+      << (target_ob_id ? std::to_string(*target_ob_id) : "<none>");
 
-  return import_handler
-      .apply(config, target_ob_type, target_ob_id)
-      .then([this, &config, &target_ob_type, target_ob_id]() {
+  return import_handler->apply(config, target_ob_type, target_ob_id)
+      .then([this, import_handler, &config, &target_ob_type, target_ob_id]() {
+        (void)import_handler;
         std::optional<std::vector<std::string>> allowed_types = std::nullopt;
         if (target_ob_type) {
           allowed_types = std::vector<std::string>{*target_ob_type};
         }
-        auto exec_resource_materializer =
-            std::make_shared<install_actions::FunctionResourceMaterializer>(
-                [this](const dto::InstallItem &item) {
-                  return ensure_resource_materialized(item);
-                });
-        auto exec_env_resolver =
-            std::make_shared<install_actions::FunctionExecEnvironmentResolver>(
-                [this](const dto::InstallItem &item)
-                    -> std::optional<std::unordered_map<std::string, std::string>> {
-                  return resolve_exec_env_for_item(item);
-                });
-
-        install_actions::ExecActionHandler exec_handler(
-            runtime_dir_, output_, exec_resource_materializer,
-            exec_env_resolver);
-        return exec_handler.apply(config, allowed_types);
+        auto exec_handler = exec_handler_factory_();
+        if (customized_)
+          exec_handler->customize(runtime_dir_, resource_materializer_factory_,
+                                  exec_env_resolver_factory_);
+        return exec_handler->apply(config, allowed_types);
       })
-  .catch_then([this](monad::Error err) {
+      .catch_then([this, import_handler](monad::Error err) {
+        (void)import_handler;
         BOOST_LOG_SEV(lg, trivial::error)
             << "apply_import_ca_actions encountered error code=" << err.code
-            << " status=" << err.response_status
-    << " what=" << err.what
-    << " params=" << boost::json::serialize(err.params);
+            << " status=" << err.response_status << " what=" << err.what
+            << " params=" << boost::json::serialize(err.params);
         return monad::IO<void>::fail(std::move(err));
       });
 }
@@ -1748,7 +1121,9 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
                 << "auto_apply_config disabled; staged install-config version "
                 << config_ptr->version << " for manual approval." << std::endl;
             output_.logger().info()
-                << "To apply staged changes (including any cmd/cmd_argv updates), run: cert-ctrl install-config apply" << std::endl;
+                << "To apply staged changes (including any cmd/cmd_argv "
+                   "updates), run: cert-ctrl install-config apply"
+                << std::endl;
             return ReturnIO::pure();
           }
           return apply_copy_actions(*config_ptr, std::nullopt, std::nullopt);
@@ -1756,8 +1131,9 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
   }
 
   if (signal.type == "cert.renewed") {
-  if (auto typed = ::data::get_cert_renewed(signal)) {
-      return ensure_cached_config().then([this, cert_id = typed->cert_id](auto config_ptr) {
+    if (auto typed = ::data::get_cert_renewed(signal)) {
+      return ensure_cached_config().then([this, cert_id = typed->cert_id](
+                                             auto config_ptr) {
         return apply_copy_actions(*config_ptr, std::string("cert"), cert_id);
       });
     }
@@ -1774,8 +1150,7 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
 }
 
 std::optional<std::unordered_map<std::string, std::string>>
-InstallConfigManager::resolve_exec_env_for_item(
-    const dto::InstallItem &item) {
+InstallConfigManager::resolve_exec_env_for_item(const dto::InstallItem &item) {
   if (!item.ob_type || !item.ob_id) {
     return std::nullopt;
   }
@@ -1793,8 +1168,9 @@ InstallConfigManager::resolve_exec_env_for_item(
   return env;
 }
 
-std::optional<std::string> InstallConfigManager::lookup_bundle_password(
-    const std::string &ob_type, std::int64_t ob_id) const {
+std::optional<std::string>
+InstallConfigManager::lookup_bundle_password(const std::string &ob_type,
+                                             std::int64_t ob_id) const {
   auto type_it = bundle_passwords_.find(ob_type);
   if (type_it == bundle_passwords_.end()) {
     return std::nullopt;
@@ -1812,8 +1188,8 @@ void InstallConfigManager::remember_bundle_password(
   bundle_passwords_[ob_type][ob_id] = password;
 }
 
-void InstallConfigManager::forget_bundle_password(
-    const std::string &ob_type, std::int64_t ob_id) {
+void InstallConfigManager::forget_bundle_password(const std::string &ob_type,
+                                                  std::int64_t ob_id) {
   auto type_it = bundle_passwords_.find(ob_type);
   if (type_it == bundle_passwords_.end()) {
     return;

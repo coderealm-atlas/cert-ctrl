@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fmt/format.h>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -20,8 +22,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-#include <functional>
-#include <fmt/format.h>
 
 #include <boost/beast/http.hpp>
 #include <sodium.h>
@@ -31,19 +31,20 @@
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "data/install_config_dto.hpp"
-#include "http_client_monad.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "handlers/updates_polling_handler.hpp"
-#include "my_error_codes.hpp"
 #include "http_client_config_provider.hpp"
 #include "http_client_manager.hpp"
+#include "http_client_monad.hpp"
 #include "include/api_test_helper.hpp"
-#include "include/test_install_config_helper.hpp"
+#include "include/install_config_manager_test_utils.hpp"
 #include "include/login_helper.hpp"
 #include "include/test_injector.hpp"
+#include "include/test_install_config_helper.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
 #include "misc_util.hpp"
+#include "my_error_codes.hpp"
 
 namespace di = boost::di;
 namespace fs = std::filesystem;
@@ -63,8 +64,7 @@ bool real_server_tests_enabled() {
 }
 
 std::string make_unique_suffix() {
-  auto now =
-      std::chrono::steady_clock::now().time_since_epoch().count();
+  auto now = std::chrono::steady_clock::now().time_since_epoch().count();
   std::mt19937_64 gen(std::random_device{}());
   std::uniform_int_distribution<uint64_t> dist;
   std::ostringstream oss;
@@ -174,7 +174,8 @@ protected:
 
   void SetUp() override {
     if (!real_server_tests_enabled()) {
-      GTEST_SKIP() << "Set CERTCTRL_REAL_SERVER_TESTS=1 to enable real server end-to-end tests.";
+      GTEST_SKIP() << "Set CERTCTRL_REAL_SERVER_TESTS=1 to enable real server "
+                      "end-to-end tests.";
     }
 
     ASSERT_GE(sodium_init(), 0) << "libsodium initialization failed";
@@ -191,8 +192,8 @@ protected:
       ofs << json::serialize(o);
     };
 
-  write_json(tmp_root_ / "application.json",
-         json::object{{"auto_apply_config", false},
+    write_json(tmp_root_ / "application.json",
+               json::object{{"auto_apply_config", false},
                             {"verbose", "info"},
                             {"url_base", base_url_}});
     write_json(tmp_root_ / "httpclient_config.json",
@@ -204,26 +205,25 @@ protected:
                             {"certificate_files", json::array{}},
                             {"proxy_pool", json::array{}}});
     write_json(tmp_root_ / "ioc_config.json",
-               json::object{{"threads_num", 1},
-                            {"name", "updates-real"}});
+               json::object{{"threads_num", 1}, {"name", "updates-real"}});
 
-  std::vector<fs::path> config_paths{tmp_root_};
-  std::vector<std::string> profiles;
+    std::vector<fs::path> config_paths{tmp_root_};
+    std::vector<std::string> profiles;
 
-  config_sources_ptr_ =
-    std::make_unique<cjj365::ConfigSources>(config_paths, profiles);
+    config_sources_ptr_ =
+        std::make_unique<cjj365::ConfigSources>(config_paths, profiles);
 
-  certctrl::CliParams params{};
-  params.subcmd = "updates";
-  params.config_dirs = {tmp_root_};
+    certctrl::CliParams params{};
+    params.subcmd = "updates";
+    params.config_dirs = {tmp_root_};
 
-  auto vm = po::variables_map{};
-  auto positional = std::vector<std::string>{"updates"};
-  auto unrecognized = std::vector<std::string>{"updates"};
+    auto vm = po::variables_map{};
+    auto positional = std::vector<std::string>{"updates"};
+    auto unrecognized = std::vector<std::string>{"updates"};
 
-  cli_ctx_ptr_ = std::make_unique<certctrl::CliCtx>(
-    std::move(vm), std::move(positional), std::move(unrecognized),
-    std::move(params));
+    cli_ctx_ptr_ = std::make_unique<certctrl::CliCtx>(
+        std::move(vm), std::move(positional), std::move(unrecognized),
+        std::move(params));
     cli_ctx_ = cli_ctx_ptr_.get();
 
     auto injector = di::make_injector(
@@ -269,11 +269,11 @@ protected:
     ASSERT_GT(user_id_, 0) << "login returned invalid user_id";
 
 #ifdef _WIN32
-  _putenv_s("DEVICE_ACCESS_TOKEN", "");
-  _putenv_s("DEVICE_REFRESH_TOKEN", "");
+    _putenv_s("DEVICE_ACCESS_TOKEN", "");
+    _putenv_s("DEVICE_REFRESH_TOKEN", "");
 #else
-  ::unsetenv("DEVICE_ACCESS_TOKEN");
-  ::unsetenv("DEVICE_REFRESH_TOKEN");
+    ::unsetenv("DEVICE_ACCESS_TOKEN");
+    ::unsetenv("DEVICE_REFRESH_TOKEN");
 #endif
   }
 
@@ -350,8 +350,8 @@ protected:
     return devices_r->value();
   }
 
-  std::optional<RegisteredDeviceSession> register_device_with_code(
-      const std::string &registration_code) {
+  std::optional<RegisteredDeviceSession>
+  register_device_with_code(const std::string &registration_code) {
     if (registration_code.empty()) {
       ADD_FAILURE() << "registration_code is empty";
       return std::nullopt;
@@ -369,8 +369,7 @@ protected:
       return !ec;
     };
 
-    auto write_key_file = [](const fs::path &path,
-                             const unsigned char *data,
+    auto write_key_file = [](const fs::path &path, const unsigned char *data,
                              size_t size) -> bool {
       std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
       if (!ofs.is_open()) {
@@ -392,10 +391,9 @@ protected:
       return std::nullopt;
     }
 
-    const fs::path secret_targets[] = {
-        keys_dir / "dev_sk.bin",
-        tmp_root_ / "dev_sk.bin",
-        state_dir / "dev_sk.bin"};
+    const fs::path secret_targets[] = {keys_dir / "dev_sk.bin",
+                                       tmp_root_ / "dev_sk.bin",
+                                       state_dir / "dev_sk.bin"};
     for (const auto &secret_path : secret_targets) {
       if (!write_key_file(secret_path, sk.data(), sk.size())) {
         ADD_FAILURE() << "failed to write " << secret_path;
@@ -419,13 +417,12 @@ protected:
                 static_cast<std::streamsize>(sk.size()));
       ofs.close();
       if (!ofs) {
-        ADD_FAILURE() << "failed to write exported dev_sk.bin to "
-                      << export_sk;
+        ADD_FAILURE() << "failed to write exported dev_sk.bin to " << export_sk;
         return std::nullopt;
       }
     }
-    std::cerr << "Saved device secret key copies under: " << keys_dir << " and runtime roots"
-              << std::endl;
+    std::cerr << "Saved device secret key copies under: " << keys_dir
+              << " and runtime roots" << std::endl;
     if (!write_key_file(keys_dir / "dev_pk.bin", pk.data(), pk.size())) {
       ADD_FAILURE() << "failed to write dev_pk.bin";
       return std::nullopt;
@@ -451,22 +448,21 @@ protected:
     std::string user_agent = "cert-ctrl/tests-updates";
     std::string dev_pk_b64 = base64_encode(pk.data(), pk.size());
 
-    json::object body{
-        {"device_public_id", session.device_public_id},
-        {"platform", "linux"},
-        {"model", "updates-test"},
-        {"app_version", "1.0.0-test"},
-        {"name", device_name},
-        {"ip", "127.0.0.1"},
-        {"user_agent", user_agent},
-        {"dev_pk", dev_pk_b64},
-        {"registration_code", registration_code}};
+    json::object body{{"device_public_id", session.device_public_id},
+                      {"platform", "linux"},
+                      {"model", "updates-test"},
+                      {"app_version", "1.0.0-test"},
+                      {"name", device_name},
+                      {"ip", "127.0.0.1"},
+                      {"user_agent", user_agent},
+                      {"dev_pk", dev_pk_b64},
+                      {"registration_code", registration_code}};
 
     using RegisterIO = monad::IO<json::object>;
     namespace http = boost::beast::http;
 
-    std::string url = base_url_ + "/apiv1/users/" + std::to_string(user_id_) +
-                      "/devices";
+    std::string url =
+        base_url_ + "/apiv1/users/" + std::to_string(user_id_) + "/devices";
     auto payload_ptr = std::make_shared<json::object>(std::move(body));
 
     misc::ThreadNotifier notifier(60000);
@@ -494,8 +490,7 @@ protected:
       return std::nullopt;
     }
     if (register_r->is_err()) {
-      ADD_FAILURE() << "device register failed: "
-                    << register_r->error().what;
+      ADD_FAILURE() << "device register failed: " << register_r->error().what;
       return std::nullopt;
     }
 
@@ -507,8 +502,7 @@ protected:
     const auto &device_obj = data_obj.at("device").as_object();
     session.device_id = device_obj.at("id").as_int64();
 
-    if (data_obj.if_contains("session") &&
-        data_obj.at("session").is_object()) {
+    if (data_obj.if_contains("session") && data_obj.at("session").is_object()) {
       const auto &session_obj = data_obj.at("session").as_object();
       if (session_obj.if_contains("access_token") &&
           session_obj.at("access_token").is_string()) {
@@ -532,7 +526,8 @@ protected:
 
 TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
   if (!real_server_tests_enabled()) {
-    GTEST_SKIP() << "Set RUN_REAL_SERVER_TESTS=1 to enable real server polling tests";
+    GTEST_SKIP()
+        << "Set RUN_REAL_SERVER_TESTS=1 to enable real server polling tests";
   }
 
   using namespace std::chrono_literals;
@@ -566,8 +561,7 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
   ASSERT_FALSE(verify_r->is_err())
       << "device_verify failed: " << verify_r->error().what;
 
-  const int poll_interval =
-      std::clamp(start_resp.interval, 1, 10);
+  const int poll_interval = std::clamp(start_resp.interval, 1, 10);
   const int max_attempts =
       std::clamp(start_resp.expires_in / start_resp.interval, 1, 20);
 
@@ -590,8 +584,7 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
 
     const auto &poll_resp = poll_r->value();
     last_status = poll_resp.status;
-    if (poll_resp.registration_code &&
-        !poll_resp.registration_code->empty()) {
+    if (poll_resp.registration_code && !poll_resp.registration_code->empty()) {
       ASSERT_TRUE(poll_resp.user_id.has_value())
           << "ready poll response missing user_id";
       ASSERT_FALSE(poll_resp.user_id->empty())
@@ -634,18 +627,18 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
   auto key_dir = tmp_root_ / "keys";
   auto secret_path = key_dir / "dev_sk.bin";
   ASSERT_TRUE(fs::exists(secret_path))
-    << "expected device secret key at " << secret_path;
+      << "expected device secret key at " << secret_path;
   {
-  std::ifstream sk_in(secret_path, std::ios::binary);
-  ASSERT_TRUE(sk_in.is_open())
-    << "failed to reopen device secret key at " << secret_path;
-  std::vector<unsigned char> buf((std::istreambuf_iterator<char>(sk_in)),
-                   std::istreambuf_iterator<char>());
-  ASSERT_EQ(buf.size(), crypto_box_SECRETKEYBYTES)
-    << "unexpected secret key length";
+    std::ifstream sk_in(secret_path, std::ios::binary);
+    ASSERT_TRUE(sk_in.is_open())
+        << "failed to reopen device secret key at " << secret_path;
+    std::vector<unsigned char> buf((std::istreambuf_iterator<char>(sk_in)),
+                                   std::istreambuf_iterator<char>());
+    ASSERT_EQ(buf.size(), crypto_box_SECRETKEYBYTES)
+        << "unexpected secret key length";
   }
   ASSERT_TRUE(fs::exists(key_dir / "dev_pk.bin"))
-    << "expected device public key at " << key_dir / "dev_pk.bin";
+      << "expected device public key at " << key_dir / "dev_pk.bin";
 
   auto devices = fetch_user_devices();
   bool found_new_device = false;
@@ -711,8 +704,8 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     std::optional<monad::MyResult<testutil::CertInfo>> cert_r;
     std::vector<std::string> sans{"*.test-updates.local"};
     testutil::create_cert_record_io(*http_mgr_, base_url_, session_cookie_,
-                                    user_id_, acme_info.id, "test-updates.local",
-                                    sans)
+                                    user_id_, acme_info.id,
+                                    "test-updates.local", sans)
         .run([&](auto r) {
           cert_r = std::move(r);
           cert_notifier.notify();
@@ -747,8 +740,7 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     std::optional<monad::MyVoidResult> assoc_r;
     testutil::associate_ca_with_device_io(*http_mgr_, base_url_,
                                           session_cookie_, user_id_,
-                                          device_session.device_id,
-                                          ca_info.id)
+                                          device_session.device_id, ca_info.id)
         .run([&](auto r) {
           assoc_r = std::move(r);
           assoc_notifier.notify();
@@ -776,15 +768,14 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
   }
 
   {
-  auto install_suffix = make_unique_suffix();
-  fs::path install_root = tmp_root_ / "install-targets" / install_suffix;
-  json::array install_items;
+    auto install_suffix = make_unique_suffix();
+    fs::path install_root = tmp_root_ / "install-targets" / install_suffix;
+    json::array install_items;
 
-  const std::string install_base = install_root.string();
+    const std::string install_base = install_root.string();
 
-    json::array cert_from{"private.key",     "certificate.pem",
-                          "chain.pem",       "fullchain.pem",
-                          "certificate.der", "bundle.pfx",
+    json::array cert_from{"private.key",   "certificate.pem", "chain.pem",
+                          "fullchain.pem", "certificate.der", "bundle.pfx",
                           "meta.json"};
     json::array cert_to;
     cert_to.emplace_back(install_base + "/cert/private.key");
@@ -795,22 +786,23 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     cert_to.emplace_back(install_base + "/cert/bundle.pfx");
     cert_to.emplace_back(install_base + "/cert/meta.json");
 
-    json::object cert_copy{{"id", "cert-" + install_suffix},
-                           {"type", "copy"},
-                           {"continue_on_error", false},
-                           {"depends_on", json::array{}},
-                           {"tags", json::array{}},
-                           {"ob_type", "cert"},
-                           {"ob_id", cert_info.id},
-                           {"ob_name", cert_info.domain_name},
-                           {"from", std::move(cert_from)},
-                           {"to", std::move(cert_to)},
-                           {"cmd", ""},
-                           {"cmd_argv", json::array{}},
-                           {"timeout_ms", 0},
-                           {"run_as", ""},
-                           {"env", json::object{}},
-                           {"verify", json::object{{"type", "cert_fingerprint"}}}};
+    json::object cert_copy{
+        {"id", "cert-" + install_suffix},
+        {"type", "copy"},
+        {"continue_on_error", false},
+        {"depends_on", json::array{}},
+        {"tags", json::array{}},
+        {"ob_type", "cert"},
+        {"ob_id", cert_info.id},
+        {"ob_name", cert_info.domain_name},
+        {"from", std::move(cert_from)},
+        {"to", std::move(cert_to)},
+        {"cmd", ""},
+        {"cmd_argv", json::array{}},
+        {"timeout_ms", 0},
+        {"run_as", ""},
+        {"env", json::object{}},
+        {"verify", json::object{{"type", "cert_fingerprint"}}}};
 
     json::array ca_from{"ca.pem"};
     json::array ca_to;
@@ -837,7 +829,7 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     install_items.emplace_back(std::move(ca_copy));
 
     const std::string change_note =
-      "test-updates install config " + install_suffix;
+        "test-updates install config " + install_suffix;
 
     misc::ThreadNotifier install_notifier(120000);
     std::optional<monad::MyVoidResult> install_r;
@@ -854,58 +846,64 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     ASSERT_FALSE(install_r->is_err())
         << "create_install_config failed: " << install_r->error().what;
 
-  auto fetch_override = [http_mgr = http_mgr_, base_url = base_url_,
-                        user_id = user_id_, cookie = session_cookie_,
-                        device_id = device_session.device_id]
-      (std::optional<std::int64_t>,
-       const std::optional<std::string> &)
-          -> monad::IO<dto::DeviceInstallConfigDto> {
-        using monad::GetStringTag;
-        namespace http = boost::beast::http;
+    auto fetch_override =
+        [http_mgr = http_mgr_, base_url = base_url_, user_id = user_id_,
+         cookie = session_cookie_, device_id = device_session.device_id](
+            std::optional<std::int64_t>, const std::optional<std::string> &)
+        -> monad::IO<dto::DeviceInstallConfigDto> {
+      using monad::GetStringTag;
+      namespace http = boost::beast::http;
 
-    std::string url = fmt::format(
-      "{}/apiv1/users/{}/devices/{}/install-config", base_url,
-      user_id, device_id);
+      std::string url =
+          fmt::format("{}/apiv1/users/{}/devices/{}/install-config", base_url,
+                      user_id, device_id);
 
-        return monad::http_io<GetStringTag>(url)
-            .map([cookie](auto ex) {
-              ex->request.set(http::field::cookie, cookie);
-              return ex;
-            })
-            .then(monad::http_request_io<GetStringTag>(*http_mgr))
-            .then([](auto ex) -> monad::IO<dto::DeviceInstallConfigDto> {
-              if (!ex->response.has_value()) {
-                return monad::IO<dto::DeviceInstallConfigDto>::fail(
-                    monad::make_error(my_errors::NETWORK::READ_ERROR,
-                                      "No response for install-config"));
-              }
+      return monad::http_io<GetStringTag>(url)
+          .map([cookie](auto ex) {
+            ex->request.set(http::field::cookie, cookie);
+            return ex;
+          })
+          .then(monad::http_request_io<GetStringTag>(*http_mgr))
+          .then([](auto ex) -> monad::IO<dto::DeviceInstallConfigDto> {
+            if (!ex->response.has_value()) {
+              return monad::IO<dto::DeviceInstallConfigDto>::fail(
+                  monad::make_error(my_errors::NETWORK::READ_ERROR,
+                                    "No response for install-config"));
+            }
 
-              int status = ex->response->result_int();
-              if (status != 200) {
-                auto err = monad::make_error(
-                    my_errors::NETWORK::READ_ERROR,
-                    fmt::format("install-config fetch HTTP status {}",
-                                status));
-                err.response_status = status;
-                err.params["response_body_preview"] = ex->response->body();
-                return monad::IO<dto::DeviceInstallConfigDto>::fail(
-                    std::move(err));
-              }
+            int status = ex->response->result_int();
+            if (status != 200) {
+              auto err = monad::make_error(
+                  my_errors::NETWORK::READ_ERROR,
+                  fmt::format("install-config fetch HTTP status {}", status));
+              err.response_status = status;
+              err.params["response_body_preview"] = ex->response->body();
+              return monad::IO<dto::DeviceInstallConfigDto>::fail(
+                  std::move(err));
+            }
 
-              auto result = ex->template parseJsonDataResponse<
-                  dto::DeviceInstallConfigDto>();
-              if (result.is_err()) {
-                return monad::IO<dto::DeviceInstallConfigDto>::fail(
-                    result.error());
-              }
-              return monad::IO<dto::DeviceInstallConfigDto>::pure(
-                  result.value());
-            });
-      };
+            auto result = ex->template parseJsonDataResponse<
+                dto::DeviceInstallConfigDto>();
+            if (result.is_err()) {
+              return monad::IO<dto::DeviceInstallConfigDto>::fail(
+                  result.error());
+            }
+            return monad::IO<dto::DeviceInstallConfigDto>::pure(result.value());
+          });
+    };
 
-    customio::ConsoleOutput debug_output(testinfra::shared_output());
-    certctrl::InstallConfigManager debug_manager(
-        tmp_root_, *cfg_provider_, debug_output, http_mgr_, fetch_override);
+  customio::ConsoleOutput debug_output(testinfra::shared_output());
+  auto manager_factories =
+    certctrl::test_utils::make_default_install_manager_factories(
+      *cfg_provider_, debug_output);
+  certctrl::InstallConfigManager debug_manager(
+    *cfg_provider_, debug_output, http_mgr_,
+    manager_factories.resource_materializer_factory,
+    manager_factories.import_ca_handler_factory,
+    manager_factories.exec_action_handler_factory,
+    manager_factories.copy_action_handler_factory,
+    manager_factories.exec_env_resolver_factory);
+  debug_manager.customize(tmp_root_, fetch_override);
 
     const int max_config_attempts = 6;
     std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr;
@@ -913,8 +911,9 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
 
     for (int attempt = 0; attempt < max_config_attempts; ++attempt) {
       misc::ThreadNotifier config_notifier(120000);
-      std::optional<monad::Result<std::shared_ptr<const dto::DeviceInstallConfigDto>,
-                                  monad::Error>> config_result;
+      std::optional<monad::Result<
+          std::shared_ptr<const dto::DeviceInstallConfigDto>, monad::Error>>
+          config_result;
       debug_manager.ensure_config_version(std::nullopt, std::nullopt)
           .run([&](auto r) {
             config_result = std::move(r);
@@ -942,8 +941,7 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
              << " (status=" << last_config_error.response_status << ")";
     }
 
-    ASSERT_TRUE(config_ptr)
-        << "Failed to obtain install config after retries";
+    ASSERT_TRUE(config_ptr) << "Failed to obtain install config after retries";
 
     misc::ThreadNotifier apply_notifier(120000);
     std::optional<monad::MyVoidResult> apply_result;
@@ -953,176 +951,171 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
           apply_notifier.notify();
         });
     apply_notifier.waitForNotification();
-    ASSERT_TRUE(apply_result.has_value()) << "apply_copy_actions produced no result";
+    ASSERT_TRUE(apply_result.has_value())
+        << "apply_copy_actions produced no result";
     ASSERT_FALSE(apply_result->is_err())
         << "apply_copy_actions failed: " << apply_result->error().what;
 
-  auto read_text_file = [](const fs::path &path)
-    -> std::optional<std::string> {
-    std::ifstream ifs(path, std::ios::binary);
-    if (!ifs.is_open()) {
-    return std::nullopt;
+    auto read_text_file =
+        [](const fs::path &path) -> std::optional<std::string> {
+      std::ifstream ifs(path, std::ios::binary);
+      if (!ifs.is_open()) {
+        return std::nullopt;
+      }
+      std::ostringstream oss;
+      oss << ifs.rdbuf();
+      return oss.str();
+    };
+
+    auto cert_resource_root =
+        tmp_root_ / "resources" / "certs" / std::to_string(cert_info.id);
+    auto cert_current = cert_resource_root / "current";
+
+    ASSERT_TRUE(fs::exists(cert_resource_root / "bundle_raw.json"))
+        << "missing bundle_raw.json for cert " << cert_info.id;
+    ASSERT_TRUE(fs::exists(cert_resource_root / "certificate_detail.json"))
+        << "missing certificate_detail.json for cert " << cert_info.id;
+
+    auto private_key_text = read_text_file(cert_current / "private.key");
+    ASSERT_TRUE(private_key_text.has_value())
+        << "private.key not materialized for cert " << cert_info.id;
+    EXPECT_EQ(private_key_text->rfind("-----BEGIN", 0), 0)
+        << "private.key not PEM encoded";
+
+    auto certificate_text = read_text_file(cert_current / "certificate.pem");
+    ASSERT_TRUE(certificate_text.has_value())
+        << "certificate.pem not materialized for cert " << cert_info.id;
+    EXPECT_NE(certificate_text->find("BEGIN CERTIFICATE"), std::string::npos)
+        << "certificate.pem missing BEGIN CERTIFICATE";
+
+    auto chain_text = read_text_file(cert_current / "chain.pem");
+    ASSERT_TRUE(chain_text.has_value())
+        << "chain.pem not materialized for cert " << cert_info.id;
+    EXPECT_NE(chain_text->find("BEGIN CERTIFICATE"), std::string::npos)
+        << "chain.pem missing certificate data";
+
+    auto fullchain_text = read_text_file(cert_current / "fullchain.pem");
+    ASSERT_TRUE(fullchain_text.has_value())
+        << "fullchain.pem not materialized for cert " << cert_info.id;
+    EXPECT_NE(fullchain_text->find("BEGIN CERTIFICATE"), std::string::npos)
+        << "fullchain.pem missing certificate data";
+
+    auto meta_text = read_text_file(cert_current / "meta.json");
+    ASSERT_TRUE(meta_text.has_value())
+        << "meta.json not materialized for cert " << cert_info.id;
+    boost::system::error_code meta_ec;
+    auto meta_json = boost::json::parse(*meta_text, meta_ec);
+    ASSERT_FALSE(meta_ec) << "failed to parse cert meta.json: "
+                          << meta_ec.message();
+    ASSERT_TRUE(meta_json.is_object()) << "cert meta.json not an object";
+    auto &meta_obj = meta_json.as_object();
+    EXPECT_TRUE(meta_obj.if_contains("certificate"))
+        << "meta.json missing certificate section";
+    EXPECT_TRUE(meta_obj.if_contains("deploy_materials"))
+        << "meta.json missing deploy_materials section";
+
+    auto detail_text =
+        read_text_file(cert_resource_root / "certificate_detail.json");
+    ASSERT_TRUE(detail_text.has_value())
+        << "certificate_detail.json missing for cert " << cert_info.id;
+    boost::system::error_code detail_ec;
+    auto detail_json = boost::json::parse(*detail_text, detail_ec);
+    ASSERT_FALSE(detail_ec)
+        << "failed to parse certificate_detail.json: " << detail_ec.message();
+    ASSERT_TRUE(detail_json.is_object())
+        << "certificate_detail.json not an object";
+    const boost::json::object *detail_data = nullptr;
+    if (auto *data = detail_json.as_object().if_contains("data")) {
+      if (data->is_object()) {
+        detail_data = &data->as_object();
+      }
     }
-    std::ostringstream oss;
-    oss << ifs.rdbuf();
-    return oss.str();
-  };
-
-  auto cert_resource_root = tmp_root_ / "resources" / "certs" /
-                std::to_string(cert_info.id);
-  auto cert_current = cert_resource_root / "current";
-
-  ASSERT_TRUE(fs::exists(cert_resource_root / "bundle_raw.json"))
-    << "missing bundle_raw.json for cert " << cert_info.id;
-  ASSERT_TRUE(fs::exists(cert_resource_root / "certificate_detail.json"))
-    << "missing certificate_detail.json for cert " << cert_info.id;
-
-  auto private_key_text = read_text_file(cert_current / "private.key");
-  ASSERT_TRUE(private_key_text.has_value())
-    << "private.key not materialized for cert " << cert_info.id;
-  EXPECT_EQ(private_key_text->rfind("-----BEGIN", 0), 0)
-    << "private.key not PEM encoded";
-
-  auto certificate_text = read_text_file(cert_current / "certificate.pem");
-  ASSERT_TRUE(certificate_text.has_value())
-    << "certificate.pem not materialized for cert " << cert_info.id;
-  EXPECT_NE(certificate_text->find("BEGIN CERTIFICATE"), std::string::npos)
-    << "certificate.pem missing BEGIN CERTIFICATE";
-
-  auto chain_text = read_text_file(cert_current / "chain.pem");
-  ASSERT_TRUE(chain_text.has_value())
-    << "chain.pem not materialized for cert " << cert_info.id;
-  EXPECT_NE(chain_text->find("BEGIN CERTIFICATE"), std::string::npos)
-    << "chain.pem missing certificate data";
-
-  auto fullchain_text = read_text_file(cert_current / "fullchain.pem");
-  ASSERT_TRUE(fullchain_text.has_value())
-    << "fullchain.pem not materialized for cert " << cert_info.id;
-  EXPECT_NE(fullchain_text->find("BEGIN CERTIFICATE"), std::string::npos)
-    << "fullchain.pem missing certificate data";
-
-  auto meta_text = read_text_file(cert_current / "meta.json");
-  ASSERT_TRUE(meta_text.has_value())
-    << "meta.json not materialized for cert " << cert_info.id;
-  boost::system::error_code meta_ec;
-  auto meta_json = boost::json::parse(*meta_text, meta_ec);
-  ASSERT_FALSE(meta_ec) << "failed to parse cert meta.json: "
-              << meta_ec.message();
-  ASSERT_TRUE(meta_json.is_object()) << "cert meta.json not an object";
-  auto &meta_obj = meta_json.as_object();
-  EXPECT_TRUE(meta_obj.if_contains("certificate"))
-    << "meta.json missing certificate section";
-  EXPECT_TRUE(meta_obj.if_contains("deploy_materials"))
-    << "meta.json missing deploy_materials section";
-
-  auto detail_text =
-    read_text_file(cert_resource_root / "certificate_detail.json");
-  ASSERT_TRUE(detail_text.has_value())
-    << "certificate_detail.json missing for cert " << cert_info.id;
-  boost::system::error_code detail_ec;
-  auto detail_json = boost::json::parse(*detail_text, detail_ec);
-  ASSERT_FALSE(detail_ec) << "failed to parse certificate_detail.json: "
-              << detail_ec.message();
-  ASSERT_TRUE(detail_json.is_object())
-    << "certificate_detail.json not an object";
-  const boost::json::object *detail_data = nullptr;
-  if (auto *data = detail_json.as_object().if_contains("data")) {
-    if (data->is_object()) {
-    detail_data = &data->as_object();
+    ASSERT_NE(detail_data, nullptr)
+        << "certificate_detail.json missing data object";
+    const boost::json::object *detail_view = detail_data;
+    if (auto *inner = detail_data->if_contains("certificate")) {
+      if (inner->is_object()) {
+        detail_view = &inner->as_object();
+      }
     }
-  }
-  ASSERT_NE(detail_data, nullptr)
-    << "certificate_detail.json missing data object";
-  const boost::json::object *detail_view = detail_data;
-  if (auto *inner = detail_data->if_contains("certificate")) {
-    if (inner->is_object()) {
-    detail_view = &inner->as_object();
-    }
-  }
-  ASSERT_NE(detail_view, nullptr);
-  EXPECT_TRUE(detail_view->if_contains("certificate_pem") ||
-        detail_view->if_contains("cert"))
-    << "certificate detail missing PEM payload";
-  const bool detail_has_chain = detail_view->if_contains("chain_pem");
-  EXPECT_TRUE(detail_has_chain || !chain_text->empty())
-    << "certificate detail missing chain data";
-  const bool detail_has_fullchain =
-      detail_view->if_contains("fullchain_pem") ||
-      detail_view->if_contains("fullchain");
-  EXPECT_TRUE(detail_has_fullchain || !fullchain_text->empty())
-    << "certificate detail missing fullchain data";
+    ASSERT_NE(detail_view, nullptr);
+    EXPECT_TRUE(detail_view->if_contains("certificate_pem") ||
+                detail_view->if_contains("cert"))
+        << "certificate detail missing PEM payload";
+    const bool detail_has_chain = detail_view->if_contains("chain_pem");
+    EXPECT_TRUE(detail_has_chain || !chain_text->empty())
+        << "certificate detail missing chain data";
+    const bool detail_has_fullchain =
+        detail_view->if_contains("fullchain_pem") ||
+        detail_view->if_contains("fullchain");
+    EXPECT_TRUE(detail_has_fullchain || !fullchain_text->empty())
+        << "certificate detail missing fullchain data";
 
-  std::error_code der_ec;
-  auto der_size = fs::file_size(cert_current / "certificate.der", der_ec);
-  ASSERT_FALSE(der_ec) << "failed to stat certificate.der: "
-             << der_ec.message();
-  EXPECT_GT(der_size, static_cast<std::uintmax_t>(0))
-    << "certificate.der empty";
+    std::error_code der_ec;
+    auto der_size = fs::file_size(cert_current / "certificate.der", der_ec);
+    ASSERT_FALSE(der_ec) << "failed to stat certificate.der: "
+                         << der_ec.message();
+    EXPECT_GT(der_size, static_cast<std::uintmax_t>(0))
+        << "certificate.der empty";
 
-  std::error_code pfx_ec;
-  auto pfx_size = fs::file_size(cert_current / "bundle.pfx", pfx_ec);
-  ASSERT_FALSE(pfx_ec) << "failed to stat bundle.pfx: "
-             << pfx_ec.message();
-  EXPECT_GT(pfx_size, static_cast<std::uintmax_t>(0))
-    << "bundle.pfx empty";
+    std::error_code pfx_ec;
+    auto pfx_size = fs::file_size(cert_current / "bundle.pfx", pfx_ec);
+    ASSERT_FALSE(pfx_ec) << "failed to stat bundle.pfx: " << pfx_ec.message();
+    EXPECT_GT(pfx_size, static_cast<std::uintmax_t>(0)) << "bundle.pfx empty";
 
-  auto ca_resource_root = tmp_root_ / "resources" / "cas" /
-              std::to_string(ca_info.id);
-  auto ca_current = ca_resource_root / "current";
-  ASSERT_TRUE(fs::exists(ca_resource_root / "bundle_raw.json"))
-    << "missing CA bundle_raw.json";
-  auto ca_pem_text = read_text_file(ca_current / "ca.pem");
-  ASSERT_TRUE(ca_pem_text.has_value())
-    << "ca.pem not materialized";
-  EXPECT_NE(ca_pem_text->find("BEGIN CERTIFICATE"), std::string::npos)
-    << "ca.pem missing certificate data";
+    auto ca_resource_root =
+        tmp_root_ / "resources" / "cas" / std::to_string(ca_info.id);
+    auto ca_current = ca_resource_root / "current";
+    ASSERT_TRUE(fs::exists(ca_resource_root / "bundle_raw.json"))
+        << "missing CA bundle_raw.json";
+    auto ca_pem_text = read_text_file(ca_current / "ca.pem");
+    ASSERT_TRUE(ca_pem_text.has_value()) << "ca.pem not materialized";
+    EXPECT_NE(ca_pem_text->find("BEGIN CERTIFICATE"), std::string::npos)
+        << "ca.pem missing certificate data";
 
-  auto install_cert_dir = install_root / "cert";
-  auto install_ca_dir = install_root / "ca";
-  ASSERT_TRUE(fs::exists(install_cert_dir))
-    << "install cert directory missing";
-  ASSERT_TRUE(fs::exists(install_ca_dir))
-    << "install ca directory missing";
+    auto install_cert_dir = install_root / "cert";
+    auto install_ca_dir = install_root / "ca";
+    ASSERT_TRUE(fs::exists(install_cert_dir))
+        << "install cert directory missing";
+    ASSERT_TRUE(fs::exists(install_ca_dir)) << "install ca directory missing";
 
-  auto install_private_key =
-    read_text_file(install_cert_dir / "private.key");
-  ASSERT_TRUE(install_private_key.has_value())
-    << "private.key missing in install target";
-  EXPECT_EQ(install_private_key->rfind("-----BEGIN", 0), 0)
-    << "install private.key not PEM";
+    auto install_private_key = read_text_file(install_cert_dir / "private.key");
+    ASSERT_TRUE(install_private_key.has_value())
+        << "private.key missing in install target";
+    EXPECT_EQ(install_private_key->rfind("-----BEGIN", 0), 0)
+        << "install private.key not PEM";
 
-  auto install_certificate =
-    read_text_file(install_cert_dir / "certificate.pem");
-  ASSERT_TRUE(install_certificate.has_value())
-    << "certificate.pem missing in install target";
-  EXPECT_NE(install_certificate->find("BEGIN CERTIFICATE"),
-        std::string::npos)
-    << "install certificate.pem missing certificate data";
+    auto install_certificate =
+        read_text_file(install_cert_dir / "certificate.pem");
+    ASSERT_TRUE(install_certificate.has_value())
+        << "certificate.pem missing in install target";
+    EXPECT_NE(install_certificate->find("BEGIN CERTIFICATE"), std::string::npos)
+        << "install certificate.pem missing certificate data";
 
-  auto install_meta_text = read_text_file(install_cert_dir / "meta.json");
-  ASSERT_TRUE(install_meta_text.has_value())
-    << "meta.json missing in install target";
-  boost::system::error_code install_meta_ec;
-  auto install_meta_json =
-    boost::json::parse(*install_meta_text, install_meta_ec);
-  ASSERT_FALSE(install_meta_ec) << "failed to parse install meta.json: "
-                  << install_meta_ec.message();
-  EXPECT_EQ(install_meta_json, meta_json)
-    << "install meta.json differs from resource cache";
+    auto install_meta_text = read_text_file(install_cert_dir / "meta.json");
+    ASSERT_TRUE(install_meta_text.has_value())
+        << "meta.json missing in install target";
+    boost::system::error_code install_meta_ec;
+    auto install_meta_json =
+        boost::json::parse(*install_meta_text, install_meta_ec);
+    ASSERT_FALSE(install_meta_ec)
+        << "failed to parse install meta.json: " << install_meta_ec.message();
+    EXPECT_EQ(install_meta_json, meta_json)
+        << "install meta.json differs from resource cache";
 
-  std::error_code install_pfx_ec;
-  auto install_pfx_size =
-    fs::file_size(install_cert_dir / "bundle.pfx", install_pfx_ec);
-  ASSERT_FALSE(install_pfx_ec) << "failed to stat install bundle.pfx: "
-                 << install_pfx_ec.message();
-  EXPECT_GT(install_pfx_size, static_cast<std::uintmax_t>(0))
-    << "install bundle.pfx empty";
+    std::error_code install_pfx_ec;
+    auto install_pfx_size =
+        fs::file_size(install_cert_dir / "bundle.pfx", install_pfx_ec);
+    ASSERT_FALSE(install_pfx_ec)
+        << "failed to stat install bundle.pfx: " << install_pfx_ec.message();
+    EXPECT_GT(install_pfx_size, static_cast<std::uintmax_t>(0))
+        << "install bundle.pfx empty";
 
-  auto install_ca_pem = read_text_file(install_ca_dir / "ca.pem");
-  ASSERT_TRUE(install_ca_pem.has_value())
-    << "ca.pem missing in install target";
-  EXPECT_NE(install_ca_pem->find("BEGIN CERTIFICATE"), std::string::npos)
-    << "install ca.pem missing certificate data";
+    auto install_ca_pem = read_text_file(install_ca_dir / "ca.pem");
+    ASSERT_TRUE(install_ca_pem.has_value())
+        << "ca.pem missing in install target";
+    EXPECT_NE(install_ca_pem->find("BEGIN CERTIFICATE"), std::string::npos)
+        << "install ca.pem missing certificate data";
   }
 
   std::this_thread::sleep_for(2500ms);
@@ -1289,8 +1282,7 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
       << "device_verify failed: " << verify_r->error().what;
   ctx.verify_resp = verify_r->value();
 
-  const int poll_interval =
-      std::clamp(ctx.start_resp->interval, 1, 10);
+  const int poll_interval = std::clamp(ctx.start_resp->interval, 1, 10);
   const int max_attempts =
       std::clamp(ctx.start_resp->expires_in / ctx.start_resp->interval, 1, 20);
 
@@ -1455,12 +1447,11 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
     auto install_suffix = make_unique_suffix();
     json::array install_items;
 
-  const std::string install_base =
-    (tmp_root_ / "install-targets" / install_suffix).string();
+    const std::string install_base =
+        (tmp_root_ / "install-targets" / install_suffix).string();
 
-    json::array cert_from{"private.key",     "certificate.pem",
-                          "chain.pem",       "fullchain.pem",
-                          "certificate.der", "bundle.pfx",
+    json::array cert_from{"private.key",   "certificate.pem", "chain.pem",
+                          "fullchain.pem", "certificate.der", "bundle.pfx",
                           "meta.json"};
     json::array cert_to;
     cert_to.emplace_back(install_base + "/cert/private.key");
@@ -1471,22 +1462,23 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
     cert_to.emplace_back(install_base + "/cert/bundle.pfx");
     cert_to.emplace_back(install_base + "/cert/meta.json");
 
-    json::object cert_copy{{"id", "cert-" + install_suffix},
-                           {"type", "copy"},
-                           {"continue_on_error", false},
-                           {"depends_on", json::array{}},
-                           {"tags", json::array{}},
-                           {"ob_type", "cert"},
-                           {"ob_id", ctx.cert_info->id},
-                           {"ob_name", ctx.cert_info->domain_name},
-                           {"from", std::move(cert_from)},
-                           {"to", std::move(cert_to)},
-                           {"cmd", ""},
-                           {"cmd_argv", json::array{}},
-                           {"timeout_ms", 0},
-                           {"run_as", ""},
-                           {"env", json::object{}},
-                           {"verify", json::object{{"type", "cert_fingerprint"}}}};
+    json::object cert_copy{
+        {"id", "cert-" + install_suffix},
+        {"type", "copy"},
+        {"continue_on_error", false},
+        {"depends_on", json::array{}},
+        {"tags", json::array{}},
+        {"ob_type", "cert"},
+        {"ob_id", ctx.cert_info->id},
+        {"ob_name", ctx.cert_info->domain_name},
+        {"from", std::move(cert_from)},
+        {"to", std::move(cert_to)},
+        {"cmd", ""},
+        {"cmd_argv", json::array{}},
+        {"timeout_ms", 0},
+        {"run_as", ""},
+        {"env", json::object{}},
+        {"verify", json::object{{"type", "cert_fingerprint"}}}};
 
     json::array ca_from{"ca.pem"};
     json::array ca_to;
@@ -1513,7 +1505,7 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
     install_items.emplace_back(std::move(ca_copy));
 
     const std::string change_note =
-      "test-updates install config " + install_suffix;
+        "test-updates install config " + install_suffix;
 
     misc::ThreadNotifier install_notifier(120000);
     std::optional<monad::MyVoidResult> install_r;

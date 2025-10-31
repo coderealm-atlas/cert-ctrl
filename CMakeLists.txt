@@ -539,8 +539,9 @@ set(HTTP_CLIENT_SRCS
 list(APPEND APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_actions/copy_action.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_actions/exec_action.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_actions/install_resource_materializer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_workflow/install_workflow_runner.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/update_handler.cpp
