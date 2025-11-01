@@ -489,18 +489,20 @@ std::filesystem::perms default_directory_perms() {
 } // namespace
 
 InstallConfigManager::InstallConfigManager(
-    certctrl::ICertctrlConfigProvider &config_provider,
-    customio::ConsoleOutput &output,
-    client_async::HttpClientManager *http_client,
-    install_actions::IResourceMaterializer::Factory
-        resource_materializer_factory,
-    install_actions::ImportCaActionHandler::Factory
-        import_ca_action_handler_factory,
-    install_actions::ExecActionHandler::Factory exec_handler_factory,
-    certctrl::install_actions::CopyActionHandler::Factory copy_handler_factory,
-    install_actions::IExecEnvironmentResolver::Factory
-        exec_env_resolver_factory,
-    boost::asio::io_context *io_context)
+      cjj365::IoContextManager &io_context_manager,
+      certctrl::ICertctrlConfigProvider &config_provider,
+      customio::ConsoleOutput &output,
+      client_async::HttpClientManager &http_client,
+      install_actions::IResourceMaterializer::Factory
+          resource_materializer_factory,
+      install_actions::ImportCaActionHandler::Factory
+          import_ca_action_handler_factory,
+      install_actions::ExecActionHandler::Factory exec_handler_factory,
+      certctrl::install_actions::CopyActionHandler::Factory
+          copy_handler_factory,
+      install_actions::IExecEnvironmentResolver::Factory
+          exec_env_resolver_factory,
+      install_actions::IDeviceInstallConfigFetcher &config_fetcher)
     : runtime_dir_(std::move(config_provider.get().runtime_dir)),
       config_provider_(config_provider), output_(output),
       http_client_(http_client),
@@ -510,21 +512,22 @@ InstallConfigManager::InstallConfigManager(
       exec_handler_factory_(std::move(exec_handler_factory)),
       exec_env_resolver_factory_(std::move(exec_env_resolver_factory)),
       copy_handler_factory_(std::move(copy_handler_factory)),
-      io_context_(io_context) {
+      config_fetcher_(config_fetcher),
+      io_context_(io_context_manager.ioc()) {
 
-  if (!io_context_) {
-    owned_io_context_ = std::make_unique<boost::asio::io_context>();
-    owned_io_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
-        boost::asio::io_context::executor_type>>(
-        boost::asio::make_work_guard(*owned_io_context_));
-    io_context_ = owned_io_context_.get();
-    owned_io_thread_ = std::thread([ctx = io_context_]() {
-      if (!ctx) {
-        return;
-      }
-      ctx->run();
-    });
-  }
+  // if (!io_context_) {
+  //   owned_io_context_ = std::make_unique<boost::asio::io_context>();
+  //   owned_io_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
+  //       boost::asio::io_context::executor_type>>(
+  //       boost::asio::make_work_guard(*owned_io_context_));
+  //   io_context_ = owned_io_context_.get();
+  //   owned_io_thread_ = std::thread([ctx = io_context_]() {
+  //     if (!ctx) {
+  //       return;
+  //     }
+  //     ctx->run();
+  //   });
+  // }
 
   if (!runtime_dir_.empty()) {
     try {
@@ -546,55 +549,46 @@ InstallConfigManager::InstallConfigManager(
   }
 }
 
-InstallConfigManager::~InstallConfigManager() {
-  if (owned_io_work_guard_) {
-    owned_io_work_guard_->reset();
-  }
-  if (owned_io_context_) {
-    owned_io_context_->stop();
-  }
-  if (owned_io_thread_.joinable()) {
-    owned_io_thread_.join();
-  }
-}
+InstallConfigManager::~InstallConfigManager() {}
 
-void InstallConfigManager::customize(
-    std::filesystem::path runtime_dir, FetchOverrideFn fetch_override,
-    ResourceFetchOverrideFn resource_fetch_override) {
-  customized_ = true;
-  runtime_dir_ = std::move(runtime_dir);
-  if (fetch_override) {
-    fetch_override_ = std::move(fetch_override);
-  }
-  if (resource_fetch_override) {
-    resource_fetch_override_ = std::move(resource_fetch_override);
-  }
+// void InstallConfigManager::customize(
+//     std::filesystem::path runtime_dir, FetchOverrideFn fetch_override,
+//     ResourceFetchOverrideFn resource_fetch_override) {
+//   customized_ = true;
+//   runtime_dir_ = std::move(runtime_dir);
+//   if (fetch_override) {
+//     fetch_override_ = std::move(fetch_override);
+//   }
+//   if (resource_fetch_override) {
+//     resource_fetch_override_ = std::move(resource_fetch_override);
+//   }
 
-  cached_config_.reset();
-  local_version_.reset();
-  cached_access_token_.reset();
-  cached_access_token_mtime_.reset();
-  bundle_passwords_.clear();
+//   cached_config_.reset();
+//   local_version_.reset();
+//   cached_access_token_.reset();
+//   cached_access_token_mtime_.reset();
+//   bundle_passwords_.clear();
 
-  if (!runtime_dir_.empty()) {
-    try {
-      std::filesystem::create_directories(state_dir());
-#ifndef _WIN32
-      std::filesystem::permissions(state_dir(), default_directory_perms(),
-                                   std::filesystem::perm_options::replace);
-#endif
-    } catch (const std::exception &e) {
-      output_.logger().warning()
-          << "Failed to prepare runtime state dir: " << e.what() << std::endl;
-    }
+//   if (!runtime_dir_.empty()) {
+//     try {
+//       std::filesystem::create_directories(state_dir());
+// #ifndef _WIN32
+//       std::filesystem::permissions(state_dir(), default_directory_perms(),
+//                                    std::filesystem::perm_options::replace);
+// #endif
+//     } catch (const std::exception &e) {
+//       output_.logger().warning()
+//           << "Failed to prepare runtime state dir: " << e.what() <<
+//           std::endl;
+//     }
 
-    if (auto config = load_from_disk()) {
-      cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(
-          std::move(config.value()));
-      local_version_ = cached_config_->version;
-    }
-  }
-}
+//     if (auto config = load_from_disk()) {
+//       cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(
+//           std::move(config.value()));
+//       local_version_ = cached_config_->version;
+//     }
+//   }
+// }
 
 void InstallConfigManager::clear_cache() {
   cached_config_.reset();
@@ -719,15 +713,10 @@ InstallConfigManager::refresh_from_remote(
 
   auto perform_fetch = [this, expected_version,
                         expected_hash]() -> IO<dto::DeviceInstallConfigDto> {
-    if (fetch_override_) {
-      return fetch_override_(expected_version, expected_hash);
-    }
+    // if (fetch_override_) {
+    //   return fetch_override_(expected_version, expected_hash);
+    // }
 
-    if (!http_client_) {
-      return IO<dto::DeviceInstallConfigDto>::fail(
-          make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                     "InstallConfigManager: no HTTP client available"));
-    }
 
     auto token_opt = load_access_token();
     if (!token_opt || token_opt->empty()) {
@@ -747,7 +736,7 @@ InstallConfigManager::refresh_from_remote(
                           std::string("Bearer ") + token);
           return ex;
         })
-        .then(http_request_io<monad::GetStringTag>(*http_client_))
+        .then(http_request_io<monad::GetStringTag>(http_client_))
         .then([](auto ex) -> IO<dto::DeviceInstallConfigDto> {
           if (!ex->response.has_value()) {
             return IO<dto::DeviceInstallConfigDto>::fail(
@@ -776,12 +765,6 @@ InstallConfigManager::refresh_from_remote(
 
   constexpr int kMaxAttempts = 4;
   constexpr std::chrono::milliseconds kBaseRetryDelay{200};
-
-  if (!io_context_) {
-    auto err = make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                          "InstallConfigManager requires io_context for retry");
-    return ReturnIO::fail(std::move(err));
-  }
 
   auto retry_count = std::make_shared<int>(0);
   auto next_delay =
@@ -850,7 +833,7 @@ InstallConfigManager::refresh_from_remote(
   };
 
   return std::move(validated_fetch)
-      .retry_exponential_if(kMaxAttempts, kBaseRetryDelay, *io_context_,
+      .retry_exponential_if(kMaxAttempts, kBaseRetryDelay, io_context_,
                             should_retry)
       .then([this](dto::DeviceInstallConfigDto config) -> ReturnIO {
         return persist_config(std::move(config)).then([this]() -> ReturnIO {
@@ -1018,8 +1001,8 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                           "CopyActionHandler factory returned null"));
   }
-  if (customized_)
-    copy_handler->customize(runtime_dir_, resource_materializer_factory_);
+  // if (customized_)
+  //   copy_handler->customize(runtime_dir_, resource_materializer_factory_);
 
   // First perform copy actions
   return copy_handler->apply(config, target_ob_type, target_ob_id)
@@ -1039,9 +1022,9 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
         }
 
         auto exec_handler = exec_handler_factory_();
-        if (customized_)
-          exec_handler->customize(runtime_dir_, resource_materializer_factory_,
-                                  exec_env_resolver_factory_);
+        // if (customized_)
+        //   exec_handler->customize(runtime_dir_, resource_materializer_factory_,
+        //                           exec_env_resolver_factory_);
         return exec_handler->apply(config, allowed_types);
       })
       .catch_then([this, copy_handler](monad::Error err) {
@@ -1085,9 +1068,9 @@ monad::IO<void> InstallConfigManager::apply_import_ca_actions(
           allowed_types = std::vector<std::string>{*target_ob_type};
         }
         auto exec_handler = exec_handler_factory_();
-        if (customized_)
-          exec_handler->customize(runtime_dir_, resource_materializer_factory_,
-                                  exec_env_resolver_factory_);
+        // if (customized_)
+        //   exec_handler->customize(runtime_dir_, resource_materializer_factory_,
+        //                           exec_env_resolver_factory_);
         return exec_handler->apply(config, allowed_types);
       })
       .catch_then([this, import_handler](monad::Error err) {

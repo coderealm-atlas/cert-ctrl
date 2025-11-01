@@ -28,6 +28,7 @@
 #include "my_error_codes.hpp"
 #include "openssl/crypt_util.hpp"
 #include "openssl/openssl_raii.hpp"
+#include "resource_fetcher.hpp"
 #include "result_monad.hpp"
 #include "util/secret_util.hpp"
 #include "util/user_key_crypto.hpp"
@@ -475,23 +476,7 @@ std::filesystem::perms default_directory_perms() {
 #endif
 }
 
-struct MaterializationData {
-  std::shared_ptr<dto::InstallItem> item;
-  std::string ob_type;
-  std::int64_t ob_id{0};
-  bool is_cert{false};
-  bool is_ca{false};
-  std::filesystem::path current_dir;
-  std::string deploy_raw_json;
-  std::string detail_raw_json;
-  std::string ca_body;
-  boost::json::object deploy_obj;
-  boost::json::object detail_obj;
-  boost::json::object ca_obj;
-  bool detail_parsed{false};
-  bool deploy_available{false};
-  bool ca_parsed{false};
-};
+
 
 } // namespace
 

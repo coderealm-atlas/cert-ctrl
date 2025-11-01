@@ -39,7 +39,6 @@
 #include "include/api_test_helper.hpp"
 #include "include/install_config_manager_test_utils.hpp"
 #include "include/login_helper.hpp"
-#include "include/test_injector.hpp"
 #include "include/test_install_config_helper.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
@@ -892,18 +891,18 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
           });
     };
 
-  customio::ConsoleOutput debug_output(testinfra::shared_output());
-  auto manager_factories =
-    certctrl::test_utils::make_default_install_manager_factories(
-      *cfg_provider_, debug_output);
-  certctrl::InstallConfigManager debug_manager(
-    *cfg_provider_, debug_output, http_mgr_,
-    manager_factories.resource_materializer_factory,
-    manager_factories.import_ca_handler_factory,
-    manager_factories.exec_action_handler_factory,
-    manager_factories.copy_action_handler_factory,
-    manager_factories.exec_env_resolver_factory);
-  debug_manager.customize(tmp_root_, fetch_override);
+  // customio::ConsoleOutput debug_output(testinfra::shared_output());
+  // auto manager_factories =
+  //   certctrl::test_utils::make_default_install_manager_factories(
+  //     *cfg_provider_, debug_output);
+  // certctrl::InstallConfigManager debug_manager(
+  //   *cfg_provider_, debug_output, http_mgr_,
+  //   manager_factories.resource_materializer_factory,
+  //   manager_factories.import_ca_handler_factory,
+  //   manager_factories.exec_action_handler_factory,
+  //   manager_factories.copy_action_handler_factory,
+  //   manager_factories.exec_env_resolver_factory);
+  // debug_manager.customize(tmp_root_, fetch_override);
 
     const int max_config_attempts = 6;
     std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr;
