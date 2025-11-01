@@ -5,11 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <thread>
 #include <unordered_map>
-
-#include <boost/asio/executor_work_guard.hpp>
-#include <boost/asio/io_context.hpp>
 
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
@@ -19,8 +15,11 @@
 #include "handlers/install_actions/exec_action.hpp"
 #include "handlers/install_actions/exec_environment_resolver.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
+#include "handlers/install_actions/install_resource_materializer.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
 #include "http_client_manager.hpp"
+#include "install_config_fetcher.hpp"
+#include "io_context_manager.hpp"
 #include "io_monad.hpp"
 #include "util/my_logging.hpp"
 
@@ -32,33 +31,35 @@ namespace certctrl {
 // member functions, as they capture `this` directly.
 class InstallConfigManager {
 public:
-  using FetchOverrideFn = std::function<monad::IO<dto::DeviceInstallConfigDto>(
-      std::optional<std::int64_t> expected_version,
-      const std::optional<std::string> &expected_hash)>;
+  struct Options {
+    using FetchOverrideFn =
+        std::function<monad::IO<dto::DeviceInstallConfigDto>(
+            std::optional<std::int64_t> expected_version,
+            const std::optional<std::string> &expected_hash)>;
 
-  using ResourceFetchOverrideFn =
-      std::function<std::optional<std::string>(const dto::InstallItem &item)>;
+    std::filesystem::path runtime_dir_override;
+    FetchOverrideFn fetch_override;
+    install_actions::InstallResourceMaterializer::RuntimeConfig
+        resource_runtime_config;
+  };
 
   InstallConfigManager(
-      certctrl::ICertctrlConfigProvider &config_provider, //
-      customio::ConsoleOutput &output,                    //
-      client_async::HttpClientManager *http_client,       //
+      cjj365::IoContextManager &io_context_manager,
+      certctrl::ICertctrlConfigProvider &config_provider,
+      customio::ConsoleOutput &output,
+      client_async::HttpClientManager &http_client,
       install_actions::IResourceMaterializer::Factory
-          resource_materializer_factory, //
+          resource_materializer_factory,
       install_actions::ImportCaActionHandler::Factory
-          import_ca_action_handler_factory,                             //
-      install_actions::ExecActionHandler::Factory exec_handler_factory, //
+          import_ca_action_handler_factory,
+      install_actions::ExecActionHandler::Factory exec_handler_factory,
       certctrl::install_actions::CopyActionHandler::Factory
-          copy_handler_factory, //
+          copy_handler_factory,
       install_actions::IExecEnvironmentResolver::Factory
           exec_env_resolver_factory,
-      boost::asio::io_context *io_context = nullptr);
+      install_actions::IDeviceInstallConfigFetcher &config_fetcher);
 
   ~InstallConfigManager();
-
-  void customize(std::filesystem::path runtime_dir,
-                 FetchOverrideFn fetch_override = nullptr,
-                 ResourceFetchOverrideFn resource_fetch_override = nullptr);
 
   const std::filesystem::path &runtime_dir() const { return runtime_dir_; }
 
@@ -120,20 +121,15 @@ private:
                                 const std::string &password);
   void forget_bundle_password(const std::string &ob_type, std::int64_t ob_id);
 
-  //   void configure_resource_materializer(
-  //       const install_actions::IResourceMaterializer::Ptr &materializer);
-  //   install_actions::IResourceMaterializer::Ptr make_resource_materializer();
-
 private:
   std::filesystem::path runtime_dir_;
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;
-  client_async::HttpClientManager *http_client_{nullptr};
-  FetchOverrideFn fetch_override_;
-  ResourceFetchOverrideFn resource_fetch_override_;
+  client_async::HttpClientManager &http_client_;
+  install_actions::IDeviceInstallConfigFetcher &config_fetcher_;
+  Options options_;
   certctrl::install_actions::ImportCaActionHandler::Factory
       import_ca_action_handler_factory_;
-  bool customized_{false};
 
   std::shared_ptr<dto::DeviceInstallConfigDto> cached_config_;
   std::optional<std::int64_t> local_version_;
@@ -149,12 +145,7 @@ private:
   install_actions::ExecActionHandler::Factory exec_handler_factory_;
   install_actions::IExecEnvironmentResolver::Factory exec_env_resolver_factory_;
   certctrl::install_actions::CopyActionHandler::Factory copy_handler_factory_;
-  boost::asio::io_context *io_context_{nullptr};
-  std::unique_ptr<boost::asio::io_context> owned_io_context_;
-  std::unique_ptr<
-      boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>
-      owned_io_work_guard_;
-  std::thread owned_io_thread_;
+  boost::asio::io_context &io_context_;
 };
 
 } // namespace certctrl
