@@ -279,10 +279,10 @@ struct MockerResourceFetcher
 
 struct AlwaysFailingResourceFetcher
     : public certctrl::install_actions::IResourceFetcher {
-  monad::IO<void> fetch(
-      std::optional<std::string> /*access_token*/,
-      std::shared_ptr<certctrl::install_actions::MaterializationData>
-          /*current_materialization*/) override {
+  monad::IO<void>
+  fetch(std::optional<std::string> /*access_token*/,
+        std::shared_ptr<certctrl::install_actions::MaterializationData>
+        /*current_materialization*/) override {
     auto err = monad::make_error(my_errors::GENERAL::FILE_NOT_FOUND,
                                  "CA fetch failed");
     err.response_status = 500;
@@ -473,29 +473,13 @@ TEST_F(InstallConfigManagerFixture, AppliesCopyActionsFullPlan) {
       std::vector<std::string>{dest_key.string(), dest_chain.string()};
   config.installs.push_back(copy_item);
 
-  [[maybe_unused]] auto resource_override =
-      [resource_dir](
-          const dto::InstallItem &item) -> std::optional<std::string> {
-    if (!item.ob_type || *item.ob_type != "cert") {
-      return std::nullopt;
-    }
-    auto bundle_path = resource_dir / "bundle_raw.json";
-    if (!std::filesystem::exists(bundle_path)) {
-      std::cerr << "bundle path missing: " << bundle_path << std::endl;
-      return std::nullopt;
-    }
-    auto content = read_file(bundle_path);
-    std::cerr << "resource override read bytes=" << content.size() << std::endl;
-    return content;
-  };
-
   static MockInstallConfigFetcher fetcher{config};
   static MockerResourceFetcher resource_fetcher{""};
   harness_ = std::make_unique<InstallManagerDiHarness>(
       config_dir, runtime_dir, "https://api.example.test", fetcher,
       resource_fetcher);
 
-  // std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
+  std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
@@ -509,10 +493,12 @@ TEST_F(InstallConfigManagerFixture, AppliesCopyActionsFullPlan) {
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok())
       << "ensure_config_version failed: " << op_r->error();
-
+  plan = op_r->value();
+  ASSERT_TRUE(plan);
   monad::MyVoidResult void_r;
+
   harness_->install_manager()
-      .apply_copy_actions(config, std::nullopt, std::nullopt)
+      .apply_copy_actions(*plan, std::nullopt, std::nullopt)
       .run([&](auto result) {
         void_r = result;
         notifier.notify();
@@ -585,7 +571,7 @@ TEST_F(InstallConfigManagerFixture, SkipsCopyActionsWithEmptyDestinations) {
   ASSERT_TRUE(op_r.has_value());
   ASSERT_FALSE(op_r->is_err())
       << "Expected success but got error: " << op_r->error();
-      plan = op_r->value();
+  plan = op_r->value();
   ASSERT_TRUE(plan);
 
   auto dest_path = runtime_dir / "deploy" / "fullchain.pem";
