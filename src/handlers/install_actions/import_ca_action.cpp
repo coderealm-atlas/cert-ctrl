@@ -28,16 +28,16 @@ ImportCaActionHandler::ImportCaActionHandler(
       resource_materializer_factory_(std::move(resource_materializer_factory)) {
 }
 
-void ImportCaActionHandler::customize(
-    std::filesystem::path runtime_dir,
-    install_actions::IResourceMaterializer::Factory
-        resource_materializer_factory) {
-  runtime_dir_ = runtime_dir.empty() ? config_provider_.get().runtime_dir
-                                     : std::move(runtime_dir);
-  if (resource_materializer_factory) {
-    resource_materializer_factory_ = std::move(resource_materializer_factory);
-  }
-}
+// void ImportCaActionHandler::customize(
+//     std::filesystem::path runtime_dir,
+//     install_actions::IResourceMaterializer::Factory
+//         resource_materializer_factory) {
+//   runtime_dir_ = runtime_dir.empty() ? config_provider_.get().runtime_dir
+//                                      : std::move(runtime_dir);
+//   if (resource_materializer_factory) {
+//     resource_materializer_factory_ = std::move(resource_materializer_factory);
+//   }
+// }
 
 // install_actions::IResourceMaterializer::Ptr
 // ImportCaActionHandler::make_resource_materializer() const {

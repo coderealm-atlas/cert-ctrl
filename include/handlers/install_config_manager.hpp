@@ -31,17 +31,17 @@ namespace certctrl {
 // member functions, as they capture `this` directly.
 class InstallConfigManager {
 public:
-  struct Options {
-    using FetchOverrideFn =
-        std::function<monad::IO<dto::DeviceInstallConfigDto>(
-            std::optional<std::int64_t> expected_version,
-            const std::optional<std::string> &expected_hash)>;
+//   struct Options {
+//     using FetchOverrideFn =
+//         std::function<monad::IO<dto::DeviceInstallConfigDto>(
+//             std::optional<std::int64_t> expected_version,
+//             const std::optional<std::string> &expected_hash)>;
 
-    std::filesystem::path runtime_dir_override;
-    FetchOverrideFn fetch_override;
-    install_actions::InstallResourceMaterializer::RuntimeConfig
-        resource_runtime_config;
-  };
+//     std::filesystem::path runtime_dir_override;
+//     FetchOverrideFn fetch_override;
+//     install_actions::InstallResourceMaterializer::RuntimeConfig
+//         resource_runtime_config;
+//   };
 
   InstallConfigManager(
       cjj365::IoContextManager &io_context_manager,
@@ -127,7 +127,7 @@ private:
   customio::ConsoleOutput &output_;
   client_async::HttpClientManager &http_client_;
   install_actions::IDeviceInstallConfigFetcher &config_fetcher_;
-  Options options_;
+//   Options options_;
   certctrl::install_actions::ImportCaActionHandler::Factory
       import_ca_action_handler_factory_;
 

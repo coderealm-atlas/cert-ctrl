@@ -42,8 +42,9 @@ namespace {
 
 std::string to_lower_copy(const std::string &value) {
   std::string lower = value;
-  std::transform(lower.begin(), lower.end(), lower.begin(),
-                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  std::transform(
+      lower.begin(), lower.end(), lower.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   return lower;
 }
 
@@ -198,8 +199,8 @@ load_device_keypair_from_paths(const std::vector<std::filesystem::path> &paths,
       std::string text(raw.begin(), raw.end());
       text.erase(std::remove_if(text.begin(), text.end(),
                                 [](char ch) {
-                                  return ch == '\n' || ch == '\r' || ch == ' ' ||
-                                         ch == '\t';
+                                  return ch == '\n' || ch == '\r' ||
+                                         ch == ' ' || ch == '\t';
                                 }),
                  text.end());
       if (text.empty()) {
@@ -294,19 +295,19 @@ extract_private_key_from_detail(const boost::json::object &detail_obj,
   auto decode_der_field =
       [&](const boost::json::object &source,
           std::string_view key) -> std::optional<std::string> {
-        if (auto encoded = get_string_field(source, key)) {
-          if (auto bytes = decode_base64_string_raw(*encoded)) {
-            std::string local_error;
-            if (auto pem = convert_der_private_key_to_pem(*bytes, local_error)) {
-              return pem;
-            }
-            if (!local_error.empty()) {
-              error_out = local_error;
-            }
-          }
+    if (auto encoded = get_string_field(source, key)) {
+      if (auto bytes = decode_base64_string_raw(*encoded)) {
+        std::string local_error;
+        if (auto pem = convert_der_private_key_to_pem(*bytes, local_error)) {
+          return pem;
         }
-        return std::nullopt;
-      };
+        if (!local_error.empty()) {
+          error_out = local_error;
+        }
+      }
+    }
+    return std::nullopt;
+  };
 
   if (auto pem = decode_der_field(*view, "private_key_der_b64")) {
     return pem;
@@ -476,62 +477,38 @@ std::filesystem::perms default_directory_perms() {
 #endif
 }
 
-
-
 } // namespace
 
 InstallResourceMaterializer::InstallResourceMaterializer(
+    cjj365::IoContextManager &io_context_manager,
     certctrl::ICertctrlConfigProvider &config_provider,
-    customio::ConsoleOutput &output,
-    client_async::HttpClientManager *http_client,
-    boost::asio::io_context *io_context)
-    : config_provider_(&config_provider), output_(&output),
-      http_client_(http_client), io_context_(io_context) {
-  if (!io_context_) {
-    owned_io_context_ = std::make_unique<boost::asio::io_context>();
-    owned_io_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
-        boost::asio::io_context::executor_type>>(
-        boost::asio::make_work_guard(*owned_io_context_));
-    io_context_ = owned_io_context_.get();
-    owned_io_thread_ = std::thread([ctx = io_context_]() {
-      if (!ctx) {
-        return;
-      }
-      ctx->run();
-    });
-  }
-}
+    customio::ConsoleOutput &output, IResourceFetcher &resource_fetcher,
+    client_async::HttpClientManager &http_client)
+    : config_provider_(config_provider), output_(output),
+      resource_fetcher_(resource_fetcher), http_client_(http_client),
+      io_context_(io_context_manager.ioc()),
+      runtime_dir_(config_provider.get().runtime_dir) {}
 
-InstallResourceMaterializer::~InstallResourceMaterializer() {
-  if (owned_io_work_guard_) {
-    owned_io_work_guard_->reset();
-  }
-  if (owned_io_context_) {
-    owned_io_context_->stop();
-  }
-  if (owned_io_thread_.joinable()) {
-    owned_io_thread_.join();
-  }
-}
+InstallResourceMaterializer::~InstallResourceMaterializer() {}
 
-void InstallResourceMaterializer::customize(RuntimeConfig config) {
-  update_runtime_dir(std::move(config.runtime_dir));
-  update_access_token_loader(std::move(config.access_token_loader));
-  update_resource_fetch_override(std::move(config.resource_fetch_override));
-  update_bundle_hooks(std::move(config.bundle_lookup),
-                      std::move(config.bundle_remember),
-                      std::move(config.bundle_forget));
-}
+// void InstallResourceMaterializer::customize(RuntimeConfig config) {
+//   update_runtime_dir(std::move(config.runtime_dir));
+//   update_access_token_loader(std::move(config.access_token_loader));
+//   update_resource_fetch_override(std::move(config.resource_fetch_override));
+//   update_bundle_hooks(std::move(config.bundle_lookup),
+//                       std::move(config.bundle_remember),
+//                       std::move(config.bundle_forget));
+// }
 
-void InstallResourceMaterializer::update_runtime_dir(
-    std::filesystem::path runtime_dir) {
-  runtime_dir_ = std::move(runtime_dir);
-}
+// void InstallResourceMaterializer::update_runtime_dir(
+//     std::filesystem::path runtime_dir) {
+//   runtime_dir_ = std::move(runtime_dir);
+// }
 
-void InstallResourceMaterializer::update_resource_fetch_override(
-    ResourceFetchOverrideFn fn) {
-  resource_fetch_override_ = std::move(fn);
-}
+// void InstallResourceMaterializer::update_resource_fetch_override(
+//     ResourceFetchOverrideFn fn) {
+//   resource_fetch_override_ = std::move(fn);
+// }
 
 void InstallResourceMaterializer::update_access_token_loader(
     AccessTokenLoader loader) {
@@ -546,8 +523,8 @@ void InstallResourceMaterializer::update_bundle_hooks(
   bundle_forget_ = std::move(forget);
 }
 
-monad::IO<void> InstallResourceMaterializer::ensure_materialized(
-    const dto::InstallItem &item) {
+monad::IO<void>
+InstallResourceMaterializer::ensure_materialized(const dto::InstallItem &item) {
   return ensure_resource_materialized_impl(item);
 }
 
@@ -571,7 +548,8 @@ InstallResourceMaterializer::resource_current_dir(const std::string &ob_type,
   return resource_root;
 }
 
-std::optional<std::string> InstallResourceMaterializer::load_access_token() const {
+std::optional<std::string>
+InstallResourceMaterializer::load_access_token() const {
   if (!access_token_loader_) {
     return std::nullopt;
   }
@@ -602,21 +580,14 @@ void InstallResourceMaterializer::forget_bundle_password(
   }
 }
 
-monad::IO<void>
-InstallResourceMaterializer::ensure_resource_materialized_impl(
+monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
     const dto::InstallItem &item) {
   using namespace std::chrono_literals;
 
-  if (!output_ || !config_provider_) {
-    return monad::IO<void>::fail(monad::make_error(
-        my_errors::GENERAL::INVALID_ARGUMENT,
-        "Materializer missing required dependencies"));
-  }
-
   if (!item.ob_type || !item.ob_id) {
-    return monad::IO<void>::fail(monad::make_error(
-        my_errors::GENERAL::INVALID_ARGUMENT,
-        "Resource reference missing ob_type/ob_id"));
+    return monad::IO<void>::fail(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "Resource reference missing ob_type/ob_id"));
   }
 
   auto state = std::make_shared<MaterializationData>();
@@ -628,9 +599,9 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
   state->current_dir = resource_current_dir(state->ob_type, state->ob_id);
 
   if (runtime_dir_.empty()) {
-    return monad::IO<void>::fail(monad::make_error(
-        my_errors::GENERAL::INVALID_ARGUMENT,
-        "Runtime directory is not configured"));
+    return monad::IO<void>::fail(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "Runtime directory is not configured"));
   }
 
   bool all_present = true;
@@ -660,27 +631,28 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
     return monad::IO<void>::pure();
   }
 
-  auto parse_enveloped_object =
-      [](const std::string &raw, const char *context,
-         boost::json::object &out) -> std::optional<monad::Error> {
-    boost::system::error_code ec;
-    auto parsed = boost::json::parse(raw, ec);
-    if (ec || !parsed.is_object()) {
-      return monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
-                               fmt::format("{} response not a JSON object: {}",
-                                           context, ec ? ec.message() : ""));
-    }
-    auto &obj = parsed.as_object();
-    if (auto *data = obj.if_contains("data")) {
-      if (data->is_object()) {
-        out = data->as_object();
-        return std::nullopt;
-      }
-    }
-    return monad::make_error(
-        my_errors::GENERAL::UNEXPECTED_RESULT,
-        fmt::format("{} response missing data object", context));
-  };
+  // auto parse_enveloped_object =
+  //     [](const std::string &raw, const char *context,
+  //        boost::json::object &out) -> std::optional<monad::Error> {
+  //   boost::system::error_code ec;
+  //   auto parsed = boost::json::parse(raw, ec);
+  //   if (ec || !parsed.is_object()) {
+  //     return monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+  //                              fmt::format("{} response not a JSON object:
+  //                              {}",
+  //                                          context, ec ? ec.message() : ""));
+  //   }
+  //   auto &obj = parsed.as_object();
+  //   if (auto *data = obj.if_contains("data")) {
+  //     if (data->is_object()) {
+  //       out = data->as_object();
+  //       return std::nullopt;
+  //     }
+  //   }
+  //   return monad::make_error(
+  //       my_errors::GENERAL::UNEXPECTED_RESULT,
+  //       fmt::format("{} response missing data object", context));
+  // };
 
   auto get_string_field =
       [](const boost::json::object &obj,
@@ -717,226 +689,217 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
   };
 
   auto self = shared_from_this();
-  monad::IO<void> pipeline = monad::IO<void>::pure();
+  // monad::IO<void> pipeline = monad::IO<void>::pure();
 
-  if (state->is_cert) {
-    if (resource_fetch_override_) {
-      auto override_body = resource_fetch_override_(item);
-      if (!override_body) {
-        return monad::IO<void>::fail(monad::make_error(
-            my_errors::GENERAL::INVALID_ARGUMENT,
-            "Resource fetch override returned empty body"));
-      }
+  // if (state->is_cert) {
+  //   if (resource_fetch_override_) {
+  //     auto override_body = resource_fetch_override_(item);
+  //     if (!override_body) {
+  //       return monad::IO<void>::fail(
+  //           monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+  //                             "Resource fetch override returned empty
+  //                             body"));
+  //     }
 
-      boost::system::error_code ec;
-      auto parsed = boost::json::parse(*override_body, ec);
-      if (ec || !parsed.is_object()) {
-        return monad::IO<void>::fail(monad::make_error(
-            my_errors::GENERAL::UNEXPECTED_RESULT,
-            "Override payload for cert is not an object"));
-      }
-      auto &obj = parsed.as_object();
-      if (auto *deploy = obj.if_contains("deploy")) {
-        if (deploy->is_object()) {
-          state->deploy_obj = deploy->as_object();
-          state->deploy_available = true;
-        }
-      }
-      if (auto *detail = obj.if_contains("detail")) {
-        if (detail->is_object()) {
-          state->detail_obj = detail->as_object();
-          state->detail_parsed = true;
-        }
-      }
-      if (state->deploy_obj.empty() && obj.if_contains("data") &&
-          obj["data"].is_object()) {
-        state->deploy_obj = obj["data"].as_object();
-        state->deploy_available = true;
-      }
-      if (state->detail_obj.empty() && obj.if_contains("certificate") &&
-          obj["certificate"].is_object()) {
-        state->detail_obj = obj["certificate"].as_object();
-        state->detail_parsed = true;
-      }
-      if (state->detail_obj.empty()) {
-        return monad::IO<void>::fail(monad::make_error(
-            my_errors::GENERAL::UNEXPECTED_RESULT,
-            "Override payload missing certificate detail object"));
-      }
+  //     boost::system::error_code ec;
+  //     auto parsed = boost::json::parse(*override_body, ec);
+  //     if (ec || !parsed.is_object()) {
+  //       return monad::IO<void>::fail(
+  //           monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+  //                             "Override payload for cert is not an object"));
+  //     }
+  //     auto &obj = parsed.as_object();
+  //     if (auto *deploy = obj.if_contains("deploy")) {
+  //       if (deploy->is_object()) {
+  //         state->deploy_obj = deploy->as_object();
+  //         state->deploy_available = true;
+  //       }
+  //     }
+  //     if (auto *detail = obj.if_contains("detail")) {
+  //       if (detail->is_object()) {
+  //         state->detail_obj = detail->as_object();
+  //         state->detail_parsed = true;
+  //       }
+  //     }
+  //     if (state->deploy_obj.empty() && obj.if_contains("data") &&
+  //         obj["data"].is_object()) {
+  //       state->deploy_obj = obj["data"].as_object();
+  //       state->deploy_available = true;
+  //     }
+  //     if (state->detail_obj.empty() && obj.if_contains("certificate") &&
+  //         obj["certificate"].is_object()) {
+  //       state->detail_obj = obj["certificate"].as_object();
+  //       state->detail_parsed = true;
+  //     }
+  //     if (state->detail_obj.empty()) {
+  //       return monad::IO<void>::fail(monad::make_error(
+  //           my_errors::GENERAL::UNEXPECTED_RESULT,
+  //           "Override payload missing certificate detail object"));
+  //     }
 
-      state->detail_raw_json =
-          boost::json::serialize(boost::json::object{{"data", state->detail_obj}});
-      if (!state->deploy_obj.empty()) {
-        state->deploy_raw_json =
-            boost::json::serialize(boost::json::object{{"data", state->deploy_obj}});
-      } else {
-        boost::json::object placeholder;
-        placeholder["note"] =
-            "resource override missing deploy materials; generated locally";
-        state->deploy_raw_json =
-            boost::json::serialize(boost::json::object{{"data", placeholder}});
-      }
-      state->deploy_available = !state->deploy_obj.empty();
-    } else {
-      if (!http_client_) {
-        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                     "InstallResourceMaterializer requires HTTP client");
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl cert fetch missing http_client ob_id="
-            << state->ob_id;
-        return monad::IO<void>::fail(std::move(err));
-      }
+  //     state->detail_raw_json = boost::json::serialize(
+  //         boost::json::object{{"data", state->detail_obj}});
+  //     if (!state->deploy_obj.empty()) {
+  //       state->deploy_raw_json = boost::json::serialize(
+  //           boost::json::object{{"data", state->deploy_obj}});
+  //     } else {
+  //       boost::json::object placeholder;
+  //       placeholder["note"] =
+  //           "resource override missing deploy materials; generated locally";
+  //       state->deploy_raw_json =
+  //           boost::json::serialize(boost::json::object{{"data",
+  //           placeholder}});
+  //     }
+  //     state->deploy_available = !state->deploy_obj.empty();
+  //   } else {
+  //     auto token_opt = load_access_token();
+  //     if (!token_opt || token_opt->empty()) {
+  //       auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+  //                                    "Device access token unavailable");
+  //       BOOST_LOG_SEV(lg, trivial::error)
+  //           << "ensure_resource_materialized_impl cert fetch missing token "
+  //              "ob_id="
+  //           << state->ob_id;
+  //       return monad::IO<void>::fail(std::move(err));
+  //     }
 
-      auto token_opt = load_access_token();
-      if (!token_opt || token_opt->empty()) {
-        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                     "Device access token unavailable");
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl cert fetch missing token ob_id="
-            << state->ob_id;
-        return monad::IO<void>::fail(std::move(err));
-      }
+  //     const auto &cfg = config_provider_.get();
+  //     std::string detail_url = fmt::format(
+  //         "{}/apiv1/devices/self/certificates/{}", cfg.base_url,
+  //         state->ob_id);
+  //     std::string deploy_url =
+  //         fmt::format("{}/apiv1/devices/self/certificates/{}/deploy-materials",
+  //                     cfg.base_url, state->ob_id);
+  //     auto token = *token_opt;
 
-      const auto &cfg = config_provider_->get();
-      std::string detail_url = fmt::format(
-          "{}/apiv1/devices/self/certificates/{}", cfg.base_url, state->ob_id);
-      std::string deploy_url = fmt::format(
-          "{}/apiv1/devices/self/certificates/{}/deploy-materials", cfg.base_url,
-          state->ob_id);
-      auto token = *token_opt;
+  //     pipeline = pipeline.then([self, state, detail_url, deploy_url, token,
+  //                               parse_enveloped_object]() {
+  //       return self->fetch_http_body(detail_url, token, "certificate detail")
+  //           .map([state](std::string body) {
+  //             state->detail_raw_json = std::move(body);
+  //           })
+  //           .then([self, state, deploy_url, token, parse_enveloped_object]()
+  //           {
+  //             return self
+  //                 ->fetch_http_body(deploy_url, token, "deploy materials")
+  //                 .map([state](std::string body) {
+  //                   state->deploy_raw_json = std::move(body);
+  //                   state->deploy_available = true;
+  //                 })
+  //                 .catch_then([state, self](monad::Error err) {
+  //                   if (err.response_status == 404 ||
+  //                       err.response_status == 204) {
+  //                     state->deploy_available = false;
+  //                     boost::json::object placeholder;
+  //                     placeholder["note"] = "no deploy materials provided; "
+  //                                           "generated locally by agent";
+  //                     state->deploy_raw_json = boost::json::serialize(
+  //                         boost::json::object{{"data", placeholder}});
+  //                     self->output_.logger().info()
+  //                         << "Deploy materials endpoint unavailable for cert
+  //                         "
+  //                         << state->ob_id << " (status=" <<
+  //                         err.response_status
+  //                         << "); falling back to certificate detail payload"
+  //                         << std::endl;
+  //                     return monad::IO<void>::pure();
+  //                   }
+  //                   return monad::IO<void>::fail(std::move(err));
+  //                 })
+  //                 .then([state, parse_enveloped_object]() {
+  //                   auto detail_err = parse_enveloped_object(
+  //                       state->detail_raw_json, "certificate detail",
+  //                       state->detail_obj);
+  //                   if (detail_err) {
+  //                     return monad::IO<void>::fail(std::move(*detail_err));
+  //                   }
+  //                   state->detail_parsed = true;
 
-      pipeline = pipeline.then([self, state, detail_url, deploy_url, token,
-                                parse_enveloped_object]() {
-        return self
-            ->fetch_http_body(detail_url, token, "certificate detail")
-            .map([state](std::string body) {
-              state->detail_raw_json = std::move(body);
-            })
-            .then([self, state, deploy_url, token, parse_enveloped_object]() {
-              return self
-                  ->fetch_http_body(deploy_url, token, "deploy materials")
-                  .map([state](std::string body) {
-                    state->deploy_raw_json = std::move(body);
-                    state->deploy_available = true;
-                  })
-                  .catch_then([state, output = self->output_](monad::Error err) {
-                    if (err.response_status == 404 || err.response_status == 204) {
-                      state->deploy_available = false;
-                      boost::json::object placeholder;
-                      placeholder["note"] =
-                          "no deploy materials provided; generated locally by agent";
-                      state->deploy_raw_json =
-                          boost::json::serialize(
-                              boost::json::object{{"data", placeholder}});
-                      if (output) {
-                        output->logger().info()
-                            << "Deploy materials endpoint unavailable for cert "
-                            << state->ob_id << " (status="
-                            << err.response_status
-                            << "); falling back to certificate detail payload"
-                            << std::endl;
-                      }
-                      return monad::IO<void>::pure();
-                    }
-                    return monad::IO<void>::fail(std::move(err));
-                  })
-                  .then([state, parse_enveloped_object]() {
-                    auto detail_err = parse_enveloped_object(
-                        state->detail_raw_json, "certificate detail",
-                        state->detail_obj);
-                    if (detail_err) {
-                      return monad::IO<void>::fail(std::move(*detail_err));
-                    }
-                    state->detail_parsed = true;
+  //                   if (!state->deploy_raw_json.empty()) {
+  //                     boost::json::object deploy_obj;
+  //                     auto deploy_err = parse_enveloped_object(
+  //                         state->deploy_raw_json, "deploy materials",
+  //                         deploy_obj);
+  //                     if (deploy_err) {
+  //                       return monad::IO<void>::fail(std::move(*deploy_err));
+  //                     }
+  //                     state->deploy_obj = std::move(deploy_obj);
+  //                   }
+  //                   return monad::IO<void>::pure();
+  //                 });
+  //           });
+  //     });
+  //   }
+  // }
 
-                    if (!state->deploy_raw_json.empty()) {
-                      boost::json::object deploy_obj;
-                      auto deploy_err = parse_enveloped_object(
-                          state->deploy_raw_json, "deploy materials",
-                          deploy_obj);
-                      if (deploy_err) {
-                        return monad::IO<void>::fail(std::move(*deploy_err));
-                      }
-                      state->deploy_obj = std::move(deploy_obj);
-                    }
-                    return monad::IO<void>::pure();
-                  });
-            });
-      });
-    }
-  }
+  // if (state->is_ca) {
+  //   if (resource_fetch_override_) {
+  //     auto override_body = resource_fetch_override_(item);
+  //     if (!override_body) {
+  //       auto err =
+  //           monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+  //                             "Resource fetch override returned empty body");
+  //       BOOST_LOG_SEV(lg, trivial::error)
+  //           << "ensure_resource_materialized_impl CA override empty ob_id="
+  //           << state->ob_id;
+  //       return monad::IO<void>::fail(std::move(err));
+  //     }
+  //     state->ca_body = std::move(*override_body);
+  //     auto bundle_data = parse_bundle_data(state->ca_body);
+  //     if (!bundle_data) {
+  //       auto err =
+  //           monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+  //                             "CA bundle response missing expected data");
+  //       BOOST_LOG_SEV(lg, trivial::error)
+  //           << "ensure_resource_materialized_impl CA bundle parse failure "
+  //              "ob_id="
+  //           << state->ob_id;
+  //       return monad::IO<void>::fail(std::move(err));
+  //     }
+  //     state->ca_obj = std::move(*bundle_data);
+  //     state->ca_parsed = true;
+  //   } else {
+  //     auto token_opt = load_access_token();
+  //     if (!token_opt || token_opt->empty()) {
+  //       auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+  //                                    "Device access token unavailable");
+  //       BOOST_LOG_SEV(lg, trivial::error)
+  //           << "ensure_resource_materialized_impl CA fetch missing token
+  //           ob_id="
+  //           << state->ob_id;
+  //       return monad::IO<void>::fail(std::move(err));
+  //     }
 
-  if (state->is_ca) {
-    if (resource_fetch_override_) {
-      auto override_body = resource_fetch_override_(item);
-      if (!override_body) {
-        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                     "Resource fetch override returned empty body");
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl CA override empty ob_id="
-            << state->ob_id;
-        return monad::IO<void>::fail(std::move(err));
-      }
-      state->ca_body = std::move(*override_body);
-      auto bundle_data = parse_bundle_data(state->ca_body);
-      if (!bundle_data) {
-        auto err = monad::make_error(
-            my_errors::GENERAL::UNEXPECTED_RESULT,
-            "CA bundle response missing expected data");
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl CA bundle parse failure ob_id="
-            << state->ob_id;
-        return monad::IO<void>::fail(std::move(err));
-      }
-      state->ca_obj = std::move(*bundle_data);
-      state->ca_parsed = true;
-    } else {
-      if (!http_client_) {
-        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                     "InstallResourceMaterializer requires HTTP client");
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl CA fetch missing http_client ob_id="
-            << state->ob_id;
-        return monad::IO<void>::fail(std::move(err));
-      }
+  //     const auto &cfg = config_provider_.get();
+  //     std::string url =
+  //         fmt::format("{}/apiv1/devices/self/cas/{}/bundle?pack=download",
+  //                     cfg.base_url, state->ob_id);
+  //     auto token = *token_opt;
 
-      auto token_opt = load_access_token();
-      if (!token_opt || token_opt->empty()) {
-        auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                     "Device access token unavailable");
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "ensure_resource_materialized_impl CA fetch missing token ob_id="
-            << state->ob_id;
-        return monad::IO<void>::fail(std::move(err));
-      }
-
-      const auto &cfg = config_provider_->get();
-      std::string url = fmt::format(
-          "{}/apiv1/devices/self/cas/{}/bundle?pack=download", cfg.base_url,
-          state->ob_id);
-      auto token = *token_opt;
-
-      pipeline = pipeline.then([self, state, url, token]() {
-        return self->fetch_http_body(url, token, "ca bundle")
-            .map([state](std::string body) { state->ca_body = std::move(body); })
-            .then([state]() {
-              auto bundle_data = parse_bundle_data(state->ca_body);
-              if (!bundle_data) {
-                auto err = monad::make_error(
-                    my_errors::GENERAL::UNEXPECTED_RESULT,
-                    "CA bundle response missing expected data");
-                return monad::IO<void>::fail(std::move(err));
-              }
-              state->ca_obj = std::move(*bundle_data);
-              state->ca_parsed = true;
-              return monad::IO<void>::pure();
-            });
-      });
-    }
-  }
+  //     pipeline = pipeline.then([self, state, url, token]() {
+  //       return self->fetch_http_body(url, token, "ca bundle")
+  //           .map(
+  //               [state](std::string body) { state->ca_body = std::move(body);
+  //               })
+  //           .then([state]() {
+  //             auto bundle_data = parse_bundle_data(state->ca_body);
+  //             if (!bundle_data) {
+  //               auto err = monad::make_error(
+  //                   my_errors::GENERAL::UNEXPECTED_RESULT,
+  //                   "CA bundle response missing expected data");
+  //               return monad::IO<void>::fail(std::move(err));
+  //             }
+  //             state->ca_obj = std::move(*bundle_data);
+  //             state->ca_parsed = true;
+  //             return monad::IO<void>::pure();
+  //           });
+  //     });
+  //   }
+  // }
+  auto pipeline = resource_fetcher_.fetch(load_access_token(), state);
 
   pipeline = pipeline.then([self, state, get_string_field, extract_pem,
-                            decode_base64_string, parse_enveloped_object]() {
+                            decode_base64_string]() {
     try {
       std::filesystem::create_directories(state->current_dir);
 
@@ -947,15 +910,15 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
           std::string decrypt_error;
           std::optional<std::string> private_key_pem;
           if (!state->deploy_obj.empty()) {
-            private_key_pem = decrypt_private_key_pem(
-                state->deploy_obj, self->runtime_dir_, self->state_dir(),
-                decrypt_error);
+            private_key_pem =
+                decrypt_private_key_pem(state->deploy_obj, self->runtime_dir_,
+                                        self->state_dir(), decrypt_error);
           }
 
           std::string fallback_error;
           if (!private_key_pem) {
-            private_key_pem = extract_private_key_from_detail(
-                state->detail_obj, fallback_error);
+            private_key_pem = extract_private_key_from_detail(state->detail_obj,
+                                                              fallback_error);
           }
 
           if (!private_key_pem) {
@@ -1013,7 +976,8 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
           }
 
           std::string fullchain_pem;
-          if (auto fullchain_field = extract_pem(*detail_view, "fullchain_pem")) {
+          if (auto fullchain_field =
+                  extract_pem(*detail_view, "fullchain_pem")) {
             fullchain_pem = *fullchain_field;
           }
 
@@ -1036,10 +1000,9 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
 
           bool chain_required = false;
           if (install_item.from) {
-            chain_required = std::find(install_item.from->begin(),
-                                       install_item.from->end(),
-                                       std::string("chain.pem")) !=
-                             install_item.from->end();
+            chain_required =
+                std::find(install_item.from->begin(), install_item.from->end(),
+                          std::string("chain.pem")) != install_item.from->end();
           }
           if (chain_required && chain_pem.empty()) {
             chain_pem = leaf_pem;
@@ -1061,8 +1024,8 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
 
           if (binary_outputs.find("bundle.pfx") == binary_outputs.end()) {
             try {
-              auto pkey = cjj365::opensslutil::load_private_key(*private_key_pem,
-                                                                false);
+              auto pkey = cjj365::opensslutil::load_private_key(
+                  *private_key_pem, false);
               if (!pkey) {
                 return monad::IO<void>::fail(monad::make_error(
                     my_errors::GENERAL::UNEXPECTED_RESULT,
@@ -1079,15 +1042,16 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
                 if (name->is_string() && !name->as_string().empty()) {
                   alias = std::string(name->as_string().c_str());
                 }
-              } else if (auto name = state->detail_obj.if_contains("domain_name")) {
+              } else if (auto name =
+                             state->detail_obj.if_contains("domain_name")) {
                 if (name->is_string() && !name->as_string().empty()) {
                   alias = std::string(name->as_string().c_str());
                 }
               }
 
               std::string pfx_password;
-              if (auto existing =
-                      self->lookup_bundle_password(state->ob_type, state->ob_id)) {
+              if (auto existing = self->lookup_bundle_password(state->ob_type,
+                                                               state->ob_id)) {
                 pfx_password = *existing;
               } else {
                 pfx_password = cjj365::cryptutil::generateApiSecret(40);
@@ -1098,11 +1062,12 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
               binary_outputs["bundle.pfx"] =
                   std::vector<unsigned char>(pkcs12.begin(), pkcs12.end());
               self->remember_bundle_password(state->ob_type, state->ob_id,
-                                              pfx_password);
+                                             pfx_password);
             } catch (const std::exception &ex) {
               return monad::IO<void>::fail(monad::make_error(
                   my_errors::GENERAL::UNEXPECTED_RESULT,
-                  fmt::format("Failed to create PKCS#12 bundle: {}", ex.what())));
+                  fmt::format("Failed to create PKCS#12 bundle: {}",
+                              ex.what())));
             }
           }
 
@@ -1184,8 +1149,9 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
             if (auto binary_it = binary_outputs.find(virtual_name);
                 binary_it != binary_outputs.end()) {
               std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
-              ofs.write(reinterpret_cast<const char *>(binary_it->second.data()),
-                        static_cast<std::streamsize>(binary_it->second.size()));
+              ofs.write(
+                  reinterpret_cast<const char *>(binary_it->second.data()),
+                  static_cast<std::streamsize>(binary_it->second.size()));
             } else if (auto text_it = text_outputs.find(virtual_name);
                        text_it != text_outputs.end()) {
               std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
@@ -1193,11 +1159,9 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
             }
           }
 
-          if (self->output_) {
-            self->output_->logger().debug()
-                << "Fetched resource " << state->ob_type << "/" << state->ob_id
-                << " (materials cached)" << std::endl;
-          }
+          self->output_.logger().debug()
+              << "Fetched resource " << state->ob_type << "/" << state->ob_id
+              << " (materials cached)" << std::endl;
           BOOST_LOG_SEV(self->lg, trivial::trace)
               << "ensure_resource_materialized complete ob_type="
               << state->ob_type << " ob_id=" << state->ob_id;
@@ -1232,8 +1196,9 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
             if (auto binary_it = binary_outputs.find(virtual_name);
                 binary_it != binary_outputs.end()) {
               std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
-              ofs.write(reinterpret_cast<const char *>(binary_it->second.data()),
-                        static_cast<std::streamsize>(binary_it->second.size()));
+              ofs.write(
+                  reinterpret_cast<const char *>(binary_it->second.data()),
+                  static_cast<std::streamsize>(binary_it->second.size()));
             } else if (auto text_it = text_outputs.find(virtual_name);
                        text_it != text_outputs.end()) {
               std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
@@ -1241,11 +1206,9 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
             }
           }
 
-          if (self->output_) {
-            self->output_->logger().debug()
-                << "Fetched resource " << state->ob_type << "/" << state->ob_id
-                << " (materials cached)" << std::endl;
-          }
+          self->output_.logger().debug()
+              << "Fetched resource " << state->ob_type << "/" << state->ob_id
+              << " (materials cached)" << std::endl;
           BOOST_LOG_SEV(self->lg, trivial::trace)
               << "ensure_resource_materialized complete ob_type="
               << state->ob_type << " ob_id=" << state->ob_id;
@@ -1269,22 +1232,22 @@ InstallResourceMaterializer::ensure_resource_materialized_impl(
   return pipeline;
 }
 
-boost::asio::io_context &InstallResourceMaterializer::ensure_io_context() {
-  if (!io_context_) {
-    owned_io_context_ = std::make_unique<boost::asio::io_context>();
-    owned_io_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
-        boost::asio::io_context::executor_type>>(
-        boost::asio::make_work_guard(*owned_io_context_));
-    io_context_ = owned_io_context_.get();
-    owned_io_thread_ = std::thread([ctx = io_context_]() {
-      if (!ctx) {
-        return;
-      }
-      ctx->run();
-    });
-  }
-  return *io_context_;
-}
+// boost::asio::io_context &InstallResourceMaterializer::ensure_io_context() {
+//   if (!io_context_) {
+//     owned_io_context_ = std::make_unique<boost::asio::io_context>();
+//     owned_io_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
+//         boost::asio::io_context::executor_type>>(
+//         boost::asio::make_work_guard(*owned_io_context_));
+//     io_context_ = owned_io_context_.get();
+//     owned_io_thread_ = std::thread([ctx = io_context_]() {
+//       if (!ctx) {
+//         return;
+//       }
+//       ctx->run();
+//     });
+//   }
+//   return *io_context_;
+// }
 
 monad::IO<std::string>
 InstallResourceMaterializer::fetch_http_body(const std::string &url,
@@ -1297,82 +1260,72 @@ InstallResourceMaterializer::fetch_http_body(const std::string &url,
 
   namespace http = boost::beast::http;
 
-  if (!http_client_) {
-    return monad::IO<std::string>::fail(monad::make_error(
-        my_errors::GENERAL::INVALID_ARGUMENT,
-        "InstallResourceMaterializer requires HTTP client"));
-  }
-
   constexpr int kMaxAttempts = 12;
   constexpr std::chrono::seconds kRetryBaseDelay{3};
 
   auto attempt_counter = std::make_shared<int>(0);
 
-  auto fetch_once = http_io<GetStringTag>(url)
-                        .map([this, attempt_counter, token, url, context_label](
-                                 auto ex) {
-                          const int current_attempt = ++(*attempt_counter);
-                          BOOST_LOG_SEV(lg, trivial::trace)
-                              << "fetch_http_body attempt " << current_attempt
-                              << '/' << kMaxAttempts << " for url=" << url
-                              << " context=" << context_label;
-                          ex->request.set(http::field::authorization,
-                                           std::string("Bearer ") + token);
-                          return ex;
-                        })
-                        .then(http_request_io<GetStringTag>(*http_client_))
-                        .then([this, url, context_label, attempt_counter](
-                                  ExchangePtr ex) -> monad::IO<std::string> {
-                          if (!ex->response.has_value()) {
-                            BOOST_LOG_SEV(lg, trivial::warning)
-                                << "fetch_http_body received empty response for url="
-                                << url << " context=" << context_label;
-                            return monad::IO<std::string>::fail(
-                                monad::make_error(
-                                    my_errors::NETWORK::READ_ERROR,
+  auto fetch_once =
+      http_io<GetStringTag>(url)
+          .map([this, attempt_counter, token, url, context_label](auto ex) {
+            const int current_attempt = ++(*attempt_counter);
+            BOOST_LOG_SEV(lg, trivial::trace)
+                << "fetch_http_body attempt " << current_attempt << '/'
+                << kMaxAttempts << " for url=" << url
+                << " context=" << context_label;
+            ex->request.set(http::field::authorization,
+                            std::string("Bearer ") + token);
+            return ex;
+          })
+          .then(http_request_io<GetStringTag>(http_client_))
+          .then([this, url, context_label,
+                 attempt_counter](ExchangePtr ex) -> monad::IO<std::string> {
+            if (!ex->response.has_value()) {
+              BOOST_LOG_SEV(lg, trivial::warning)
+                  << "fetch_http_body received empty response for url=" << url
+                  << " context=" << context_label;
+              return monad::IO<std::string>::fail(
+                  monad::make_error(my_errors::NETWORK::READ_ERROR,
                                     "No response while fetching resource"));
-                          }
+            }
 
-                          int status = ex->response->result_int();
-                          std::string body = ex->response->body();
+            int status = ex->response->result_int();
+            std::string body = ex->response->body();
 
-                          if (status == 200) {
-                            BOOST_LOG_SEV(lg, trivial::trace)
-                                << "fetch_http_body succeeded for url=" << url
-                                << " context=" << context_label
-                                << " (status=200, bytes=" << body.size()
-                                << ')';
-                            return monad::IO<std::string>::pure(std::move(body));
-                          }
+            if (status == 200) {
+              BOOST_LOG_SEV(lg, trivial::trace)
+                  << "fetch_http_body succeeded for url=" << url
+                  << " context=" << context_label
+                  << " (status=200, bytes=" << body.size() << ')';
+              return monad::IO<std::string>::pure(std::move(body));
+            }
 
-                          auto err = monad::make_error(
-                              my_errors::NETWORK::READ_ERROR,
-                              fmt::format("Resource fetch HTTP {}", status));
-                          err.response_status = status;
-                          err.params["response_body_preview"] =
-                              body.substr(0, 512);
+            auto err = monad::make_error(
+                my_errors::NETWORK::READ_ERROR,
+                fmt::format("Resource fetch HTTP {}", status));
+            err.response_status = status;
+            err.params["response_body_preview"] = body.substr(0, 512);
 
-                          if (status == 503) {
-                            BOOST_LOG_SEV(lg, trivial::warning)
-                                << "fetch_http_body retry for url=" << url
-                                << " context=" << context_label
-                                << " attempt=" << *attempt_counter;
-                          } else {
-                            BOOST_LOG_SEV(lg, trivial::warning)
-                                << "fetch_http_body aborting status=" << status
-                                << " url=" << url
-                                << " context=" << context_label;
-                          }
+            if (status == 503) {
+              BOOST_LOG_SEV(lg, trivial::warning)
+                  << "fetch_http_body retry for url=" << url
+                  << " context=" << context_label
+                  << " attempt=" << *attempt_counter;
+            } else {
+              BOOST_LOG_SEV(lg, trivial::warning)
+                  << "fetch_http_body aborting status=" << status
+                  << " url=" << url << " context=" << context_label;
+            }
 
-                          return monad::IO<std::string>::fail(std::move(err));
-                        });
+            return monad::IO<std::string>::fail(std::move(err));
+          });
 
   auto should_retry = [attempt_counter](const monad::Error &err) {
     return err.response_status == 503 && *attempt_counter < kMaxAttempts;
   };
 
   return std::move(fetch_once)
-      .retry_exponential_if(kMaxAttempts, kRetryBaseDelay, ensure_io_context(),
+      .retry_exponential_if(kMaxAttempts, kRetryBaseDelay, io_context_,
                             should_retry);
 }
 

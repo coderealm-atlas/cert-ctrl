@@ -29,8 +29,9 @@ public:
       IResourceMaterializer::Factory resource_materializer_factory);
 
   // mostly for test purposes.
-  void customize(std::filesystem::path runtime_dir,
-                 IResourceMaterializer::Factory resource_materializer_factory);
+  // void customize(std::filesystem::path runtime_dir,
+  //                IResourceMaterializer::Factory
+  //                resource_materializer_factory);
 
   monad::IO<void> apply(const dto::DeviceInstallConfigDto &config,
                         const std::optional<std::string> &target_ob_type,
@@ -40,8 +41,13 @@ private:
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;
   std::filesystem::path runtime_dir_;
-  bool is_customized_{false};
   IResourceMaterializer::Factory resource_materializer_factory_;
+  IResourceMaterializer::Ptr resource_materializer_;
+  std::vector<std::string> failure_messages_;
+  monad::IO<void>
+  process_one_item(const dto::InstallItem &item,
+                   const std::optional<std::string> &target_ob_type,
+                   std::optional<std::int64_t> target_ob_id);
 };
 
 } // namespace certctrl::install_actions

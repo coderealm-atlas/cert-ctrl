@@ -26,8 +26,8 @@ public:
       customio::ConsoleOutput &output,
     install_actions::IResourceMaterializer::Factory resource_materializer_factory);
 
-  void customize(std::filesystem::path runtime_dir,
-         install_actions::IResourceMaterializer::Factory resource_materializer_factory);
+  // void customize(std::filesystem::path runtime_dir,
+  //        install_actions::IResourceMaterializer::Factory resource_materializer_factory);
 
   monad::IO<void> apply(const dto::DeviceInstallConfigDto &config,
                         const std::optional<std::string> &target_ob_type,
@@ -40,7 +40,7 @@ private:
   customio::ConsoleOutput &output_;
   std::filesystem::path runtime_dir_;
   install_actions::IResourceMaterializer::Factory resource_materializer_factory_;
-  bool is_customized_{false};
+  // bool is_customized_{false};
 };
 
 } // namespace certctrl::install_actions

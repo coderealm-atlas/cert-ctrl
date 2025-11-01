@@ -503,7 +503,7 @@ InstallConfigManager::InstallConfigManager(
       install_actions::IExecEnvironmentResolver::Factory
           exec_env_resolver_factory,
       install_actions::IDeviceInstallConfigFetcher &config_fetcher)
-    : runtime_dir_(std::move(config_provider.get().runtime_dir)),
+    : runtime_dir_(config_provider.get().runtime_dir),
       config_provider_(config_provider), output_(output),
       http_client_(http_client),
       resource_materializer_factory_(std::move(resource_materializer_factory)),
@@ -514,21 +514,6 @@ InstallConfigManager::InstallConfigManager(
       copy_handler_factory_(std::move(copy_handler_factory)),
       config_fetcher_(config_fetcher),
       io_context_(io_context_manager.ioc()) {
-
-  // if (!io_context_) {
-  //   owned_io_context_ = std::make_unique<boost::asio::io_context>();
-  //   owned_io_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
-  //       boost::asio::io_context::executor_type>>(
-  //       boost::asio::make_work_guard(*owned_io_context_));
-  //   io_context_ = owned_io_context_.get();
-  //   owned_io_thread_ = std::thread([ctx = io_context_]() {
-  //     if (!ctx) {
-  //       return;
-  //     }
-  //     ctx->run();
-  //   });
-  // }
-
   if (!runtime_dir_.empty()) {
     try {
       std::filesystem::create_directories(state_dir());
@@ -550,45 +535,6 @@ InstallConfigManager::InstallConfigManager(
 }
 
 InstallConfigManager::~InstallConfigManager() {}
-
-// void InstallConfigManager::customize(
-//     std::filesystem::path runtime_dir, FetchOverrideFn fetch_override,
-//     ResourceFetchOverrideFn resource_fetch_override) {
-//   customized_ = true;
-//   runtime_dir_ = std::move(runtime_dir);
-//   if (fetch_override) {
-//     fetch_override_ = std::move(fetch_override);
-//   }
-//   if (resource_fetch_override) {
-//     resource_fetch_override_ = std::move(resource_fetch_override);
-//   }
-
-//   cached_config_.reset();
-//   local_version_.reset();
-//   cached_access_token_.reset();
-//   cached_access_token_mtime_.reset();
-//   bundle_passwords_.clear();
-
-//   if (!runtime_dir_.empty()) {
-//     try {
-//       std::filesystem::create_directories(state_dir());
-// #ifndef _WIN32
-//       std::filesystem::permissions(state_dir(), default_directory_perms(),
-//                                    std::filesystem::perm_options::replace);
-// #endif
-//     } catch (const std::exception &e) {
-//       output_.logger().warning()
-//           << "Failed to prepare runtime state dir: " << e.what() <<
-//           std::endl;
-//     }
-
-//     if (auto config = load_from_disk()) {
-//       cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(
-//           std::move(config.value()));
-//       local_version_ = cached_config_->version;
-//     }
-//   }
-// }
 
 void InstallConfigManager::clear_cache() {
   cached_config_.reset();
@@ -711,135 +657,143 @@ InstallConfigManager::refresh_from_remote(
       monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>;
   using namespace monad;
 
-  auto perform_fetch = [this, expected_version,
-                        expected_hash]() -> IO<dto::DeviceInstallConfigDto> {
-    // if (fetch_override_) {
-    //   return fetch_override_(expected_version, expected_hash);
-    // }
-
-
-    auto token_opt = load_access_token();
-    if (!token_opt || token_opt->empty()) {
-      return IO<dto::DeviceInstallConfigDto>::fail(
-          make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                     "Device access token unavailable"));
-    }
-
-    const auto &cfg = config_provider_.get();
-    std::string url =
-        fmt::format("{}/apiv1/devices/self/install-config", cfg.base_url);
-
-    return http_io<monad::GetStringTag>(url)
-        .map([token = *token_opt](auto ex) {
-          namespace http = boost::beast::http;
-          ex->request.set(http::field::authorization,
-                          std::string("Bearer ") + token);
-          return ex;
-        })
-        .then(http_request_io<monad::GetStringTag>(http_client_))
-        .then([](auto ex) -> IO<dto::DeviceInstallConfigDto> {
-          if (!ex->response.has_value()) {
-            return IO<dto::DeviceInstallConfigDto>::fail(
-                make_error(my_errors::NETWORK::READ_ERROR,
-                           "No response for install-config"));
-          }
-
-          int status = ex->response->result_int();
-          if (status != 200) {
-            auto err = make_error(
-                my_errors::NETWORK::READ_ERROR,
-                fmt::format("install-config fetch HTTP status {}", status));
-            err.response_status = status;
-            err.params["response_body_preview"] = ex->response->body();
-            return IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
-          }
-
-          auto result =
-              ex->template parseJsonDataResponse<dto::DeviceInstallConfigDto>();
-          if (result.is_err()) {
-            return IO<dto::DeviceInstallConfigDto>::fail(result.error());
-          }
-          return IO<dto::DeviceInstallConfigDto>::pure(result.value());
-        });
-  };
-
-  constexpr int kMaxAttempts = 4;
-  constexpr std::chrono::milliseconds kBaseRetryDelay{200};
-
-  auto retry_count = std::make_shared<int>(0);
-  auto next_delay =
-      std::make_shared<std::chrono::milliseconds>(kBaseRetryDelay);
-
-  auto validated_fetch =
-      perform_fetch().then([this, expected_version,
-                            expected_hash](dto::DeviceInstallConfigDto config)
-                               -> monad::IO<dto::DeviceInstallConfigDto> {
-        if (expected_version && config.version < *expected_version) {
-          output_.logger().warning()
-              << "Fetched install-config version " << config.version
-              << " is older than expected " << *expected_version << std::endl;
-
-          auto err = make_error(
-              my_errors::GENERAL::UNEXPECTED_RESULT,
-              fmt::format("install-config fetch returned stale version {} "
-                          "(expected >= {})",
-                          config.version, *expected_version));
-          err.params["expected_version"] = std::to_string(*expected_version);
-          err.params["observed_version"] = std::to_string(config.version);
-          err.params["retry_reason"] = "stale_version";
-          return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
-        }
-
-        if (expected_version && config.version > *expected_version) {
-          output_.logger().info() << "Fetched install-config version "
-                                  << config.version << " (ahead of expected "
-                                  << *expected_version << ")" << std::endl;
-        }
-
-        if (expected_hash && !config.installs_hash.empty() &&
-            config.installs_hash != *expected_hash) {
-          output_.logger().warning()
-              << "Fetched install-config hash mismatch" << std::endl;
-        }
-
-        return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(config));
-      });
-
-  auto should_retry = [this, retry_count, next_delay,
-                       kMaxAttempts](const monad::Error &err) -> bool {
-    auto *reason = err.params.if_contains("retry_reason");
-    if (!reason || !reason->is_string() ||
-        reason->as_string() != "stale_version") {
-      return false;
-    }
-
-    const int current_attempt = *retry_count;
-    const bool can_retry = (current_attempt + 1) < kMaxAttempts;
-    if (can_retry) {
-      auto delay = *next_delay;
-      output_.logger().info()
-          << "Retrying install-config fetch (attempt " << (current_attempt + 2)
-          << "/" << kMaxAttempts << ") after " << delay.count() << "ms"
-          << std::endl;
-      *next_delay = *next_delay * 2;
-    } else {
-      output_.logger().warning()
-          << "install-config fetch exhausted retries for stale version"
-          << std::endl;
-    }
-
-    ++(*retry_count);
-    return can_retry;
-  };
-
-  return std::move(validated_fetch)
-      .retry_exponential_if(kMaxAttempts, kBaseRetryDelay, io_context_,
-                            should_retry)
+  return config_fetcher_.fetch_install_config(load_access_token(),
+      expected_version, expected_hash)
       .then([this](dto::DeviceInstallConfigDto config) -> ReturnIO {
         return persist_config(std::move(config)).then([this]() -> ReturnIO {
           return ReturnIO::pure(cached_config_);
         });
       });
+
+  // auto perform_fetch = [this, expected_version,
+  //                       expected_hash]() -> IO<dto::DeviceInstallConfigDto> {
+  //   // if (fetch_override_) {
+  //   //   return fetch_override_(expected_version, expected_hash);
+  //   // }
+
+
+  //   auto token_opt = load_access_token();
+  //   if (!token_opt || token_opt->empty()) {
+  //     return IO<dto::DeviceInstallConfigDto>::fail(
+  //         make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+  //                    "Device access token unavailable"));
+  //   }
+
+  //   const auto &cfg = config_provider_.get();
+  //   std::string url =
+  //       fmt::format("{}/apiv1/devices/self/install-config", cfg.base_url);
+
+  //   return http_io<monad::GetStringTag>(url)
+  //       .map([token = *token_opt](auto ex) {
+  //         namespace http = boost::beast::http;
+  //         ex->request.set(http::field::authorization,
+  //                         std::string("Bearer ") + token);
+  //         return ex;
+  //       })
+  //       .then(http_request_io<monad::GetStringTag>(http_client_))
+  //       .then([](auto ex) -> IO<dto::DeviceInstallConfigDto> {
+  //         if (!ex->response.has_value()) {
+  //           return IO<dto::DeviceInstallConfigDto>::fail(
+  //               make_error(my_errors::NETWORK::READ_ERROR,
+  //                          "No response for install-config"));
+  //         }
+
+  //         int status = ex->response->result_int();
+  //         if (status != 200) {
+  //           auto err = make_error(
+  //               my_errors::NETWORK::READ_ERROR,
+  //               fmt::format("install-config fetch HTTP status {}", status));
+  //           err.response_status = status;
+  //           err.params["response_body_preview"] = ex->response->body();
+  //           return IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
+  //         }
+
+  //         auto result =
+  //             ex->template parseJsonDataResponse<dto::DeviceInstallConfigDto>();
+  //         if (result.is_err()) {
+  //           return IO<dto::DeviceInstallConfigDto>::fail(result.error());
+  //         }
+  //         return IO<dto::DeviceInstallConfigDto>::pure(result.value());
+  //       });
+  // };
+
+  // constexpr int kMaxAttempts = 4;
+  // constexpr std::chrono::milliseconds kBaseRetryDelay{200};
+
+  // auto retry_count = std::make_shared<int>(0);
+  // auto next_delay =
+  //     std::make_shared<std::chrono::milliseconds>(kBaseRetryDelay);
+
+  // auto validated_fetch =
+  //     perform_fetch().then([this, expected_version,
+  //                           expected_hash](dto::DeviceInstallConfigDto config)
+  //                              -> monad::IO<dto::DeviceInstallConfigDto> {
+  //       if (expected_version && config.version < *expected_version) {
+  //         output_.logger().warning()
+  //             << "Fetched install-config version " << config.version
+  //             << " is older than expected " << *expected_version << std::endl;
+
+  //         auto err = make_error(
+  //             my_errors::GENERAL::UNEXPECTED_RESULT,
+  //             fmt::format("install-config fetch returned stale version {} "
+  //                         "(expected >= {})",
+  //                         config.version, *expected_version));
+  //         err.params["expected_version"] = std::to_string(*expected_version);
+  //         err.params["observed_version"] = std::to_string(config.version);
+  //         err.params["retry_reason"] = "stale_version";
+  //         return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
+  //       }
+
+  //       if (expected_version && config.version > *expected_version) {
+  //         output_.logger().info() << "Fetched install-config version "
+  //                                 << config.version << " (ahead of expected "
+  //                                 << *expected_version << ")" << std::endl;
+  //       }
+
+  //       if (expected_hash && !config.installs_hash.empty() &&
+  //           config.installs_hash != *expected_hash) {
+  //         output_.logger().warning()
+  //             << "Fetched install-config hash mismatch" << std::endl;
+  //       }
+
+  //       return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(config));
+  //     });
+
+  // auto should_retry = [this, retry_count, next_delay,
+  //                      kMaxAttempts](const monad::Error &err) -> bool {
+  //   auto *reason = err.params.if_contains("retry_reason");
+  //   if (!reason || !reason->is_string() ||
+  //       reason->as_string() != "stale_version") {
+  //     return false;
+  //   }
+
+  //   const int current_attempt = *retry_count;
+  //   const bool can_retry = (current_attempt + 1) < kMaxAttempts;
+  //   if (can_retry) {
+  //     auto delay = *next_delay;
+  //     output_.logger().info()
+  //         << "Retrying install-config fetch (attempt " << (current_attempt + 2)
+  //         << "/" << kMaxAttempts << ") after " << delay.count() << "ms"
+  //         << std::endl;
+  //     *next_delay = *next_delay * 2;
+  //   } else {
+  //     output_.logger().warning()
+  //         << "install-config fetch exhausted retries for stale version"
+  //         << std::endl;
+  //   }
+
+  //   ++(*retry_count);
+  //   return can_retry;
+  // };
+
+  // return std::move(validated_fetch)
+  //     .retry_exponential_if(kMaxAttempts, kBaseRetryDelay, io_context_,
+  //                           should_retry)
+  //     .then([this](dto::DeviceInstallConfigDto config) -> ReturnIO {
+  //       return persist_config(std::move(config)).then([this]() -> ReturnIO {
+  //         return ReturnIO::pure(cached_config_);
+  //       });
+  //     });
 }
 
 std::optional<dto::DeviceInstallConfigDto>
