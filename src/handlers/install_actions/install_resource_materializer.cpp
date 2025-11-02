@@ -551,14 +551,6 @@ InstallResourceMaterializer::resource_current_dir(const std::string &ob_type,
   return resource_root;
 }
 
-// std::optional<std::string>
-// InstallResourceMaterializer::load_access_token() const {
-//   if (!access_token_loader_) {
-//     return std::nullopt;
-//   }
-//   return access_token_loader_();
-// }
-
 std::optional<std::string>
 InstallResourceMaterializer::lookup_bundle_password(const std::string &ob_type,
                                                     std::int64_t ob_id) const {

@@ -35,10 +35,12 @@
 #include "handlers/update_handler.hpp"
 #include "handlers/updates_polling_handler.hpp"
 #include "http_client_manager.hpp"
+#include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
 #include "ioc_manager_config_provider.hpp"
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
+#include "resource_fetcher.hpp"
 #include "version.h"
 
 #ifdef to
@@ -169,14 +171,19 @@ public:
     };
 
     auto injector = di::make_injector(
-  handler_module(),
-        di::bind<cjj365::ConfigSources>().to(config_sources_),
+        handler_module(), di::bind<cjj365::ConfigSources>().to(config_sources_),
         di::bind<cjj365::IIocConfigProvider>()
             .to<cjj365::IocConfigProviderFile>(),
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>(),
         di::bind<cjj365::IHttpclientConfigProvider>()
             .to<cjj365::HttpclientConfigProviderFile>(),
+        di::bind<certctrl::install_actions::IAccessTokenLoader>()
+            .to<certctrl::install_actions::AccessTokenLoaderFile>(),
+        di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>()
+            .to<certctrl::install_actions::DeviceInstallConfigFetcher>(),
+        di::bind<certctrl::install_actions::IResourceFetcher>().to<
+            certctrl::install_actions::ResourceFetcher>(),
         di::bind<certctrl::install_actions::InstallResourceMaterializer>().in(
             di::unique),
         di::bind<certctrl::install_actions::IResourceMaterializer::Factory>()
@@ -189,8 +196,8 @@ public:
                   }};
             }),
         di::bind<certctrl::install_actions::CopyActionHandler>().in(di::unique),
-        di::bind<certctrl::install_actions::CopyActionHandler::Factory>()
-            .to([](const auto &inj) {
+        di::bind<certctrl::install_actions::CopyActionHandler::Factory>().to(
+            [](const auto &inj) {
               return certctrl::install_actions::CopyActionHandler::Factory{
                   [&inj]() {
                     return inj.template create<std::shared_ptr<
@@ -199,15 +206,16 @@ public:
             }),
         di::bind<certctrl::install_actions::IExecEnvironmentResolver::Factory>()
             .to([](const auto &inj) {
-              return certctrl::install_actions::IExecEnvironmentResolver::Factory{
-                  [&inj]() {
-                    return inj.template create<std::shared_ptr<
-                        certctrl::install_actions::FunctionExecEnvironmentResolver>>();
+              return certctrl::install_actions::IExecEnvironmentResolver::
+                  Factory{[&inj]() {
+                    return inj.template create<
+                        std::shared_ptr<certctrl::install_actions::
+                                            FunctionExecEnvironmentResolver>>();
                   }};
             }),
         di::bind<certctrl::install_actions::ExecActionHandler>().in(di::unique),
-        di::bind<certctrl::install_actions::ExecActionHandler::Factory>()
-            .to([](const auto &inj) {
+        di::bind<certctrl::install_actions::ExecActionHandler::Factory>().to(
+            [](const auto &inj) {
               return certctrl::install_actions::ExecActionHandler::Factory{
                   [&inj]() {
                     return inj.template create<std::shared_ptr<
@@ -285,7 +293,8 @@ public:
              &import_ca_action_handler_factory_1);
       auto import_ca_action_handler = import_ca_action_handler_factory();
       auto import_ca_action_handler_1 = import_ca_action_handler_factory();
-      assert(import_ca_action_handler.get() != import_ca_action_handler_1.get());
+      assert(import_ca_action_handler.get() !=
+             import_ca_action_handler_1.get());
 
       auto resource_materializer = resource_materializer_factory();
       auto resource_materializer_1 = resource_materializer_factory();

@@ -60,6 +60,20 @@ include(GoogleTest)
 set(TEST_DISCOVERY_TIMEOUT_MEDIUM 120)
 set(TEST_DISCOVERY_TIMEOUT_LONG 240)
 
+add_executable(test_boost_di_lifetimes
+  test_boost_di_lifetimes.cpp
+)
+target_compile_features(test_boost_di_lifetimes PRIVATE cxx_std_17)
+target_include_directories(test_boost_di_lifetimes PRIVATE
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+)
+target_link_libraries(test_boost_di_lifetimes PRIVATE
+  GTest::gtest_main
+  di_config
+)
+
+gtest_discover_tests(test_boost_di_lifetimes DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+
 gtest_discover_tests(test_program_options DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
 add_executable(test_login_handler_workflow

@@ -30,8 +30,9 @@ inline auto build_base_injector(cjj365::ConfigSources &config_sources) {
       di::bind<cjj365::IIocConfigProvider>()
           .to<cjj365::IocConfigProviderFile>(),
       di::bind<certctrl::ICertctrlConfigProvider>()
-          .to<certctrl::CertctrlConfigProviderFile>()
-          .in(di::singleton),
+          .to<certctrl::CertctrlConfigProviderFile>(),
+      di::bind<certctrl::install_actions::IAccessTokenLoader>()
+          .to<certctrl::install_actions::AccessTokenLoaderFile>(),
 
       di::bind<certctrl::install_actions::InstallResourceMaterializer>().in(
           di::unique),
@@ -81,8 +82,7 @@ inline auto build_base_injector(cjj365::ConfigSources &config_sources) {
                       certctrl::install_actions::ImportCaActionHandler>>();
                 }};
           }),
-      di::bind<cjj365::IIoContextManager>().to<cjj365::IoContextManager>().in(
-          di::singleton));
+      di::bind<cjj365::IIoContextManager>().to<cjj365::IoContextManager>());
 }
 
 // Mock session alias for convenience

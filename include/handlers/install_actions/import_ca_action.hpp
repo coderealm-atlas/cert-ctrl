@@ -26,16 +26,11 @@ public:
       customio::ConsoleOutput &output,
     install_actions::IResourceMaterializer::Factory resource_materializer_factory);
 
-  // void customize(std::filesystem::path runtime_dir,
-  //        install_actions::IResourceMaterializer::Factory resource_materializer_factory);
-
   monad::IO<void> apply(const dto::DeviceInstallConfigDto &config,
                         const std::optional<std::string> &target_ob_type,
                         std::optional<std::int64_t> target_ob_id);
 
 private:
-  // install_actions::IResourceMaterializer::Ptr make_resource_materializer() const;
-
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;
   std::filesystem::path runtime_dir_;

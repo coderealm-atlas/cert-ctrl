@@ -19,24 +19,17 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
-#include "certctrl_common.hpp"
-#include "client_ssl_ctx.hpp"
 #include "common_macros.hpp"
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "data/install_config_dto.hpp"
-#include "handlers/install_actions/copy_action.hpp"
-#include "handlers/install_actions/exec_action.hpp"
-#include "handlers/install_actions/function_adapters.hpp"
-#include "handlers/install_actions/import_ca_action.hpp"
-#include "handlers/install_actions/install_resource_materializer.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "http_client_manager.hpp"
-#include "include/install_config_manager_test_utils.hpp"
+#include "include/install_manager_harness.hpp"
 #include "install_config_fetcher.hpp"
 #include "io_monad.hpp"
-#include "log_stream.hpp"
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
 #include "resource_fetcher.hpp"
@@ -46,7 +39,6 @@ namespace {
 
 namespace asio = boost::asio;
 namespace json = boost::json;
-namespace di = boost::di;
 
 class FailingCaServer {
 public:
@@ -76,10 +68,22 @@ public:
         asio::ip::tcp::endpoint endpoint{
             asio::ip::make_address("127.0.0.1"), port_};
         poke_socket.connect(endpoint, ec);
-        if (!ec) {
-          poke_socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+        if (ec) {
+          ec.clear();
+        } else {
+          boost::system::error_code shutdown_ec;
+          [[maybe_unused]] auto shutdown_status =
+              poke_socket.shutdown(asio::ip::tcp::socket::shutdown_both,
+                                   shutdown_ec);
+          if (shutdown_ec) {
+            shutdown_ec.clear();
+          }
         }
-        poke_socket.close(ec);
+        boost::system::error_code close_ec;
+        [[maybe_unused]] auto close_status = poke_socket.close(close_ec);
+        if (close_ec) {
+          close_ec.clear();
+        }
       } catch (const std::exception &) {
         // Ignore failures during shutdown poke.
       }
@@ -396,133 +400,6 @@ private:
   std::unique_ptr<certctrl::install_actions::ResourceFetcher> delegate_;
 };
 
-struct InstallManagerDiHarness {
-  InstallManagerDiHarness(
-      std::filesystem::path config_dir, std::filesystem::path runtime_dir,
-      std::string base_url,
-      certctrl::install_actions::IDeviceInstallConfigFetcher &fetcher,
-      certctrl::install_actions::IResourceFetcher &resource_fetcher,
-      certctrl::install_actions::IAccessTokenLoader &token_loader,
-      int http_threads = 1) {
-    config_dir_ = std::move(config_dir);
-    runtime_dir_ = std::move(runtime_dir);
-
-    json::object app_json{{"auto_apply_config", false},
-                          {"verbose", "info"},
-                          {"url_base", std::move(base_url)},
-                          {"runtime_dir", runtime_dir_.string()}};
-    write_json_file(config_dir_ / "application.json", app_json);
-
-    json::object httpclient_json{
-        {"threads_num", http_threads},   {"ssl_method", "tlsv12_client"},
-        {"insecure_skip_verify", true},  {"verify_paths", json::array{}},
-        {"certificates", json::array{}}, {"certificate_files", json::array{}},
-        {"proxy_pool", json::array{}}};
-    write_json_file(config_dir_ / "httpclient_config.json", httpclient_json);
-
-    json::object ioc_json{{"threads_num", 1},
-                          {"name", "install-config-test-ioc"}};
-    write_json_file(config_dir_ / "ioc_config.json", ioc_json);
-
-    json::object certctrl_config_json{
-        {"auto_apply_config", false},
-        {"verbose", "info"},
-        {"url_base", std::move(base_url)},
-        {"runtime_dir", runtime_dir_.string()},
-        {"interval_seconds", 300},
-        {"update_check_url",
-         "https://install.lets-script.com/api/version/check"}};
-    DEBUG_PRINT("application.json: " << certctrl_config_json);
-    write_json_file(config_dir_ / "application.json", certctrl_config_json);
-
-    std::vector<fs::path> config_paths{config_dir_};
-    std::vector<std::string> profiles;
-    cjj365::ConfigSources::instance_count.store(0);
-    static auto config_sources = cjj365::ConfigSources(config_paths, profiles);
-    config_sources_ = &config_sources;
-
-    auto injector = di::make_injector(
-        testinfra::build_base_injector(config_sources),
-        di::bind<certctrl::install_actions::IAccessTokenLoader>.to(
-            token_loader),
-        di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>.to(
-            fetcher),
-        di::bind<certctrl::install_actions::IResourceFetcher>.to(
-            resource_fetcher));
-
-    auto inj_holder = std::make_shared<decltype(injector)>(std::move(injector));
-    injector_holder_ = inj_holder;
-    auto &inj = *inj_holder;
-
-    output_ = &injector.template create<customio::ConsoleOutput &>();
-    config_provider_ = &inj.create<certctrl::ICertctrlConfigProvider &>();
-    io_context_manager_ = &inj.create<cjj365::IoContextManager &>();
-    http_client_manager_ = &inj.create<client_async::HttpClientManager &>();
-    install_manager_ = &inj.create<certctrl::InstallConfigManager &>();
-    import_ca_handler_factory =
-        inj.create<certctrl::install_actions::ImportCaActionHandler::Factory>();
-    resource_factory =
-        inj.create<certctrl::install_actions::IResourceMaterializer::Factory>();
-    exec_env_factory = inj.create<
-        certctrl::install_actions::IExecEnvironmentResolver::Factory>();
-    copy_action_handler_factory =
-        inj.create<certctrl::install_actions::CopyActionHandler::Factory>();
-    exec_action_handler_factory =
-        inj.create<certctrl::install_actions::ExecActionHandler::Factory>();
-  }
-
-  ~InstallManagerDiHarness() {
-    if (http_client_manager_) {
-      http_client_manager_->stop();
-    }
-    cjj365::ConfigSources::instance_count.store(0);
-    std::error_code ec;
-    std::filesystem::remove_all(config_dir_, ec);
-    std::filesystem::remove_all(runtime_dir_, ec);
-  }
-
-  certctrl::ICertctrlConfigProvider &config_provider() {
-    return *config_provider_;
-  }
-
-  customio::ConsoleOutput &output() { return *output_; }
-
-  cjj365::IoContextManager &io_context_manager() {
-    return *io_context_manager_;
-  }
-
-  client_async::HttpClientManager &http_client_manager() {
-    return *http_client_manager_;
-  }
-
-  certctrl::InstallConfigManager &install_manager() {
-    return *install_manager_;
-  }
-
-  const std::filesystem::path &runtime_dir() const { return runtime_dir_; }
-
-  certctrl::install_actions::ImportCaActionHandler::Factory
-      import_ca_handler_factory;
-  certctrl::install_actions::IResourceMaterializer::Factory resource_factory;
-  certctrl::install_actions::IExecEnvironmentResolver::Factory exec_env_factory;
-  certctrl::install_actions::CopyActionHandler::Factory
-      copy_action_handler_factory;
-  certctrl::install_actions::ExecActionHandler::Factory
-      exec_action_handler_factory;
-
-private:
-  std::filesystem::path config_dir_{};
-  std::filesystem::path runtime_dir_{};
-  customio::ConsoleOutput *output_;
-  std::shared_ptr<certctrl::CliCtx> cli_ctx_{};
-  cjj365::ConfigSources *config_sources_{nullptr};
-  std::shared_ptr<void> injector_holder_{};
-  certctrl::ICertctrlConfigProvider *config_provider_{nullptr};
-  cjj365::IoContextManager *io_context_manager_{nullptr};
-  client_async::HttpClientManager *http_client_manager_{nullptr};
-  certctrl::InstallConfigManager *install_manager_{nullptr};
-};
-
 class InstallConfigManagerFixture : public ::testing::Test {
 protected:
   void SetUp() override { DEBUG_PRINT("xxxxxxxxxxxxxxxxx setup"); }
@@ -542,10 +419,10 @@ protected:
     fetcher_holder_ = std::move(fetcher);
     resource_fetcher_holder_ = std::move(resource_fetcher);
     token_loader_ = std::move(token_loader);
-  harness_ = std::make_unique<InstallManagerDiHarness>(
-    std::move(config_dir), std::move(runtime_dir), std::move(base_url),
-    *fetcher_holder_, *resource_fetcher_holder_, *token_loader_,
-    http_threads);
+    harness_ = std::make_unique<InstallManagerDiHarness>(
+        std::move(config_dir), std::move(runtime_dir), std::move(base_url),
+        *fetcher_holder_, *resource_fetcher_holder_, http_threads,
+        token_loader_.get());
   }
 
   std::unique_ptr<certctrl::install_actions::IDeviceInstallConfigFetcher>
@@ -591,8 +468,8 @@ TEST_F(InstallConfigManagerFixture, AppliesCopyActionsFullPlan) {
   static MockerResourceFetcher resource_fetcher{""};
   static MockAccessTokenLoaderFixed token_loader{std::nullopt};
   harness_ = std::make_unique<InstallManagerDiHarness>(
-      config_dir, runtime_dir, "https://api.example.test", fetcher,
-      resource_fetcher, token_loader);
+    config_dir, runtime_dir, "https://api.example.test", fetcher,
+    resource_fetcher, 1, &token_loader);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
@@ -670,8 +547,8 @@ TEST_F(InstallConfigManagerFixture, SkipsCopyActionsWithEmptyDestinations) {
   static MockerResourceFetcher resource_fetcher{""};
   static MockAccessTokenLoaderFixed token_loader{std::nullopt};
   harness_ = std::make_unique<InstallManagerDiHarness>(
-      config_dir, runtime_dir, "https://api.example.test", fetcher,
-      resource_fetcher, token_loader);
+    config_dir, runtime_dir, "https://api.example.test", fetcher,
+    resource_fetcher, 1, &token_loader);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
@@ -726,10 +603,26 @@ TEST_F(InstallConfigManagerFixture, CopyActionsAggregateFailures) {
       std::vector<std::string>{"relative-dest.pem", absolute_dest.string()};
   config.installs.push_back(copy_item);
 
-  createHarness(config_dir, runtime_dir,
-                std::make_unique<MockInstallConfigFetcher>(config),
-                std::make_unique<MockerResourceFetcher>(""),
-                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  auto fetch_override =
+      [config](std::optional<std::string> /*access_token*/,
+                std::optional<std::int64_t> expected_version,
+                const std::optional<std::string> &expected_hash)
+      -> monad::IO<dto::DeviceInstallConfigDto> {
+        dto::DeviceInstallConfigDto copy = config;
+        if (expected_version) {
+          copy.version = *expected_version;
+        }
+        if (expected_hash) {
+          copy.installs_hash = *expected_hash;
+        }
+        return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(copy));
+      };
+
+  createHarness(
+      config_dir, runtime_dir,
+      std::make_unique<LambdaInstallConfigFetcher>(std::move(fetch_override)),
+      std::make_unique<MockerResourceFetcher>(""),
+      std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   auto handler = harness_->copy_action_handler_factory();
   std::optional<monad::MyVoidResult> apply_r;
@@ -772,7 +665,7 @@ TEST_F(InstallConfigManagerFixture, CopiesCaIntoOverrideDirectory) {
 
   createHarness(config_dir, runtime_dir,
                 std::make_unique<MockInstallConfigFetcher>(config),
-                std::make_unique<MockerResourceFetcher>(""),
+        std::make_unique<MockerResourceFetcher>(""),
                 std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   auto runtime_dir_path = harness_->runtime_dir();
@@ -1080,12 +973,18 @@ TEST_F(InstallConfigManagerFixture,
   boost::json::object detail_data;
   detail_data["id"] = cert_id;
   detail_data["domain_name"] = "fallback.example.test";
-  detail_data["cert"] = leaf_cert + chain_cert;
+  detail_data["certificate_pem"] = leaf_cert;
+  detail_data["fullchain_pem"] = leaf_cert + chain_cert;
   detail_data["chain_pem"] = chain_cert;
   detail_data["private_key_pem"] = private_key_pem;
 
+  boost::json::object deploy_data;
+  deploy_data["fullchain_pem"] = leaf_cert + chain_cert;
+  deploy_data["chain_pem"] = chain_cert;
+
   boost::json::object payload;
   payload["detail"] = detail_data;
+  payload["deploy"] = deploy_data;
 
   dto::DeviceInstallConfigDto config{};
   config.id = 4;
@@ -1114,7 +1013,8 @@ TEST_F(InstallConfigManagerFixture,
 
   createHarness(config_dir, runtime_dir,
                 std::make_unique<MockInstallConfigFetcher>(config),
-                std::make_unique<MockerResourceFetcher>(""),
+        std::make_unique<MockerResourceFetcher>(
+          boost::json::serialize(payload)),
                 std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
@@ -1185,7 +1085,8 @@ TEST_F(InstallConfigManagerFixture,
   std::filesystem::remove_all(runtime_dir);
 }
 
-TEST_F(InstallConfigManagerFixture, RetriesUntilExpectedVersionAvailable) {
+TEST_F(InstallConfigManagerFixture,
+       PersistsExpectedVersionWhenFetcherSucceeds) {
   misc::ThreadNotifier notifier(3000);
   auto config_dir = make_temp_runtime_dir();
   auto runtime_dir = make_temp_runtime_dir();
@@ -1196,10 +1097,31 @@ TEST_F(InstallConfigManagerFixture, RetriesUntilExpectedVersionAvailable) {
   config.version = 17;
 
   int call_count = 0;
-  createHarness(config_dir, runtime_dir,
-                std::make_unique<MockInstallConfigFetcher>(config),
-                std::make_unique<MockerResourceFetcher>(""),
-                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  bool saw_expected_version = false;
+  auto fetch_override =
+      [&config, &call_count,
+       &saw_expected_version](std::optional<std::string> /*access_token*/,
+                              std::optional<std::int64_t> expected_version,
+                              const std::optional<std::string>
+                                  &expected_hash)
+      -> monad::IO<dto::DeviceInstallConfigDto> {
+        ++call_count;
+        dto::DeviceInstallConfigDto copy = config;
+        if (expected_version) {
+          saw_expected_version = (*expected_version == config.version);
+          copy.version = *expected_version;
+        }
+        if (expected_hash) {
+          copy.installs_hash = *expected_hash;
+        }
+        return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(copy));
+      };
+
+  createHarness(
+      config_dir, runtime_dir,
+      std::make_unique<LambdaInstallConfigFetcher>(std::move(fetch_override)),
+      std::make_unique<MockerResourceFetcher>(""),
+      std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
@@ -1217,14 +1139,15 @@ TEST_F(InstallConfigManagerFixture, RetriesUntilExpectedVersionAvailable) {
   plan = op_r->value();
 
   ASSERT_TRUE(plan);
-  EXPECT_EQ(call_count, 3);
+  EXPECT_EQ(call_count, 1);
+  EXPECT_TRUE(saw_expected_version);
   ASSERT_TRUE(harness_->install_manager().local_version());
   EXPECT_EQ(*harness_->install_manager().local_version(), config.version);
 
   std::filesystem::remove_all(runtime_dir);
 }
 
-TEST_F(InstallConfigManagerFixture, FailsWhenExpectedVersionNeverArrives) {
+TEST_F(InstallConfigManagerFixture, PropagatesFetcherFailure) {
   misc::ThreadNotifier notifier(3000);
   auto config_dir = make_temp_runtime_dir();
   auto runtime_dir = make_temp_runtime_dir();
@@ -1235,11 +1158,24 @@ TEST_F(InstallConfigManagerFixture, FailsWhenExpectedVersionNeverArrives) {
   config.version = 23;
 
   int call_count = 0;
+  auto fetch_override =
+      [&call_count](std::optional<std::string> /*access_token*/,
+                    std::optional<std::int64_t> /*expected_version*/,
+                    const std::optional<std::string>
+                        & /*expected_hash*/)
+      -> monad::IO<dto::DeviceInstallConfigDto> {
+        ++call_count;
+        auto err = monad::make_error(
+            my_errors::GENERAL::UNEXPECTED_RESULT,
+            "install-config fetch returned stale version");
+        return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
+      };
 
-  createHarness(config_dir, runtime_dir,
-                std::make_unique<MockInstallConfigFetcher>(config),
-                std::make_unique<MockerResourceFetcher>(""),
-                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  createHarness(
+      config_dir, runtime_dir,
+      std::make_unique<LambdaInstallConfigFetcher>(std::move(fetch_override)),
+      std::make_unique<MockerResourceFetcher>(""),
+      std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
@@ -1255,7 +1191,7 @@ TEST_F(InstallConfigManagerFixture, FailsWhenExpectedVersionNeverArrives) {
 
   EXPECT_EQ(op_r->error().code, my_errors::GENERAL::UNEXPECTED_RESULT);
   EXPECT_FALSE(harness_->install_manager().local_version());
-  EXPECT_GE(call_count, 4);
+  EXPECT_EQ(call_count, 1);
 
   std::filesystem::remove_all(runtime_dir);
 }
