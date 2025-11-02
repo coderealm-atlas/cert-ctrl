@@ -489,20 +489,20 @@ std::filesystem::perms default_directory_perms() {
 } // namespace
 
 InstallConfigManager::InstallConfigManager(
-      cjj365::IoContextManager &io_context_manager,
-      certctrl::ICertctrlConfigProvider &config_provider,
-      customio::ConsoleOutput &output,
-      client_async::HttpClientManager &http_client,
-      install_actions::IResourceMaterializer::Factory
-          resource_materializer_factory,
-      install_actions::ImportCaActionHandler::Factory
-          import_ca_action_handler_factory,
-      install_actions::ExecActionHandler::Factory exec_handler_factory,
-      certctrl::install_actions::CopyActionHandler::Factory
-          copy_handler_factory,
-      install_actions::IExecEnvironmentResolver::Factory
-          exec_env_resolver_factory,
-      install_actions::IDeviceInstallConfigFetcher &config_fetcher)
+    cjj365::IoContextManager &io_context_manager,
+    certctrl::ICertctrlConfigProvider &config_provider,
+    customio::ConsoleOutput &output,
+    client_async::HttpClientManager &http_client,
+    install_actions::IResourceMaterializer::Factory
+        resource_materializer_factory,
+    install_actions::ImportCaActionHandler::Factory
+        import_ca_action_handler_factory,
+    install_actions::ExecActionHandler::Factory exec_handler_factory,
+    certctrl::install_actions::CopyActionHandler::Factory copy_handler_factory,
+    install_actions::IExecEnvironmentResolver::Factory
+        exec_env_resolver_factory,
+    install_actions::IDeviceInstallConfigFetcher &config_fetcher,
+    install_actions::IAccessTokenLoader &access_token_loader)
     : runtime_dir_(config_provider.get().runtime_dir),
       config_provider_(config_provider), output_(output),
       http_client_(http_client),
@@ -512,8 +512,8 @@ InstallConfigManager::InstallConfigManager(
       exec_handler_factory_(std::move(exec_handler_factory)),
       exec_env_resolver_factory_(std::move(exec_env_resolver_factory)),
       copy_handler_factory_(std::move(copy_handler_factory)),
-      config_fetcher_(config_fetcher),
-      io_context_(io_context_manager.ioc()) {
+      config_fetcher_(config_fetcher), io_context_(io_context_manager.ioc()),
+      access_token_loader_(access_token_loader) {
   if (!runtime_dir_.empty()) {
     try {
       std::filesystem::create_directories(state_dir());
@@ -657,10 +657,15 @@ InstallConfigManager::refresh_from_remote(
       monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>;
   using namespace monad;
 
-  return config_fetcher_.fetch_install_config(load_access_token(),
-      expected_version, expected_hash)
+  return config_fetcher_
+      .fetch_install_config(access_token_loader_.load_token(), expected_version,
+                            expected_hash)
       .then([this](dto::DeviceInstallConfigDto config) -> ReturnIO {
         return persist_config(std::move(config)).then([this]() -> ReturnIO {
+          if (!cached_config_) {
+            output_.logger().error()
+                << "refresh_from_remote completed without cached_config_" << std::endl;
+          }
           return ReturnIO::pure(cached_config_);
         });
       });
@@ -670,7 +675,6 @@ InstallConfigManager::refresh_from_remote(
   //   // if (fetch_override_) {
   //   //   return fetch_override_(expected_version, expected_hash);
   //   // }
-
 
   //   auto token_opt = load_access_token();
   //   if (!token_opt || token_opt->empty()) {
@@ -709,7 +713,8 @@ InstallConfigManager::refresh_from_remote(
   //         }
 
   //         auto result =
-  //             ex->template parseJsonDataResponse<dto::DeviceInstallConfigDto>();
+  //             ex->template
+  //             parseJsonDataResponse<dto::DeviceInstallConfigDto>();
   //         if (result.is_err()) {
   //           return IO<dto::DeviceInstallConfigDto>::fail(result.error());
   //         }
@@ -726,12 +731,14 @@ InstallConfigManager::refresh_from_remote(
 
   // auto validated_fetch =
   //     perform_fetch().then([this, expected_version,
-  //                           expected_hash](dto::DeviceInstallConfigDto config)
+  //                           expected_hash](dto::DeviceInstallConfigDto
+  //                           config)
   //                              -> monad::IO<dto::DeviceInstallConfigDto> {
   //       if (expected_version && config.version < *expected_version) {
   //         output_.logger().warning()
   //             << "Fetched install-config version " << config.version
-  //             << " is older than expected " << *expected_version << std::endl;
+  //             << " is older than expected " << *expected_version <<
+  //             std::endl;
 
   //         auto err = make_error(
   //             my_errors::GENERAL::UNEXPECTED_RESULT,
@@ -741,7 +748,8 @@ InstallConfigManager::refresh_from_remote(
   //         err.params["expected_version"] = std::to_string(*expected_version);
   //         err.params["observed_version"] = std::to_string(config.version);
   //         err.params["retry_reason"] = "stale_version";
-  //         return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
+  //         return
+  //         monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
   //       }
 
   //       if (expected_version && config.version > *expected_version) {
@@ -756,7 +764,8 @@ InstallConfigManager::refresh_from_remote(
   //             << "Fetched install-config hash mismatch" << std::endl;
   //       }
 
-  //       return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(config));
+  //       return
+  //       monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(config));
   //     });
 
   // auto should_retry = [this, retry_count, next_delay,
@@ -772,7 +781,8 @@ InstallConfigManager::refresh_from_remote(
   //   if (can_retry) {
   //     auto delay = *next_delay;
   //     output_.logger().info()
-  //         << "Retrying install-config fetch (attempt " << (current_attempt + 2)
+  //         << "Retrying install-config fetch (attempt " << (current_attempt +
+  //         2)
   //         << "/" << kMaxAttempts << ") after " << delay.count() << "ms"
   //         << std::endl;
   //     *next_delay = *next_delay * 2;
@@ -864,7 +874,11 @@ monad::IO<void> InstallConfigManager::persist_config(
                                  std::filesystem::perm_options::replace);
 #endif
 
-    cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(config);
+  cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(config);
+  output_.logger().info() << "persist_config cached_config_="
+              << static_cast<const void *>(cached_config_.get())
+              << " version=" << cached_config_->version
+              << std::endl;
     local_version_ = config.version;
 
     return ReturnIO::pure();
@@ -874,47 +888,47 @@ monad::IO<void> InstallConfigManager::persist_config(
   }
 }
 
-std::optional<std::string> InstallConfigManager::load_access_token() const {
-  const auto token_file = state_dir() / "access_token.txt";
+// std::optional<std::string> InstallConfigManager::load_access_token() const {
+//   const auto token_file = state_dir() / "access_token.txt";
 
-  std::error_code ec;
-  const auto mtime = std::filesystem::last_write_time(token_file, ec);
-  if (!ec && cached_access_token_ && cached_access_token_mtime_ &&
-      mtime == *cached_access_token_mtime_) {
-    return cached_access_token_;
-  }
+//   std::error_code ec;
+//   const auto mtime = std::filesystem::last_write_time(token_file, ec);
+//   if (!ec && cached_access_token_ && cached_access_token_mtime_ &&
+//       mtime == *cached_access_token_mtime_) {
+//     return cached_access_token_;
+//   }
 
-  std::ifstream ifs(token_file, std::ios::binary);
-  if (!ifs.is_open()) {
-    cached_access_token_.reset();
-    cached_access_token_mtime_.reset();
-    return std::nullopt;
-  }
+//   std::ifstream ifs(token_file, std::ios::binary);
+//   if (!ifs.is_open()) {
+//     cached_access_token_.reset();
+//     cached_access_token_mtime_.reset();
+//     return std::nullopt;
+//   }
 
-  std::string token((std::istreambuf_iterator<char>(ifs)),
-                    std::istreambuf_iterator<char>());
-  auto first = token.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) {
-    cached_access_token_.reset();
-    cached_access_token_mtime_.reset();
-    return std::nullopt;
-  }
-  auto last = token.find_last_not_of(" \t\r\n");
-  if (last == std::string::npos || last < first) {
-    cached_access_token_.reset();
-    cached_access_token_mtime_.reset();
-    return std::nullopt;
-  }
+//   std::string token((std::istreambuf_iterator<char>(ifs)),
+//                     std::istreambuf_iterator<char>());
+//   auto first = token.find_first_not_of(" \t\r\n");
+//   if (first == std::string::npos) {
+//     cached_access_token_.reset();
+//     cached_access_token_mtime_.reset();
+//     return std::nullopt;
+//   }
+//   auto last = token.find_last_not_of(" \t\r\n");
+//   if (last == std::string::npos || last < first) {
+//     cached_access_token_.reset();
+//     cached_access_token_mtime_.reset();
+//     return std::nullopt;
+//   }
 
-  token = token.substr(first, last - first + 1);
-  cached_access_token_ = token;
-  if (!ec) {
-    cached_access_token_mtime_ = mtime;
-  } else {
-    cached_access_token_mtime_.reset();
-  }
-  return cached_access_token_;
-}
+//   token = token.substr(first, last - first + 1);
+//   cached_access_token_ = token;
+//   if (!ec) {
+//     cached_access_token_mtime_ = mtime;
+//   } else {
+//     cached_access_token_mtime_.reset();
+//   }
+//   return cached_access_token_;
+// }
 
 std::filesystem::path InstallConfigManager::state_dir() const {
   return runtime_dir_ / "state";
@@ -977,7 +991,8 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
 
         auto exec_handler = exec_handler_factory_();
         // if (customized_)
-        //   exec_handler->customize(runtime_dir_, resource_materializer_factory_,
+        //   exec_handler->customize(runtime_dir_,
+        //   resource_materializer_factory_,
         //                           exec_env_resolver_factory_);
         return exec_handler->apply(config, allowed_types);
       })
@@ -1022,9 +1037,6 @@ monad::IO<void> InstallConfigManager::apply_import_ca_actions(
           allowed_types = std::vector<std::string>{*target_ob_type};
         }
         auto exec_handler = exec_handler_factory_();
-        // if (customized_)
-        //   exec_handler->customize(runtime_dir_, resource_materializer_factory_,
-        //                           exec_env_resolver_factory_);
         return exec_handler->apply(config, allowed_types);
       })
       .catch_then([this, import_handler](monad::Error err) {

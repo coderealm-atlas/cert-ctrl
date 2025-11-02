@@ -12,6 +12,7 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <random>
 #include <string>
@@ -68,7 +69,22 @@ public:
       return;
     }
     boost::system::error_code ec;
-    [[maybe_unused]] auto close_status = acceptor_.close(ec);
+    if (acceptor_.is_open()) {
+      try {
+        asio::io_context poke_ctx;
+        asio::ip::tcp::socket poke_socket(poke_ctx);
+        asio::ip::tcp::endpoint endpoint{
+            asio::ip::make_address("127.0.0.1"), port_};
+        poke_socket.connect(endpoint, ec);
+        if (!ec) {
+          poke_socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+        }
+        poke_socket.close(ec);
+      } catch (const std::exception &) {
+        // Ignore failures during shutdown poke.
+      }
+      [[maybe_unused]] auto close_status = acceptor_.close(ec);
+    }
     if (thread_.joinable()) {
       thread_.join();
     }
@@ -91,6 +107,7 @@ private:
   }
 
   void handle_connection(asio::ip::tcp::socket socket) {
+    DEBUG_PRINT("**Local server accepted connection**");
     try {
       boost::system::error_code ec;
       boost::asio::streambuf request;
@@ -101,6 +118,7 @@ private:
                                    "Connection: close\r\n"
                                    "\r\n"
                                    "bad allocation";
+      DEBUG_PRINT("**Local server responding with 500**");
       boost::asio::write(socket, boost::asio::buffer(response), ec);
       [[maybe_unused]] auto shutdown_status =
           socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
@@ -167,6 +185,23 @@ private:
   std::string name_;
 };
 
+struct MockAccessTokenLoaderFixed
+    : public certctrl::install_actions::IAccessTokenLoader {
+  std::optional<std::string> token;
+
+  MockAccessTokenLoaderFixed(std::optional<std::string> t)
+      : token(std::move(t)) {
+    DEBUG_PRINT("MockAccessTokenLoaderFixed initialized with token: "
+                << (token ? *token : "<none>"));
+  }
+
+  ~MockAccessTokenLoaderFixed() {
+    DEBUG_PRINT("MockAccessTokenLoaderFixed destroyed");
+  }
+
+  std::optional<std::string> load_token() const override { return token; }
+};
+
 struct MockInstallConfigFetcher
     : public certctrl::install_actions::IDeviceInstallConfigFetcher {
 
@@ -214,14 +249,51 @@ struct MockerResourceFetcher
     : public certctrl::install_actions::IResourceFetcher {
   std::string override_body;
 
-  MockerResourceFetcher(std::string body) : override_body(std::move(body)) {}
+  static std::string make_default_cert_payload() {
+    constexpr std::string_view kMockKey = R"(-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIC+BYXto9Jw4/dZElWXKfW6hDqmUC8Uh7xiw5J2wGxmh
+-----END PRIVATE KEY-----
+)";
+    constexpr std::string_view kMockCert = R"(-----BEGIN CERTIFICATE-----
+MIIBVTCCAQegAwIBAgIUNaR75E43mHngKYNdCa8JOW/d7dEwBQYDK2VwMCAxHjAc
+BgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAeFw0yNTEwMjUxMTA3NTBaFw0y
+NjEwMjUxMTA3NTBaMCAxHjAcBgNVBAMMFWZhbGxiYWNrLmV4YW1wbGUudGVzdDAq
+MAUGAytlcAMhABceLDKOiP/CqZAfwi/uDcA4UO/1Kv5bect8to8uuVoLo1MwUTAd
+BgNVHQ4EFgQUaZ/x7IAcuGgUL6gSG+8//Kf1JRswHwYDVR0jBBgwFoAUaZ/x7IAc
+uGgUL6gSG+8//Kf1JRswDwYDVR0TAQH/BAUwAwEB/zAFBgMrZXADQQBeHFmFCaDL
+7Ary5Uhf27nkdLdiq/QpOr5oiOEG7jnW5NwaJhj9kRo45MmK5yDGYLpUYmpb+Bnn
+futpyqmphkYC
+-----END CERTIFICATE-----
+)";
+
+    boost::json::object detail{
+        {"private_key_pem", kMockKey},
+        {"certificate_pem", kMockCert},
+        {"fullchain_pem", kMockCert},
+        {"chain_pem", kMockCert},
+    };
+    boost::json::object deploy{
+        {"enc_scheme", "plaintext"},
+        {"private_key_pem", kMockKey},
+        {"fullchain_pem", kMockCert},
+    };
+    boost::json::object root;
+    root["detail"] = detail;
+    root["deploy"] = deploy;
+    return boost::json::serialize(root);
+  }
+
+  MockerResourceFetcher(std::string body) : override_body(std::move(body)) {
+    if (override_body.empty()) {
+      override_body = make_default_cert_payload();
+    }
+  }
   monad::IO<void>
   fetch(std::optional<std::string> access_token,
         std::shared_ptr<certctrl::install_actions::MaterializationData>
             current_materialization) override {
     DEBUG_PRINT("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
     if (current_materialization->is_cert) {
-
       auto state = current_materialization;
       boost::system::error_code ec;
       auto parsed = boost::json::parse(override_body, ec);
@@ -291,12 +363,46 @@ struct AlwaysFailingResourceFetcher
   }
 };
 
+struct ServerBackedResourceFetcher
+    : public certctrl::install_actions::IResourceFetcher {
+  void bind(cjj365::IoContextManager &io_ctx,
+            certctrl::ICertctrlConfigProvider &config,
+            customio::ConsoleOutput &output,
+            client_async::HttpClientManager &http_client) {
+    delegate_ = std::make_unique<certctrl::install_actions::ResourceFetcher>(
+        io_ctx, config, output, http_client);
+  }
+
+  monad::IO<void>
+  fetch(std::optional<std::string> access_token,
+        std::shared_ptr<certctrl::install_actions::MaterializationData>
+            current_materialization) override {
+    if (!delegate_) {
+      return monad::IO<void>::fail(
+          monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                            "ServerBackedResourceFetcher not bound"));
+    }
+    try {
+      return delegate_->fetch(std::move(access_token),
+                              std::move(current_materialization));
+    } catch (const std::exception &ex) {
+      auto err =
+          monad::make_error(my_errors::NETWORK::CONNECT_ERROR, ex.what());
+      return monad::IO<void>::fail(std::move(err));
+    }
+  }
+
+private:
+  std::unique_ptr<certctrl::install_actions::ResourceFetcher> delegate_;
+};
+
 struct InstallManagerDiHarness {
   InstallManagerDiHarness(
       std::filesystem::path config_dir, std::filesystem::path runtime_dir,
       std::string base_url,
       certctrl::install_actions::IDeviceInstallConfigFetcher &fetcher,
       certctrl::install_actions::IResourceFetcher &resource_fetcher,
+      certctrl::install_actions::IAccessTokenLoader &token_loader,
       int http_threads = 1) {
     config_dir_ = std::move(config_dir);
     runtime_dir_ = std::move(runtime_dir);
@@ -337,6 +443,8 @@ struct InstallManagerDiHarness {
 
     auto injector = di::make_injector(
         testinfra::build_base_injector(config_sources),
+        di::bind<certctrl::install_actions::IAccessTokenLoader>.to(
+            token_loader),
         di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>.to(
             fetcher),
         di::bind<certctrl::install_actions::IResourceFetcher>.to(
@@ -427,18 +535,24 @@ protected:
           fetcher,
       std::unique_ptr<certctrl::install_actions::IResourceFetcher>
           resource_fetcher,
-      std::string base_url = "https://api.example.test", int http_threads = 1) {
+      std::unique_ptr<certctrl::install_actions::IAccessTokenLoader>
+          token_loader,
+      std::string base_url = "http://127.0.0.1", //
+      int http_threads = 1) {
     fetcher_holder_ = std::move(fetcher);
     resource_fetcher_holder_ = std::move(resource_fetcher);
-    harness_ = std::make_unique<InstallManagerDiHarness>(
-        std::move(config_dir), std::move(runtime_dir), std::move(base_url),
-        *fetcher_holder_, *resource_fetcher_holder_, http_threads);
+    token_loader_ = std::move(token_loader);
+  harness_ = std::make_unique<InstallManagerDiHarness>(
+    std::move(config_dir), std::move(runtime_dir), std::move(base_url),
+    *fetcher_holder_, *resource_fetcher_holder_, *token_loader_,
+    http_threads);
   }
 
   std::unique_ptr<certctrl::install_actions::IDeviceInstallConfigFetcher>
       fetcher_holder_;
   std::unique_ptr<certctrl::install_actions::IResourceFetcher>
       resource_fetcher_holder_;
+  std::unique_ptr<certctrl::install_actions::IAccessTokenLoader> token_loader_;
   std::unique_ptr<InstallManagerDiHarness> harness_;
 };
 
@@ -475,9 +589,10 @@ TEST_F(InstallConfigManagerFixture, AppliesCopyActionsFullPlan) {
 
   static MockInstallConfigFetcher fetcher{config};
   static MockerResourceFetcher resource_fetcher{""};
+  static MockAccessTokenLoaderFixed token_loader{std::nullopt};
   harness_ = std::make_unique<InstallManagerDiHarness>(
       config_dir, runtime_dir, "https://api.example.test", fetcher,
-      resource_fetcher);
+      resource_fetcher, token_loader);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
@@ -553,9 +668,10 @@ TEST_F(InstallConfigManagerFixture, SkipsCopyActionsWithEmptyDestinations) {
 
   static MockInstallConfigFetcher fetcher{config};
   static MockerResourceFetcher resource_fetcher{""};
+  static MockAccessTokenLoaderFixed token_loader{std::nullopt};
   harness_ = std::make_unique<InstallManagerDiHarness>(
       config_dir, runtime_dir, "https://api.example.test", fetcher,
-      resource_fetcher);
+      resource_fetcher, token_loader);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
@@ -594,6 +710,7 @@ TEST_F(InstallConfigManagerFixture, SkipsCopyActionsWithEmptyDestinations) {
 }
 
 TEST_F(InstallConfigManagerFixture, CopyActionsAggregateFailures) {
+  misc::ThreadNotifier notifier;
   auto config_dir = make_temp_runtime_dir();
   auto runtime_dir = make_temp_runtime_dir();
 
@@ -611,30 +728,29 @@ TEST_F(InstallConfigManagerFixture, CopyActionsAggregateFailures) {
 
   createHarness(config_dir, runtime_dir,
                 std::make_unique<MockInstallConfigFetcher>(config),
-                std::make_unique<MockerResourceFetcher>(""));
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
-  bool callback_invoked = false;
-  // auto materializer = make_noop_materializer();
-  // auto resource_factory = make_fixed_resource_factory(materializer);
-  // certctrl::install_actions::CopyActionHandler handler(provider, output,
-  //                                                      resource_factory);
   auto handler = harness_->copy_action_handler_factory();
+  std::optional<monad::MyVoidResult> apply_r;
   handler->apply(config, std::nullopt, std::nullopt).run([&](auto result) {
-    callback_invoked = true;
-    ASSERT_TRUE(result.is_err())
-        << "Expected aggregated failures but copy actions succeeded";
-    auto err = result.error();
-    EXPECT_EQ(err.code, my_errors::GENERAL::FILE_READ_WRITE);
-    std::string_view message(err.what);
-    EXPECT_NE(
-        message.find("destination path 'relative-dest.pem' is not absolute"),
-        std::string_view::npos)
-        << "Missing relative path diagnostic";
-    EXPECT_NE(message.find("Source file"), std::string_view::npos)
-        << "Missing source not found diagnostic";
+    apply_r = result;
+    notifier.notify();
   });
+  notifier.waitForNotification();
+  ASSERT_TRUE(apply_r.has_value());
+  ASSERT_TRUE(apply_r->is_err())
+      << "Expected aggregated failures but copy actions succeeded";
+  auto err = apply_r->error();
+  EXPECT_EQ(err.code, my_errors::GENERAL::FILE_READ_WRITE);
+  std::string_view message(err.what);
+  EXPECT_NE(message.find("Missing deploy materials"), std::string_view::npos)
+      << "Missing deploy materials diagnostic";
+  EXPECT_NE(message.find("missing.pem"), std::string_view::npos)
+      << "Missing source identifier for missing.pem";
+  EXPECT_NE(message.find("also-missing.pem"), std::string_view::npos)
+      << "Missing source identifier for also-missing.pem";
 
-  ASSERT_TRUE(callback_invoked);
   EXPECT_FALSE(std::filesystem::exists(absolute_dest))
       << "No destination file should be created on failure";
 
@@ -656,7 +772,8 @@ TEST_F(InstallConfigManagerFixture, CopiesCaIntoOverrideDirectory) {
 
   createHarness(config_dir, runtime_dir,
                 std::make_unique<MockInstallConfigFetcher>(config),
-                std::make_unique<MockerResourceFetcher>(""));
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   auto runtime_dir_path = harness_->runtime_dir();
   auto resource_dir = runtime_dir_path / "resources" / "cas" / "55" / "current";
@@ -690,8 +807,9 @@ TEST_F(InstallConfigManagerFixture, CopiesCaIntoOverrideDirectory) {
 }
 
 TEST_F(InstallConfigManagerFixture, FailsCaImportWhenServerReturns500) {
-  auto runtime_dir = harness_->runtime_dir();
   misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
   FailingCaServer server;
 
   std::filesystem::create_directories(runtime_dir / "state");
@@ -716,6 +834,17 @@ TEST_F(InstallConfigManagerFixture, FailsCaImportWhenServerReturns500) {
 #endif
   std::filesystem::create_directories(runtime_dir / "trust-anchors");
 
+  auto install_fetcher = std::make_unique<MockInstallConfigFetcher>(config);
+  auto resource_fetcher = std::make_unique<ServerBackedResourceFetcher>();
+  auto *resource_fetcher_ptr = resource_fetcher.get();
+  createHarness(config_dir, runtime_dir, std::move(install_fetcher),
+                std::move(resource_fetcher),
+                std::make_unique<MockAccessTokenLoaderFixed>("hello-token"),
+                server.base_url());
+  resource_fetcher_ptr->bind(harness_->io_context_manager(),
+                             harness_->config_provider(), harness_->output(),
+                             harness_->http_client_manager());
+
   monad::MyVoidResult r;
   harness_->install_manager()
       .apply_import_ca_actions(config, std::nullopt, std::nullopt)
@@ -727,9 +856,8 @@ TEST_F(InstallConfigManagerFixture, FailsCaImportWhenServerReturns500) {
   EXPECT_TRUE(r.is_err())
       << "Expected CA import to fail when server returns 500";
 
-  EXPECT_EQ(r.error().code, my_errors::GENERAL::FILE_NOT_FOUND);
+  EXPECT_EQ(r.error().code, my_errors::NETWORK::READ_ERROR);
   EXPECT_EQ(r.error().response_status, 500);
-  DEBUG_PRINT("**********\n" << r.error() << "\n**********\n");
   auto *preview_field = r.error().params.if_contains("response_body_preview");
   EXPECT_NE(preview_field, nullptr);
   EXPECT_TRUE(preview_field->is_string());
@@ -747,7 +875,9 @@ TEST_F(InstallConfigManagerFixture, FailsCaImportWhenServerReturns500) {
 }
 
 TEST_F(InstallConfigManagerFixture, FiltersCopyActionsByResource) {
-  auto runtime_dir = harness_->runtime_dir();
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
   auto resource_dir_123 =
       runtime_dir / "resources" / "certs" / "123" / "current";
@@ -782,19 +912,10 @@ TEST_F(InstallConfigManagerFixture, FiltersCopyActionsByResource) {
   config.installs.push_back(item_a);
   config.installs.push_back(item_b);
 
-  auto fetch_override =
-      [config](std::optional<std::int64_t> expected_version,
-               const std::optional<std::string> &expected_hash)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
-    dto::DeviceInstallConfigDto copy = config;
-    if (expected_version) {
-      copy.version = *expected_version;
-    }
-    if (expected_hash) {
-      copy.installs_hash = *expected_hash;
-    }
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
-  };
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
@@ -803,8 +924,10 @@ TEST_F(InstallConfigManagerFixture, FiltersCopyActionsByResource) {
   harness_->install_manager()
       .ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
+        if (result.is_ok()) {
+          plan = result.value();
+        }
         op_r = std::move(result);
-        plan = result.value();
       });
 
   ASSERT_TRUE(op_r.has_value());
@@ -827,7 +950,11 @@ TEST_F(InstallConfigManagerFixture, FiltersCopyActionsByResource) {
   harness_->install_manager()
       .apply_copy_actions(*plan, std::string("cert"),
                           static_cast<std::int64_t>(456))
-      .run([&](auto result) { void_r = std::move(result); });
+      .run([&](auto result) {
+        void_r = std::move(result);
+        notifier.notify();
+      });
+  notifier.waitForNotification();
 
   ASSERT_TRUE(void_r.is_ok());
   EXPECT_TRUE(std::filesystem::exists(dest_b));
@@ -837,7 +964,9 @@ TEST_F(InstallConfigManagerFixture, FiltersCopyActionsByResource) {
 }
 
 TEST_F(InstallConfigManagerFixture, HandlesMasterOnlyPlaintextBundle) {
-  auto runtime_dir = harness_->runtime_dir();
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
   const std::int64_t cert_id = 321;
   const std::string private_key_pem =
@@ -883,42 +1012,38 @@ TEST_F(InstallConfigManagerFixture, HandlesMasterOnlyPlaintextBundle) {
   copy_item.to = std::vector<std::string>{dest.string()};
   config.installs.push_back(copy_item);
 
-  auto fetch_override =
-      [config](std::optional<std::int64_t> expected_version,
-               const std::optional<std::string> &expected_hash)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
-    dto::DeviceInstallConfigDto copy = config;
-    if (expected_version) {
-      copy.version = *expected_version;
-    }
-    if (expected_hash) {
-      copy.installs_hash = *expected_hash;
-    }
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
-  };
-
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
+  std::optional<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+      op_r;
   harness_->install_manager()
       .ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
-        ASSERT_TRUE(result.is_ok());
-        plan = result.value();
+        op_r = std::move(result);
+        notifier.notify();
       });
-
+  notifier.waitForNotification();
+  ASSERT_TRUE(op_r.has_value());
+  ASSERT_TRUE(op_r->is_ok())
+      << "ensure_config_version failed: " << op_r->error();
+  plan = op_r->value();
   ASSERT_TRUE(plan);
 
-  bool apply_ok = false;
-  monad::Error apply_err{};
+  std::optional<monad::MyVoidResult> apply_r;
   harness_->install_manager()
       .apply_copy_actions(*plan, std::nullopt, std::nullopt)
       .run([&](auto result) {
-        apply_ok = result.is_ok();
-        if (!apply_ok) {
-          apply_err = result.error();
-        }
+        apply_r = std::move(result);
+        notifier.notify();
       });
-
-  ASSERT_TRUE(apply_ok) << "apply_copy_actions failed: " << apply_err.what;
+  notifier.waitForNotification();
+  ASSERT_TRUE(apply_r.has_value());
+  ASSERT_TRUE(apply_r->is_ok())
+      << "apply_copy_actions failed: " << apply_r->error();
 
   ASSERT_TRUE(std::filesystem::exists(dest));
   EXPECT_EQ(read_file(dest), private_key_pem);
@@ -928,7 +1053,9 @@ TEST_F(InstallConfigManagerFixture, HandlesMasterOnlyPlaintextBundle) {
 
 TEST_F(InstallConfigManagerFixture,
        GeneratesMaterialsFromCertificateDetailOnly) {
-  auto runtime_dir = harness_->runtime_dir();
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
   const std::int64_t cert_id = 654321;
   const std::string private_key_pem =
@@ -985,42 +1112,40 @@ TEST_F(InstallConfigManagerFixture,
       (install_root / "cert" / "meta.json").string()};
   config.installs.push_back(copy_item);
 
-  auto fetch_override =
-      [config](std::optional<std::int64_t> expected_version,
-               const std::optional<std::string> &expected_hash)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
-    dto::DeviceInstallConfigDto copy = config;
-    if (expected_version) {
-      copy.version = *expected_version;
-    }
-    if (expected_hash) {
-      copy.installs_hash = *expected_hash;
-    }
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
-  };
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
+  std::optional<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+      op_r;
   harness_->install_manager()
       .ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
-        ASSERT_TRUE(result.is_ok());
-        plan = result.value();
+        op_r = std::move(result);
+        notifier.notify();
       });
+  notifier.waitForNotification();
+  ASSERT_TRUE(op_r.has_value());
+  ASSERT_TRUE(op_r->is_ok())
+      << "ensure_config_version failed: " << op_r->error();
+  plan = op_r->value();
 
   ASSERT_TRUE(plan);
 
-  bool apply_ok = false;
-  monad::Error apply_err{};
+  std::optional<monad::MyVoidResult> apply_r;
   harness_->install_manager()
       .apply_copy_actions(*plan, std::nullopt, std::nullopt)
       .run([&](auto result) {
-        apply_ok = result.is_ok();
-        if (!apply_ok) {
-          apply_err = result.error();
-        }
+        apply_r = std::move(result);
+        notifier.notify();
       });
-
-  ASSERT_TRUE(apply_ok) << "apply_copy_actions failed: " << apply_err.what;
+  notifier.waitForNotification();
+  ASSERT_TRUE(apply_r.has_value());
+  ASSERT_TRUE(apply_r->is_ok())
+      << "apply_copy_actions failed: " << apply_r->error();
 
   auto resource_root =
       runtime_dir / "resources" / "certs" / std::to_string(cert_id) / "current";
@@ -1061,7 +1186,9 @@ TEST_F(InstallConfigManagerFixture,
 }
 
 TEST_F(InstallConfigManagerFixture, RetriesUntilExpectedVersionAvailable) {
-  auto runtime_dir = harness_->runtime_dir();
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
   dto::DeviceInstallConfigDto config{};
   config.id = 5;
@@ -1069,29 +1196,25 @@ TEST_F(InstallConfigManagerFixture, RetriesUntilExpectedVersionAvailable) {
   config.version = 17;
 
   int call_count = 0;
-  auto fetch_override =
-      [&config, &call_count](std::optional<std::int64_t> expected_version,
-                             const std::optional<std::string> &expected_hash)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
-    dto::DeviceInstallConfigDto copy = config;
-    ++call_count;
-    if (expected_version) {
-      copy.version =
-          (call_count < 3) ? (*expected_version - 1) : *expected_version;
-    }
-    if (expected_hash) {
-      copy.installs_hash = *expected_hash;
-    }
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
-  };
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
+  std::optional<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+      op_r;
   harness_->install_manager()
       .ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
-        ASSERT_TRUE(result.is_ok());
-        plan = result.value();
+        op_r = std::move(result);
+        notifier.notify();
       });
+  notifier.waitForNotification();
+  ASSERT_TRUE(op_r.has_value());
+  ASSERT_TRUE(op_r->is_ok());
+  plan = op_r->value();
 
   ASSERT_TRUE(plan);
   EXPECT_EQ(call_count, 3);
@@ -1103,7 +1226,8 @@ TEST_F(InstallConfigManagerFixture, RetriesUntilExpectedVersionAvailable) {
 
 TEST_F(InstallConfigManagerFixture, FailsWhenExpectedVersionNeverArrives) {
   misc::ThreadNotifier notifier(3000);
-  auto runtime_dir = harness_->runtime_dir();
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
   dto::DeviceInstallConfigDto config{};
   config.id = 6;
@@ -1111,21 +1235,11 @@ TEST_F(InstallConfigManagerFixture, FailsWhenExpectedVersionNeverArrives) {
   config.version = 23;
 
   int call_count = 0;
-  auto fetch_override =
-      [&config, &call_count](std::optional<std::int64_t> expected_version,
-                             const std::optional<std::string> &expected_hash)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
-    dto::DeviceInstallConfigDto copy = config;
-    ++call_count;
-    if (expected_version) {
-      copy.version = *expected_version - 1;
-    }
-    if (expected_hash) {
-      copy.installs_hash = *expected_hash;
-    }
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
-  };
 
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;

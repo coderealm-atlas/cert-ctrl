@@ -2,11 +2,13 @@
 
 #include "util/my_logging.hpp"
 #include <boost/algorithm/string/join.hpp>
+#include <boost/json.hpp>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
+#include <fmt/format.h>
 #include <memory>
 #include <sstream>
 #include <thread>
@@ -49,7 +51,8 @@ ExecActionHandler::ExecActionHandler(
 //       is_customized_ = true;
 //   runtime_dir_ = runtime_dir;
 //   if (resource_materializer_factory) {
-//     resource_materializer_factory_ = std::move(resource_materializer_factory);
+//     resource_materializer_factory_ =
+//     std::move(resource_materializer_factory);
 //   }
 //   if (exec_env_resolver_factory) {
 //     exec_env_resolver_factory_ = std::move(exec_env_resolver_factory);
@@ -494,25 +497,75 @@ run_item_cmd(const dto::InstallItem &item,
   return std::optional<std::string>("unknown command result");
 }
 #endif
+monad::IO<void>
+ExecActionHandler::process_one_item(const dto::InstallItem &item) {
+  using ReturnIO = monad::IO<void>;
+
+  if ((!item.cmd || item.cmd->empty()) &&
+      (!item.cmd_argv || item.cmd_argv->empty())) {
+    return ReturnIO::pure();
+  }
+
+  auto self = shared_from_this();
+
+  return resource_materializer_->ensure_materialized(item)
+      .then([self, item]() -> ReturnIO {
+        if (auto err = run_item_cmd(item, self->exec_env_resolver_)) {
+          auto message = fmt::format("exec item '{}': {}", item.id, *err);
+          if (item.continue_on_error) {
+            self->output_.logger().warning()
+                << "exec item '" << item.id << "' failed: " << *err
+                << std::endl;
+            self->failure_messages_.push_back(std::move(message));
+            return ReturnIO::pure();
+          }
+
+          auto error_obj = monad::make_error(
+              my_errors::GENERAL::UNEXPECTED_RESULT, std::move(*err));
+          error_obj.params["stage"] = "exec";
+          return ReturnIO::fail(std::move(error_obj));
+        }
+
+        self->output_.logger().info() << "Executed exec item '" << item.id
+                                      << "' successfully" << std::endl;
+        return ReturnIO::pure();
+      })
+      .catch_then([self, item](monad::Error err) -> ReturnIO {
+        if (auto *stage = err.params.if_contains("stage")) {
+          if (stage->is_string() && stage->as_string() == "exec") {
+            return ReturnIO::fail(std::move(err));
+          }
+        }
+
+        auto message = fmt::format("exec item '{}': {}", item.id, err.what);
+        if (item.continue_on_error) {
+          self->output_.logger().warning()
+              << "exec item '" << item.id
+              << "' resource materialize failed: " << err.what << std::endl;
+          self->failure_messages_.push_back(std::move(message));
+          return ReturnIO::pure();
+        }
+
+        return ReturnIO::fail(std::move(err));
+      });
+}
 
 monad::IO<void> ExecActionHandler::apply(
     const dto::DeviceInstallConfigDto &config,
     std::optional<std::vector<std::string>> allowed_types) {
   using ReturnIO = monad::IO<void>;
   try {
+    failure_messages_.clear();
     auto self = shared_from_this();
-    auto resource_materializer = resource_materializer_factory_();
-    //  make_resource_materializer();
-    // if (!resource_materializer) {
-    //   return ReturnIO::fail(
-    //       monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-    //                         "ExecActionHandler missing resource materializer"));
-    // }
 
-    auto exec_env_resolver = exec_env_resolver_factory_();
-    // make_exec_env_resolver();
+    resource_materializer_ = resource_materializer_factory_();
+    if (!resource_materializer_) {
+      return ReturnIO::fail(
+          monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                            "ExecActionHandler missing resource materializer"));
+    }
 
-    auto processed_any = std::make_shared<bool>(false);
+    exec_env_resolver_ = exec_env_resolver_factory_();
 
     auto is_allowed = [&allowed_types](const dto::InstallItem &item) {
       if (!allowed_types) {
@@ -529,7 +582,8 @@ monad::IO<void> ExecActionHandler::apply(
       return false;
     };
 
-    ReturnIO pipeline = ReturnIO::pure();
+    std::vector<monad::IO<void>> action_ios;
+    bool processed_any = false;
 
     for (const auto &item : config.installs) {
       if (!is_allowed(item)) {
@@ -541,58 +595,48 @@ monad::IO<void> ExecActionHandler::apply(
         continue;
       }
 
-      auto item_copy = item;
-      pipeline =
-          pipeline.then([self, processed_any, item_copy, resource_materializer,
-                         exec_env_resolver]() mutable {
-            using ReturnIO = monad::IO<void>;
-            *processed_any = true;
-            return resource_materializer->ensure_materialized(item_copy)
-                .then([self, resource_materializer, item_copy, exec_env_resolver]() -> ReturnIO {
-                  if (auto err = run_item_cmd(item_copy, exec_env_resolver)) {
-                    if (item_copy.continue_on_error) {
-                      self->output_.logger().warning()
-                          << "exec item '" << item_copy.id
-                          << "' failed: " << *err << std::endl;
-                      return ReturnIO::pure();
-                    }
-                    auto error_obj = monad::make_error(
-                        my_errors::GENERAL::UNEXPECTED_RESULT, *err);
-                    error_obj.params["stage"] = "exec";
-                    return ReturnIO::fail(std::move(error_obj));
-                  }
-
-                  self->output_.logger().info()
-                      << "Executed exec item '" << item_copy.id
-                      << "' successfully" << std::endl;
-                  return ReturnIO::pure();
-                })
-                .catch_then([self, item_copy, resource_materializer](monad::Error err) -> ReturnIO {
-                  if (auto *stage = err.params.if_contains("stage")) {
-                    if (stage->is_string() && stage->as_string() == "exec") {
-                      return ReturnIO::fail(std::move(err));
-                    }
-                  }
-
-                  if (item_copy.continue_on_error) {
-                    self->output_.logger().warning()
-                        << "exec item '" << item_copy.id
-                        << "' resource materialize failed: " << err.what
-                        << std::endl;
-                    return ReturnIO::pure();
-                  }
-                  return ReturnIO::fail(std::move(err));
-                });
-          });
+      processed_any = true;
+      action_ios.push_back(process_one_item(item));
     }
 
-    return pipeline.then([self, processed_any]() -> ReturnIO {
-      if (!*processed_any) {
-        self->output_.logger().debug()
-            << "No exec items present in plan" << std::endl;
-      }
+    if (!processed_any) {
+      self->output_.logger().debug()
+          << "No exec items present in plan" << std::endl;
       return ReturnIO::pure();
-    });
+    }
+
+    return monad::collect_result_io(action_ios)
+        .then([self](auto results) -> ReturnIO {
+          for (const auto &res : results) {
+            if (res.is_err()) {
+              return ReturnIO::fail(res.error());
+            }
+          }
+
+          if (!self->failure_messages_.empty()) {
+            std::ostringstream oss;
+            oss << "exec actions completed with "
+                << self->failure_messages_.size() << " warning(s): ";
+            for (std::size_t idx = 0; idx < self->failure_messages_.size();
+                 ++idx) {
+              if (idx != 0) {
+                oss << "; ";
+              }
+              oss << self->failure_messages_[idx];
+            }
+            self->output_.logger().warning() << oss.str() << std::endl;
+            BOOST_LOG_SEV(app_logger(), trivial::trace) << oss.str();
+          }
+
+          return ReturnIO::pure();
+        })
+        .catch_then([self](monad::Error err) -> ReturnIO {
+          BOOST_LOG_SEV(app_logger(), trivial::error)
+              << "exec actions pipeline failed code=" << err.code
+              << " status=" << err.response_status << " what=" << err.what
+              << " params=" << boost::json::serialize(err.params);
+          return ReturnIO::fail(std::move(err));
+        });
   } catch (const std::exception &ex) {
     return ReturnIO::fail(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, ex.what()));

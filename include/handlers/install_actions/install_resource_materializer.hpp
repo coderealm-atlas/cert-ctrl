@@ -28,13 +28,6 @@ class InstallResourceMaterializer
 public:
   // using ResourceFetchOverrideFn =
   //     std::function<std::optional<std::string>(const dto::InstallItem &)>;
-  using AccessTokenLoader = std::function<std::optional<std::string>()>;
-  using BundlePasswordLookup = std::function<std::optional<std::string>(
-      const std::string &, std::int64_t)>;
-  using BundlePasswordRemember = std::function<void(
-      const std::string &, std::int64_t, const std::string &)>;
-  using BundlePasswordForget =
-      std::function<void(const std::string &, std::int64_t)>;
 
   // struct RuntimeConfig {
   //   std::filesystem::path runtime_dir;
@@ -48,19 +41,19 @@ public:
   InstallResourceMaterializer(
       cjj365::IoContextManager &io_context_manager,
       certctrl::ICertctrlConfigProvider &config_provider,
-      customio::ConsoleOutput &output,
-      IResourceFetcher& resource_fetcher,
-      client_async::HttpClientManager &http_client);
+      customio::ConsoleOutput &output, IResourceFetcher &resource_fetcher,
+      client_async::HttpClientManager &http_client,
+      install_actions::IAccessTokenLoader &access_token_loader);
 
   ~InstallResourceMaterializer();
 
   // void customize(RuntimeConfig config);
-  void update_runtime_dir(std::filesystem::path runtime_dir);
+  // void update_runtime_dir(std::filesystem::path runtime_dir);
   // void update_resource_fetch_override(ResourceFetchOverrideFn fn);
-  void update_access_token_loader(AccessTokenLoader loader);
-  void update_bundle_hooks(BundlePasswordLookup lookup,
-                           BundlePasswordRemember remember,
-                           BundlePasswordForget forget);
+  // void update_access_token_loader(AccessTokenLoader loader);
+  // void update_bundle_hooks(BundlePasswordLookup lookup,
+  //                          BundlePasswordRemember remember,
+  //                          BundlePasswordForget forget);
 
   monad::IO<void> ensure_materialized(const dto::InstallItem &item) override;
 
@@ -69,7 +62,7 @@ private:
   std::filesystem::path resource_current_dir(const std::string &ob_type,
                                              std::int64_t ob_id) const;
 
-  std::optional<std::string> load_access_token() const;
+  // std::optional<std::string> load_access_token() const;
   std::optional<std::string> lookup_bundle_password(const std::string &ob_type,
                                                     std::int64_t ob_id) const;
   void remember_bundle_password(const std::string &ob_type, std::int64_t ob_id,
@@ -90,13 +83,14 @@ private:
   customio::ConsoleOutput &output_;
   IResourceFetcher &resource_fetcher_;
   client_async::HttpClientManager &http_client_;
-  AccessTokenLoader access_token_loader_;
+  // IResourceFetcher::AccessTokenLoader access_token_loader_;
   // ResourceFetchOverrideFn resource_fetch_override_;
-  BundlePasswordLookup bundle_lookup_;
-  BundlePasswordRemember bundle_remember_;
-  BundlePasswordForget bundle_forget_;
+  IResourceFetcher::BundlePasswordLookup bundle_lookup_;
+  IResourceFetcher::BundlePasswordRemember bundle_remember_;
+  IResourceFetcher::BundlePasswordForget bundle_forget_;
   logsrc::severity_logger<trivial::severity_level> lg;
   boost::asio::io_context &io_context_;
+  install_actions::IAccessTokenLoader &access_token_loader_;
 };
 
 } // namespace certctrl::install_actions

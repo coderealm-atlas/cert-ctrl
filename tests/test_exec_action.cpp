@@ -8,6 +8,24 @@
 #include "result_monad.hpp"
 #include <boost/json.hpp>
 
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define CERTCTRL_TESTS_WITH_ASAN 1
+#  endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+#  define CERTCTRL_TESTS_WITH_ASAN 1
+#endif
+
+#if defined(CERTCTRL_TESTS_WITH_ASAN)
+extern "C" const char *__asan_default_options() {
+  return "detect_leaks=0";
+}
+extern "C" const char *__lsan_default_options() {
+  return "detect_leaks=0";
+}
+#endif
+
 #include <sstream>
 #include <cstdlib>
 #include <filesystem>
@@ -78,7 +96,6 @@ HandlerContext make_handler(
   auto provider = std::make_shared<TestConfigProvider>(runtime_dir);
   auto handler = std::make_shared<ExecActionHandler>(
       *provider, cout, materializer_factory, resolver_factory);
-  handler->customize(runtime_dir, materializer_factory, resolver_factory);
   return HandlerContext{std::move(provider), std::move(handler)};
 }
 

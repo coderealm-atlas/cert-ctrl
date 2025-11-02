@@ -40,8 +40,75 @@ struct MaterializationData {
   bool ca_parsed{false};
 };
 
+class IAccessTokenLoader {
+public:
+  virtual ~IAccessTokenLoader() = default;
+  virtual std::optional<std::string> load_token() const = 0;
+};
+
+class AccessTokenLoaderFile : public IAccessTokenLoader {
+  std::filesystem::path token_file;
+  mutable std::optional<std::string> cached_access_token_;
+  mutable std::optional<std::filesystem::file_time_type>
+      cached_access_token_mtime_;
+
+public:
+  AccessTokenLoaderFile(certctrl::ICertctrlConfigProvider &config_provider) {
+    token_file =
+        config_provider.get().runtime_dir / "state" / "access_token.txt";
+  }
+
+  std::optional<std::string> load_token() const override {
+
+  std::error_code ec;
+  const auto mtime = std::filesystem::last_write_time(token_file, ec);
+  if (!ec && cached_access_token_ && cached_access_token_mtime_ &&
+      mtime == *cached_access_token_mtime_) {
+    return cached_access_token_;
+  }
+
+  std::ifstream ifs(token_file, std::ios::binary);
+  if (!ifs.is_open()) {
+    cached_access_token_.reset();
+    cached_access_token_mtime_.reset();
+    return std::nullopt;
+  }
+
+  std::string token((std::istreambuf_iterator<char>(ifs)),
+                    std::istreambuf_iterator<char>());
+  auto first = token.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    cached_access_token_.reset();
+    cached_access_token_mtime_.reset();
+    return std::nullopt;
+  }
+  auto last = token.find_last_not_of(" \t\r\n");
+  if (last == std::string::npos || last < first) {
+    cached_access_token_.reset();
+    cached_access_token_mtime_.reset();
+    return std::nullopt;
+  }
+
+  token = token.substr(first, last - first + 1);
+  cached_access_token_ = token;
+  if (!ec) {
+    cached_access_token_mtime_ = mtime;
+  } else {
+    cached_access_token_mtime_.reset();
+  }
+  return cached_access_token_;
+  }
+};
+
 class IResourceFetcher {
 public:
+  using AccessTokenLoader = std::function<std::optional<std::string>()>;
+  using BundlePasswordLookup = std::function<std::optional<std::string>(
+      const std::string &, std::int64_t)>;
+  using BundlePasswordRemember = std::function<void(
+      const std::string &, std::int64_t, const std::string &)>;
+  using BundlePasswordForget =
+      std::function<void(const std::string &, std::int64_t)>;
   virtual ~IResourceFetcher() = default;
   virtual monad::IO<void> fetch(
       std::optional<std::string> /*access_token*/,
