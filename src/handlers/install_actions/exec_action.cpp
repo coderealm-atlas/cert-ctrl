@@ -44,37 +44,6 @@ ExecActionHandler::ExecActionHandler(
       resource_materializer_factory_(std::move(resource_materializer_factory)),
       exec_env_resolver_factory_(std::move(exec_env_resolver_factory)) {}
 
-// void ExecActionHandler::customize(
-//     std::filesystem::path runtime_dir,
-//     IResourceMaterializer::Factory resource_materializer_factory,
-//     IExecEnvironmentResolver::Factory exec_env_resolver_factory) {
-//       is_customized_ = true;
-//   runtime_dir_ = runtime_dir;
-//   if (resource_materializer_factory) {
-//     resource_materializer_factory_ =
-//     std::move(resource_materializer_factory);
-//   }
-//   if (exec_env_resolver_factory) {
-//     exec_env_resolver_factory_ = std::move(exec_env_resolver_factory);
-//   }
-// }
-
-// IResourceMaterializer::Ptr
-// ExecActionHandler::make_resource_materializer() const {
-//   if (resource_materializer_factory_) {
-//     return resource_materializer_factory_();
-//   }
-//   return nullptr;
-// }
-
-// IExecEnvironmentResolver::Ptr
-// ExecActionHandler::make_exec_env_resolver() const {
-//   if (exec_env_resolver_factory_) {
-//     return exec_env_resolver_factory_();
-//   }
-//   return nullptr;
-// }
-
 #if defined(_WIN32)
 #include <windows.h>
 

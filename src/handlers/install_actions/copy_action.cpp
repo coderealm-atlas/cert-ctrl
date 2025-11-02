@@ -211,26 +211,16 @@ CopyActionHandler::CopyActionHandler(
     : config_provider_(config_provider), output_(output),
       runtime_dir_(config_provider.get().runtime_dir),
       resource_materializer_factory_(std::move(resource_materializer_factory)) {
+  if (resource_materializer_factory_) {
+    try {
+      resource_materializer_ = resource_materializer_factory_();
+    } catch (const std::exception &ex) {
+      output_.logger().error()
+          << "CopyActionHandler failed to precreate materializer: "
+          << ex.what() << std::endl;
+    }
+  }
 }
-
-// void CopyActionHandler::customize(
-//     std::filesystem::path runtime_dir,
-//     IResourceMaterializer::Factory resource_materializer_factory) {
-//   is_customized_ = true;
-//   runtime_dir_ = runtime_dir;
-//   if (resource_materializer_factory) {
-//     resource_materializer_factory_ =
-//     std::move(resource_materializer_factory);
-//   }
-// }
-
-// IResourceMaterializer::Ptr CopyActionHandler::make_resource_materializer()
-// const {
-//   if (resource_materializer_factory_) {
-//     return resource_materializer_factory_();
-//   }
-//   return nullptr;
-// }
 
 /**
  * If you don't copy the config, make sure to keep the config object alive
@@ -243,138 +233,28 @@ CopyActionHandler::apply(const dto::DeviceInstallConfigDto &config,
                          std::optional<std::int64_t> target_ob_id) {
   using ReturnIO = monad::IO<void>;
 
-  auto resource_materializer = resource_materializer_factory_();
+  auto resource_materializer = resource_materializer_;
+  if (!resource_materializer && resource_materializer_factory_) {
+    resource_materializer = resource_materializer_factory_();
+    resource_materializer_ = resource_materializer;
+  }
+
   if (!resource_materializer) {
     return ReturnIO::fail(
         monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                           "CopyActionHandler missing resource materializer"));
   }
 
+  failure_messages_.clear();
+
   try {
-    // struct SharedState {
-    //   std::filesystem::path runtime_dir;
-    //   customio::ConsoleOutput *output;
-    //   IResourceMaterializer::Ptr materializer;
-    // };
-
-    // auto state = std::make_shared<SharedState>(
-    //     SharedState{runtime_dir_, &output_, std::move(resource_materializer)});
-
-    // auto failure_messages = std::make_shared<std::vector<std::string>>();
-    // auto target_ob_type_copy = target_ob_type;
-
-    // auto append_failure = [state, failure_messages](std::string msg) {
-    //   state->output->logger().error() << msg << std::endl;
-    //   failure_messages->push_back(std::move(msg));
-    // };
-
-    // auto process_item =
-    //     [state, failure_messages, target_ob_type_copy, target_ob_id,
-    //      append_failure](const dto::InstallItem &item) -> ReturnIO {
-    //   if (item.type != "copy") {
-    //     return ReturnIO::pure();
-    //   }
-
-    //   if (target_ob_type_copy) {
-    //     if (!item.ob_type || *item.ob_type != *target_ob_type_copy) {
-    //       return ReturnIO::pure();
-    //     }
-    //     if (target_ob_id && (!item.ob_id || *item.ob_id != *target_ob_id)) {
-    //       return ReturnIO::pure();
-    //     }
-    //   }
-
-    //   if (!item.from || item.from->empty()) {
-    //     append_failure(
-    //         fmt::format("copy item '{}' missing from entries", item.id));
-    //     return ReturnIO::pure();
-    //   }
-
-    //   if (!item.to || item.to->empty()) {
-    //     state->output->logger().info()
-    //         << "Skipping copy item '" << item.id
-    //         << "' due to empty destination list" << std::endl;
-    //     return ReturnIO::pure();
-    //   }
-
-    //   if (item.from->size() != item.to->size()) {
-    //     append_failure(
-    //         fmt::format("copy item '{}': from/to length mismatch", item.id));
-    //     return ReturnIO::pure();
-    //   }
-
-    //   if (!item.ob_type || !item.ob_id) {
-    //     append_failure(
-    //         fmt::format("copy item '{}' missing ob_type/ob_id", item.id));
-    //     return ReturnIO::pure();
-    //   }
-
-    //   const std::string ob_type = *item.ob_type;
-    //   const std::int64_t ob_id = *item.ob_id;
-
-    //   return state->materializer->ensure_materialized(item)
-    //       .then([state, append_failure, item, ob_type, ob_id]() -> ReturnIO {
-    //         auto resource_root =
-    //             resource_root_for(state->runtime_dir, ob_type, ob_id);
-
-    //         for (std::size_t i = 0; i < item.from->size(); ++i) {
-    //           const auto &virtual_name = item.from->at(i);
-    //           const auto &dest_path_str = item.to->at(i);
-
-    //           if (dest_path_str.empty()) {
-    //             BOOST_LOG_SEV(app_logger(), trivial::trace)
-    //                 << "Empty destination path, skip copying " << virtual_name;
-    //             continue;
-    //           }
-
-    //           std::filesystem::path source_path = resource_root / virtual_name;
-    //           std::filesystem::path dest_path(dest_path_str);
-
-    //           if (!dest_path.is_absolute()) {
-    //             auto msg = fmt::format(
-    //                 "copy item '{}': destination path '{}' is not absolute",
-    //                 item.id, dest_path.string());
-    //             append_failure(std::move(msg));
-    //             continue;
-    //           }
-
-    //           bool private_material = is_private_material_name(virtual_name);
-    //           if (auto err =
-    //                   perform_copy_operation(*state->output, source_path,
-    //                                          dest_path, private_material)) {
-    //             auto msg = fmt::format(
-    //                 "copy item '{}': failed to copy '{}' -> '{}': {}", item.id,
-    //                 source_path.string(), dest_path.string(), *err);
-    //             append_failure(std::move(msg));
-    //             continue;
-    //           }
-
-    //           state->output->logger().info()
-    //               << "Copied '" << source_path << "' -> '" << dest_path << "'"
-    //               << std::endl;
-    //         }
-
-    //         return ReturnIO::pure();
-    //       })
-    //       .catch_then([append_failure, item](monad::Error err) -> ReturnIO {
-    //         auto msg = fmt::format("copy item '{}': {}", item.id, err.what);
-    //         append_failure(std::move(msg));
-    //         return ReturnIO::pure();
-    //       });
-    // };
-
     std::vector<monad::IO<void>> action_ios;
 
-    ReturnIO pipeline = ReturnIO::pure();
     for (const auto &item : config.installs) {
-      action_ios.push_back(process_one_item(item, target_ob_type, target_ob_id));
-      // auto item_copy = item;
-      // pipeline = pipeline.then([process_item, item_copy]() mutable {
-      //   return process_item(item_copy);
-      // });
+      action_ios.push_back(process_one_item(item, resource_materializer,
+                                            target_ob_type, target_ob_id));
     }
 
-    // return pipeline
     auto self = shared_from_this();
     return monad::collect_result_io(action_ios)
         .then([self](auto results) -> ReturnIO {
@@ -426,6 +306,7 @@ CopyActionHandler::apply(const dto::DeviceInstallConfigDto &config,
 
 monad::IO<void> CopyActionHandler::process_one_item(
     const dto::InstallItem &item,
+  IResourceMaterializer::Ptr resource_materializer,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
   using ReturnIO = monad::IO<void>;
@@ -468,11 +349,9 @@ monad::IO<void> CopyActionHandler::process_one_item(
 
   const std::string ob_type = *item.ob_type;
   const std::int64_t ob_id = *item.ob_id;
-  resource_materializer_ = resource_materializer_factory_();
-
   auto self = shared_from_this();
 
-  return resource_materializer_->ensure_materialized(item)
+  return resource_materializer->ensure_materialized(item)
       .then([self, item, ob_type, ob_id]() -> ReturnIO {
         auto resource_root =
             resource_root_for(self->runtime_dir_, ob_type, ob_id);

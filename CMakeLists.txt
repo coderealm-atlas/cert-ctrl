@@ -651,6 +651,7 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE unofficial-sodium::sodium
     PRIVATE fmt::fmt
     PRIVATE certctrl_libatomic
+    PRIVATE di_config
     )
 
 if(APPLE)

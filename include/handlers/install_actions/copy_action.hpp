@@ -28,11 +28,6 @@ public:
       customio::ConsoleOutput &output,
       IResourceMaterializer::Factory resource_materializer_factory);
 
-  // mostly for test purposes.
-  // void customize(std::filesystem::path runtime_dir,
-  //                IResourceMaterializer::Factory
-  //                resource_materializer_factory);
-
   monad::IO<void> apply(const dto::DeviceInstallConfigDto &config,
                         const std::optional<std::string> &target_ob_type,
                         std::optional<std::int64_t> target_ob_id);
@@ -46,6 +41,7 @@ private:
   std::vector<std::string> failure_messages_;
   monad::IO<void>
   process_one_item(const dto::InstallItem &item,
+                   IResourceMaterializer::Ptr resource_materializer,
                    const std::optional<std::string> &target_ob_type,
                    std::optional<std::int64_t> target_ob_id);
 };

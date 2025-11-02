@@ -30,12 +30,6 @@ public:
       IResourceMaterializer::Factory resource_materializer_factory,
       IExecEnvironmentResolver::Factory exec_env_resolver_factory);
 
-  // void customize(std::filesystem::path runtime_dir,
-  //                IResourceMaterializer::Factory
-  //                resource_materializer_factory,
-  //                IExecEnvironmentResolver::Factory
-  //                exec_env_resolver_factory);
-
   monad::IO<void>
   apply(const dto::DeviceInstallConfigDto &config,
         std::optional<std::vector<std::string>> allowed_types = std::nullopt);
@@ -44,7 +38,6 @@ private:
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;
   std::filesystem::path runtime_dir_;
-  // bool is_customized_{false};
   IResourceMaterializer::Factory resource_materializer_factory_;
   IExecEnvironmentResolver::Factory exec_env_resolver_factory_;
   IResourceMaterializer::Ptr resource_materializer_;
