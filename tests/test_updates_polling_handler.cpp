@@ -38,12 +38,34 @@
 #include "http_client_monad.hpp"
 #include "include/api_test_helper.hpp"
 #include "include/install_config_manager_test_utils.hpp"
+#include "include/install_manager_harness.hpp"
+#include "include/test_config_utils.hpp"
 #include "include/login_helper.hpp"
 #include "include/test_install_config_helper.hpp"
+#include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
+#include "resource_fetcher.hpp"
+
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define CERTCTRL_TESTS_WITH_ASAN 1
+#  endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+#  define CERTCTRL_TESTS_WITH_ASAN 1
+#endif
+
+#if defined(CERTCTRL_TESTS_WITH_ASAN)
+extern "C" const char *__asan_default_options() {
+  return "detect_leaks=0";
+}
+extern "C" const char *__lsan_default_options() {
+  return "detect_leaks=0";
+}
+#endif
 
 namespace di = boost::di;
 namespace fs = std::filesystem;
@@ -153,16 +175,93 @@ private:
   bool active_{true};
 };
 
+class UpdatesHandlerHarness {
+public:
+  UpdatesHandlerHarness(std::filesystem::path config_dir,
+                        std::filesystem::path runtime_dir,
+                        std::string base_url, certctrl::CliCtx &cli_ctx,
+                        int http_threads = 1)
+      : config_dir_(std::move(config_dir)),
+        runtime_dir_(std::move(runtime_dir)) {
+    testinfra::ConfigFileOptions cfg_opts;
+    cfg_opts.base_url = base_url;
+    cfg_opts.runtime_dir = runtime_dir_;
+    cfg_opts.http_threads = http_threads;
+    cfg_opts.ioc_name = "updates-real";
+    cfg_opts.ioc_threads = 1;
+    testinfra::write_basic_config_files(config_dir_, cfg_opts);
+
+    config_sources_holder_ =
+        testinfra::make_config_sources({config_dir_}, {});
+    config_sources_ = config_sources_holder_.get();
+
+    auto injector = di::make_injector(
+        testinfra::build_base_injector(*config_sources_),
+        di::bind<certctrl::CliCtx>().to(cli_ctx));
+
+    auto inj_holder = std::make_shared<decltype(injector)>(std::move(injector));
+    injector_holder_ = inj_holder;
+    auto &inj = *inj_holder;
+
+    output_ = &inj.create<customio::ConsoleOutput &>();
+    io_context_manager_ = &inj.create<cjj365::IoContextManager &>();
+    http_client_manager_ = &inj.create<client_async::HttpClientManager &>();
+    config_provider_ = &inj.create<certctrl::ICertctrlConfigProvider &>();
+    config_provider_->get().base_url = std::move(base_url);
+    handler_ = inj.create<std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+  }
+
+  ~UpdatesHandlerHarness() {
+    if (io_context_manager_) {
+      io_context_manager_->stop();
+    }
+    if (http_client_manager_) {
+      http_client_manager_->stop();
+    }
+    cjj365::ConfigSources::instance_count.store(0);
+  }
+
+  client_async::HttpClientManager &http_manager() {
+    return *http_client_manager_;
+  }
+
+  cjj365::IoContextManager &io_context_manager() {
+    return *io_context_manager_;
+  }
+
+  certctrl::ICertctrlConfigProvider &config_provider() {
+    return *config_provider_;
+  }
+
+  std::shared_ptr<certctrl::UpdatesPollingHandler> handler() {
+    return handler_;
+  }
+  customio::ConsoleOutput &output() { return *output_; }
+
+  const std::filesystem::path &config_dir() const { return config_dir_; }
+  const std::filesystem::path &runtime_dir() const { return runtime_dir_; }
+
+private:
+  std::filesystem::path config_dir_;
+  std::filesystem::path runtime_dir_;
+  std::unique_ptr<cjj365::ConfigSources> config_sources_holder_;
+  cjj365::ConfigSources *config_sources_{nullptr};
+  std::shared_ptr<void> injector_holder_{};
+  customio::ConsoleOutput *output_{nullptr};
+  cjj365::IoContextManager *io_context_manager_{nullptr};
+  client_async::HttpClientManager *http_client_manager_{nullptr};
+  certctrl::ICertctrlConfigProvider *config_provider_{nullptr};
+  std::shared_ptr<certctrl::UpdatesPollingHandler> handler_;};
+
 class UpdatesRealServerFixture : public ::testing::Test {
 protected:
-  std::shared_ptr<void> injector_holder_;
+  std::unique_ptr<UpdatesHandlerHarness> harness_;
   client_async::HttpClientManager *http_mgr_{nullptr};
   cjj365::IoContextManager *io_ctx_mgr_{nullptr};
   certctrl::ICertctrlConfigProvider *cfg_provider_{nullptr};
   std::shared_ptr<certctrl::UpdatesPollingHandler> handler_;
   certctrl::CliCtx *cli_ctx_{nullptr};
 
-  std::unique_ptr<cjj365::ConfigSources> config_sources_ptr_;
   std::unique_ptr<certctrl::CliCtx> cli_ctx_ptr_;
 
   std::string base_url_;
@@ -186,32 +285,6 @@ protected:
     fs::create_directories(tmp_root_, ec);
     ASSERT_FALSE(ec) << "failed to create temp directory: " << ec.message();
 
-    auto write_json = [](const fs::path &p, const json::object &o) {
-      std::ofstream ofs(p);
-      ofs << json::serialize(o);
-    };
-
-    write_json(tmp_root_ / "application.json",
-               json::object{{"auto_apply_config", false},
-                            {"verbose", "info"},
-                            {"url_base", base_url_}});
-    write_json(tmp_root_ / "httpclient_config.json",
-               json::object{{"threads_num", 1},
-                            {"ssl_method", "tls_client"},
-                            {"insecure_skip_verify", true},
-                            {"verify_paths", json::array{}},
-                            {"certificates", json::array{}},
-                            {"certificate_files", json::array{}},
-                            {"proxy_pool", json::array{}}});
-    write_json(tmp_root_ / "ioc_config.json",
-               json::object{{"threads_num", 1}, {"name", "updates-real"}});
-
-    std::vector<fs::path> config_paths{tmp_root_};
-    std::vector<std::string> profiles;
-
-    config_sources_ptr_ =
-        std::make_unique<cjj365::ConfigSources>(config_paths, profiles);
-
     certctrl::CliParams params{};
     params.subcmd = "updates";
     params.config_dirs = {tmp_root_};
@@ -225,30 +298,12 @@ protected:
         std::move(params));
     cli_ctx_ = cli_ctx_ptr_.get();
 
-    auto injector = di::make_injector(
-        di::bind<cjj365::ConfigSources>().to(*config_sources_ptr_),
-        di::bind<cjj365::IHttpclientConfigProvider>()
-            .to<cjj365::HttpclientConfigProviderFile>(),
-        di::bind<cjj365::IIocConfigProvider>()
-            .to<cjj365::IocConfigProviderFile>(),
-        di::bind<customio::IOutput>().to(testinfra::shared_output()),
-        di::bind<certctrl::CliCtx>().to(*cli_ctx_ptr_),
-        di::bind<certctrl::ICertctrlConfigProvider>()
-            .to<certctrl::CertctrlConfigProviderFile>()
-            .in(di::singleton),
-        di::bind<cjj365::IIoContextManager>().to<cjj365::IoContextManager>().in(
-            di::singleton));
-
-    using InjT = decltype(injector);
-    auto real_inj = std::make_shared<InjT>(std::move(injector));
-    injector_holder_ = real_inj;
-    auto &inj = *real_inj;
-
-    http_mgr_ = &inj.create<client_async::HttpClientManager &>();
-    io_ctx_mgr_ = &inj.create<cjj365::IoContextManager &>();
-    cfg_provider_ = &inj.create<certctrl::ICertctrlConfigProvider &>();
-    cfg_provider_->get().base_url = base_url_;
-    handler_ = inj.create<std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+    harness_ = std::make_unique<UpdatesHandlerHarness>(
+        tmp_root_, tmp_root_, base_url_, *cli_ctx_);
+    http_mgr_ = &harness_->http_manager();
+    io_ctx_mgr_ = &harness_->io_context_manager();
+    cfg_provider_ = &harness_->config_provider();
+    handler_ = harness_->handler();
 
     misc::ThreadNotifier login_notifier(60000);
     std::optional<testutil::loginSuccessResult> login_r;
@@ -293,6 +348,9 @@ protected:
                   << del_result->error().what << std::endl;
       }
     }
+
+    handler_.reset();
+    harness_.reset();
 
     if (!tmp_root_.empty()) {
       std::error_code ec;
@@ -845,64 +903,20 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     ASSERT_FALSE(install_r->is_err())
         << "create_install_config failed: " << install_r->error().what;
 
-    auto fetch_override =
-        [http_mgr = http_mgr_, base_url = base_url_, user_id = user_id_,
-         cookie = session_cookie_, device_id = device_session.device_id](
-            std::optional<std::int64_t>, const std::optional<std::string> &)
-        -> monad::IO<dto::DeviceInstallConfigDto> {
-      using monad::GetStringTag;
-      namespace http = boost::beast::http;
+    std::string install_manager_base_url = base_url_;
+    certctrl::install_actions::DeviceInstallConfigFetcher install_fetcher(
+        harness_->io_context_manager(), harness_->config_provider(),
+        harness_->output(), harness_->http_manager());
+    certctrl::install_actions::ResourceFetcher install_resource_fetcher(
+        harness_->io_context_manager(), harness_->config_provider(),
+        harness_->output(), harness_->http_manager());
 
-      std::string url =
-          fmt::format("{}/apiv1/users/{}/devices/{}/install-config", base_url,
-                      user_id, device_id);
-
-      return monad::http_io<GetStringTag>(url)
-          .map([cookie](auto ex) {
-            ex->request.set(http::field::cookie, cookie);
-            return ex;
-          })
-          .then(monad::http_request_io<GetStringTag>(*http_mgr))
-          .then([](auto ex) -> monad::IO<dto::DeviceInstallConfigDto> {
-            if (!ex->response.has_value()) {
-              return monad::IO<dto::DeviceInstallConfigDto>::fail(
-                  monad::make_error(my_errors::NETWORK::READ_ERROR,
-                                    "No response for install-config"));
-            }
-
-            int status = ex->response->result_int();
-            if (status != 200) {
-              auto err = monad::make_error(
-                  my_errors::NETWORK::READ_ERROR,
-                  fmt::format("install-config fetch HTTP status {}", status));
-              err.response_status = status;
-              err.params["response_body_preview"] = ex->response->body();
-              return monad::IO<dto::DeviceInstallConfigDto>::fail(
-                  std::move(err));
-            }
-
-            auto result = ex->template parseJsonDataResponse<
-                dto::DeviceInstallConfigDto>();
-            if (result.is_err()) {
-              return monad::IO<dto::DeviceInstallConfigDto>::fail(
-                  result.error());
-            }
-            return monad::IO<dto::DeviceInstallConfigDto>::pure(result.value());
-          });
-    };
-
-  // customio::ConsoleOutput debug_output(testinfra::shared_output());
-  // auto manager_factories =
-  //   certctrl::test_utils::make_default_install_manager_factories(
-  //     *cfg_provider_, debug_output);
-  // certctrl::InstallConfigManager debug_manager(
-  //   *cfg_provider_, debug_output, http_mgr_,
-  //   manager_factories.resource_materializer_factory,
-  //   manager_factories.import_ca_handler_factory,
-  //   manager_factories.exec_action_handler_factory,
-  //   manager_factories.copy_action_handler_factory,
-  //   manager_factories.exec_env_resolver_factory);
-  // debug_manager.customize(tmp_root_, fetch_override);
+    auto install_config_dir = testinfra::make_temp_dir("updates-install-config");
+    InstallManagerDiHarness install_harness(
+        install_config_dir, tmp_root_, install_manager_base_url,
+        install_fetcher, install_resource_fetcher);
+    install_harness.disable_runtime_cleanup();
+    auto &install_manager = install_harness.install_manager();
 
     const int max_config_attempts = 6;
     std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr;
@@ -913,7 +927,7 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
       std::optional<monad::Result<
           std::shared_ptr<const dto::DeviceInstallConfigDto>, monad::Error>>
           config_result;
-      debug_manager.ensure_config_version(std::nullopt, std::nullopt)
+      install_manager.ensure_config_version(std::nullopt, std::nullopt)
           .run([&](auto r) {
             config_result = std::move(r);
             config_notifier.notify();
@@ -944,7 +958,7 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
 
     misc::ThreadNotifier apply_notifier(120000);
     std::optional<monad::MyVoidResult> apply_result;
-    debug_manager.apply_copy_actions(*config_ptr, std::nullopt, std::nullopt)
+    install_manager.apply_copy_actions(*config_ptr, std::nullopt, std::nullopt)
         .run([&](auto r) {
           apply_result = std::move(r);
           apply_notifier.notify();

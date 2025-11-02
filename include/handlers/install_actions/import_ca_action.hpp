@@ -40,7 +40,11 @@ private:
   customio::ConsoleOutput &output_;
   std::filesystem::path runtime_dir_;
   install_actions::IResourceMaterializer::Factory resource_materializer_factory_;
-  // bool is_customized_{false};
+  monad::IO<void>
+  process_one_item(const dto::InstallItem &item,
+                   const std::optional<std::string> &target_ob_type,
+                   std::optional<std::int64_t> target_ob_id);
+  install_actions::IResourceMaterializer::Ptr resource_materializer_;
 };
 
 } // namespace certctrl::install_actions

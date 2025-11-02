@@ -30,6 +30,7 @@ target_link_libraries(test_program_options PRIVATE
   fmt::fmt
   protobuf::libprotobuf
   certctrl_libatomic
+  di_config
 )
 if(APPLE)
   target_link_libraries(test_program_options PRIVATE c++abi)
@@ -95,6 +96,7 @@ target_link_libraries(test_login_handler_workflow PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   certctrl_libatomic
+  di_config
 )
 if(APPLE)
   target_link_libraries(test_login_handler_workflow PRIVATE c++abi)
@@ -138,6 +140,7 @@ target_link_libraries(test_login_real_server PRIVATE
   Boost::log_setup
   unofficial-sodium::sodium
   certctrl_libatomic
+  di_config
 )
 if(APPLE)
   target_link_libraries(test_login_real_server PRIVATE c++abi)
@@ -184,6 +187,7 @@ target_link_libraries(test_device_registration PRIVATE
   OpenSSL::Crypto
   unofficial-sodium::sodium
   certctrl_libatomic
+  di_config
 )
 if(APPLE)
   target_link_libraries(test_device_registration PRIVATE c++abi)
@@ -238,6 +242,7 @@ target_link_libraries(test_install_config_manager PRIVATE
   OpenSSL::Crypto
   unofficial-sodium::sodium
   certctrl_libatomic
+  di_config
 )
 if(APPLE)
   target_link_libraries(test_install_config_manager PRIVATE c++abi)
@@ -271,6 +276,7 @@ target_link_libraries(test_exec_action PRIVATE
   Boost::chrono
   Boost::date_time
   certctrl_libatomic
+  di_config
 )
 
 certctrl_use_static_atomic(test_exec_action)
@@ -318,6 +324,7 @@ target_link_libraries(test_updates_polling_handler PRIVATE
   OpenSSL::Crypto
   unofficial-sodium::sodium
   certctrl_libatomic
+  di_config
 )
 if(APPLE)
   target_link_libraries(test_updates_polling_handler PRIVATE c++abi)
@@ -327,4 +334,7 @@ if(APPLE)
 endif()
 certctrl_use_static_atomic(test_updates_polling_handler)
 
-gtest_discover_tests(test_updates_polling_handler DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
+gtest_discover_tests(
+  test_updates_polling_handler
+  DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG}
+  DISCOVERY_PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")

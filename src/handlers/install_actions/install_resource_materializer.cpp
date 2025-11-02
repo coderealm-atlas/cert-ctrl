@@ -480,14 +480,17 @@ std::filesystem::perms default_directory_perms() {
 } // namespace
 
 InstallResourceMaterializer::InstallResourceMaterializer(
-    cjj365::IoContextManager &io_context_manager,
-    certctrl::ICertctrlConfigProvider &config_provider,
-    customio::ConsoleOutput &output, IResourceFetcher &resource_fetcher,
-    client_async::HttpClientManager &http_client)
+    cjj365::IoContextManager &io_context_manager,       //
+    certctrl::ICertctrlConfigProvider &config_provider, //
+    customio::ConsoleOutput &output,                    //
+    IResourceFetcher &resource_fetcher,                 //
+    client_async::HttpClientManager &http_client,       //
+    install_actions::IAccessTokenLoader &access_token_loader)
     : config_provider_(config_provider), output_(output),
       resource_fetcher_(resource_fetcher), http_client_(http_client),
       io_context_(io_context_manager.ioc()),
-      runtime_dir_(config_provider.get().runtime_dir) {}
+      runtime_dir_(config_provider.get().runtime_dir),
+      access_token_loader_(access_token_loader) {}
 
 InstallResourceMaterializer::~InstallResourceMaterializer() {}
 
@@ -510,18 +513,18 @@ InstallResourceMaterializer::~InstallResourceMaterializer() {}
 //   resource_fetch_override_ = std::move(fn);
 // }
 
-void InstallResourceMaterializer::update_access_token_loader(
-    AccessTokenLoader loader) {
-  access_token_loader_ = std::move(loader);
-}
+// void InstallResourceMaterializer::update_access_token_loader(
+//     AccessTokenLoader loader) {
+//   access_token_loader_ = std::move(loader);
+// }
 
-void InstallResourceMaterializer::update_bundle_hooks(
-    BundlePasswordLookup lookup, BundlePasswordRemember remember,
-    BundlePasswordForget forget) {
-  bundle_lookup_ = std::move(lookup);
-  bundle_remember_ = std::move(remember);
-  bundle_forget_ = std::move(forget);
-}
+// void InstallResourceMaterializer::update_bundle_hooks(
+//     BundlePasswordLookup lookup, BundlePasswordRemember remember,
+//     BundlePasswordForget forget) {
+//   bundle_lookup_ = std::move(lookup);
+//   bundle_remember_ = std::move(remember);
+//   bundle_forget_ = std::move(forget);
+// }
 
 monad::IO<void>
 InstallResourceMaterializer::ensure_materialized(const dto::InstallItem &item) {
@@ -548,13 +551,13 @@ InstallResourceMaterializer::resource_current_dir(const std::string &ob_type,
   return resource_root;
 }
 
-std::optional<std::string>
-InstallResourceMaterializer::load_access_token() const {
-  if (!access_token_loader_) {
-    return std::nullopt;
-  }
-  return access_token_loader_();
-}
+// std::optional<std::string>
+// InstallResourceMaterializer::load_access_token() const {
+//   if (!access_token_loader_) {
+//     return std::nullopt;
+//   }
+//   return access_token_loader_();
+// }
 
 std::optional<std::string>
 InstallResourceMaterializer::lookup_bundle_password(const std::string &ob_type,
@@ -896,7 +899,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
   //     });
   //   }
   // }
-  auto pipeline = resource_fetcher_.fetch(load_access_token(), state);
+  auto pipeline = resource_fetcher_.fetch(access_token_loader_.load_token(), state);
 
   pipeline = pipeline.then([self, state, get_string_field, extract_pem,
                             decode_base64_string]() {

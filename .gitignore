@@ -41,3 +41,4 @@ CMakeUserPresets.json
 .vcpkg-cache/
 .venv/
 .ccache/
+tests/test-env

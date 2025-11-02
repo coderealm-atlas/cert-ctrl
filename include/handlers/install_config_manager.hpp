@@ -31,23 +31,23 @@ namespace certctrl {
 // member functions, as they capture `this` directly.
 class InstallConfigManager {
 public:
-//   struct Options {
-//     using FetchOverrideFn =
-//         std::function<monad::IO<dto::DeviceInstallConfigDto>(
-//             std::optional<std::int64_t> expected_version,
-//             const std::optional<std::string> &expected_hash)>;
+  //   struct Options {
+  //     using FetchOverrideFn =
+  //         std::function<monad::IO<dto::DeviceInstallConfigDto>(
+  //             std::optional<std::int64_t> expected_version,
+  //             const std::optional<std::string> &expected_hash)>;
 
-//     std::filesystem::path runtime_dir_override;
-//     FetchOverrideFn fetch_override;
-//     install_actions::InstallResourceMaterializer::RuntimeConfig
-//         resource_runtime_config;
-//   };
+  //     std::filesystem::path runtime_dir_override;
+  //     FetchOverrideFn fetch_override;
+  //     install_actions::InstallResourceMaterializer::RuntimeConfig
+  //         resource_runtime_config;
+  //   };
 
   InstallConfigManager(
-      cjj365::IoContextManager &io_context_manager,
-      certctrl::ICertctrlConfigProvider &config_provider,
-      customio::ConsoleOutput &output,
-      client_async::HttpClientManager &http_client,
+      cjj365::IoContextManager &io_context_manager, //
+      certctrl::ICertctrlConfigProvider &config_provider, //
+      customio::ConsoleOutput &output, //
+      client_async::HttpClientManager &http_client, //
       install_actions::IResourceMaterializer::Factory
           resource_materializer_factory,
       install_actions::ImportCaActionHandler::Factory
@@ -57,7 +57,8 @@ public:
           copy_handler_factory,
       install_actions::IExecEnvironmentResolver::Factory
           exec_env_resolver_factory,
-      install_actions::IDeviceInstallConfigFetcher &config_fetcher);
+      install_actions::IDeviceInstallConfigFetcher &config_fetcher,
+      install_actions::IAccessTokenLoader &access_token_loader);
 
   ~InstallConfigManager();
 
@@ -98,7 +99,7 @@ private:
 
   monad::IO<void> persist_config(const dto::DeviceInstallConfigDto &config);
 
-  std::optional<std::string> load_access_token() const;
+  //   std::optional<std::string> load_access_token() const;
 
   std::filesystem::path state_dir() const;
   std::filesystem::path config_file_path() const;
@@ -127,15 +128,15 @@ private:
   customio::ConsoleOutput &output_;
   client_async::HttpClientManager &http_client_;
   install_actions::IDeviceInstallConfigFetcher &config_fetcher_;
-//   Options options_;
+  //   Options options_;
   certctrl::install_actions::ImportCaActionHandler::Factory
       import_ca_action_handler_factory_;
 
   std::shared_ptr<dto::DeviceInstallConfigDto> cached_config_;
   std::optional<std::int64_t> local_version_;
-  mutable std::optional<std::string> cached_access_token_;
-  mutable std::optional<std::filesystem::file_time_type>
-      cached_access_token_mtime_;
+  //   mutable std::optional<std::string> cached_access_token_;
+  //   mutable std::optional<std::filesystem::file_time_type>
+  //       cached_access_token_mtime_;
   logsrc::severity_logger<trivial::severity_level> lg;
 
   std::unordered_map<std::string, std::unordered_map<std::int64_t, std::string>>
@@ -146,6 +147,7 @@ private:
   install_actions::IExecEnvironmentResolver::Factory exec_env_resolver_factory_;
   certctrl::install_actions::CopyActionHandler::Factory copy_handler_factory_;
   boost::asio::io_context &io_context_;
+  install_actions::IAccessTokenLoader &access_token_loader_;
 };
 
 } // namespace certctrl
