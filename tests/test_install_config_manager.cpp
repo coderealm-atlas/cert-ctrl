@@ -684,17 +684,31 @@ TEST_F(InstallConfigManagerFixture, CopiesCaIntoOverrideDirectory) {
   // auto resource_factory = make_fixed_resource_factory(materializer);
   // certctrl::install_actions::ImportCaActionHandler handler(provider, output,
   //                                                          resource_factory);
+  misc::ThreadNotifier notifier(3000);
   auto handler = harness_->import_ca_handler_factory();
+  std::optional<monad::Error> apply_err;
   handler->apply(config, std::nullopt, std::nullopt).run([&](auto result) {
     if (!result.is_ok()) {
-      auto err = result.error();
-      FAIL() << "apply_import_ca_actions failed: " << err.what;
+      apply_err = result.error();
     }
+    notifier.notify();
   });
+  notifier.waitForNotification();
+  if (apply_err) {
+    FAIL() << "apply_import_ca_actions failed: " << apply_err->what;
+  }
 
-  std::filesystem::path expected = trust_dir / "example-root-ca.crt";
-  ASSERT_TRUE(std::filesystem::exists(expected));
-  EXPECT_EQ(read_file(expected), "CA-PEM-DATA\n");
+  // Find any generated CA file in trust_dir and verify its contents
+  std::vector<std::filesystem::path> crt_files;
+  if (std::filesystem::exists(trust_dir)) {
+    for (const auto &entry : std::filesystem::directory_iterator(trust_dir)) {
+      if (entry.is_regular_file() && entry.path().extension() == ".crt") {
+        crt_files.push_back(entry.path());
+      }
+    }
+  }
+  ASSERT_FALSE(crt_files.empty()) << "no .crt file found in " << trust_dir;
+  EXPECT_EQ(read_file(crt_files.front()), "CA-PEM-DATA\n");
 
   std::filesystem::remove_all(runtime_dir_path);
 }

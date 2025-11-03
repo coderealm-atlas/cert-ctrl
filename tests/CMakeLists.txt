@@ -10,6 +10,17 @@ endif()
 
 if(MSVC)
   add_compile_options(/utf-8)
+
+  add_executable(msvc_lambda_capture_probe
+    msvc_lambda_capture_probe.cpp
+  )
+  target_compile_features(msvc_lambda_capture_probe PRIVATE cxx_std_17)
+
+  add_executable(msvc_lambda_capture_error EXCLUDE_FROM_ALL
+    msvc_lambda_capture_probe.cpp
+  )
+  target_compile_features(msvc_lambda_capture_error PRIVATE cxx_std_17)
+  target_compile_definitions(msvc_lambda_capture_error PRIVATE PROVOKE_CAPTURE_ERROR)
 endif()
 
 find_package(GTest CONFIG REQUIRED)

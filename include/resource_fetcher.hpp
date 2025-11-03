@@ -286,7 +286,7 @@ private:
 
     auto fetch_once =
         http_io<GetStringTag>(url)
-            .map([this, attempt_counter, token, url, context_label](auto ex) {
+            .map([this, attempt_counter, token, url, context_label, kMaxAttempts](auto ex) {
               const int current_attempt = ++(*attempt_counter);
               BOOST_LOG_SEV(lg, trivial::trace)
                   << "fetch_http_body attempt " << current_attempt << '/'
@@ -339,7 +339,7 @@ private:
               return monad::IO<std::string>::fail(std::move(err));
             });
 
-    auto should_retry = [attempt_counter](const monad::Error &err) {
+    auto should_retry = [attempt_counter, kMaxAttempts](const monad::Error &err) {
       return err.response_status == 503 && *attempt_counter < kMaxAttempts;
     };
 
