@@ -103,12 +103,6 @@ public:
 class IResourceFetcher {
 public:
   using AccessTokenLoader = std::function<std::optional<std::string>()>;
-  using BundlePasswordLookup = std::function<std::optional<std::string>(
-      const std::string &, std::int64_t)>;
-  using BundlePasswordRemember = std::function<void(
-      const std::string &, std::int64_t, const std::string &)>;
-  using BundlePasswordForget =
-      std::function<void(const std::string &, std::int64_t)>;
   virtual ~IResourceFetcher() = default;
   virtual monad::IO<void> fetch(
       std::optional<std::string> /*access_token*/,
@@ -129,6 +123,12 @@ public:
   fetch(std::optional<std::string> token_opt,
         std::shared_ptr<certctrl::install_actions::MaterializationData> state)
       override {
+    output_.logger().debug() << "ResourceFetcher::fetch ob_type="
+                             << state->ob_type << " ob_id=" << state->ob_id
+                             << " has_token="
+                             << (token_opt && !token_opt->empty() ? "true"
+                                                               : "false")
+                             << std::endl;
     if (!token_opt || token_opt->empty()) {
       auto err = monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                                    "Device access token unavailable");
@@ -141,6 +141,8 @@ public:
     if (state->is_cert) {
       return fetch_cert(*token_opt, state);
     } else if (state->is_ca) {
+      output_.logger().debug() << "Dispatching CA fetch ob_id="
+                               << state->ob_id << std::endl;
       return fetch_ca(*token_opt, state);
     }
     BOOST_LOG_SEV(lg, trivial::error)
@@ -174,8 +176,16 @@ private:
 
     monad::IO<void> pipeline = monad::IO<void>::pure();
     pipeline = pipeline.then([this, state, url, token]() {
+      this->output_.logger().debug()
+          << "Fetching CA bundle ob_id=" << state->ob_id
+          << " url=" << url << std::endl;
       return this->fetch_http_body(url, token, "ca bundle")
-          .map([state](std::string body) { state->ca_body = std::move(body); })
+          .map([state, this](std::string body) {
+            this->output_.logger().debug()
+                << "Fetched CA bundle bytes=" << body.size()
+                << " ob_id=" << state->ob_id << std::endl;
+            state->ca_body = std::move(body);
+          })
           .then([state, this]() {
             auto bundle_data = this->parse_bundle_data(state->ca_body);
             if (!bundle_data) {
@@ -186,6 +196,8 @@ private:
             }
             state->ca_obj = std::move(*bundle_data);
             state->ca_parsed = true;
+            this->output_.logger().debug()
+                << "Parsed CA bundle ob_id=" << state->ob_id << std::endl;
             return monad::IO<void>::pure();
           });
     });

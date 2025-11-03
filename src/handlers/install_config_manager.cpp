@@ -502,7 +502,8 @@ InstallConfigManager::InstallConfigManager(
     install_actions::IExecEnvironmentResolver::Factory
         exec_env_resolver_factory,
     install_actions::IDeviceInstallConfigFetcher &config_fetcher,
-    install_actions::IAccessTokenLoader &access_token_loader)
+    install_actions::IAccessTokenLoader &access_token_loader,
+    install_actions::IMaterializePasswordManager &password_manager)
     : runtime_dir_(config_provider.get().runtime_dir),
       config_provider_(config_provider), output_(output),
       http_client_(http_client),
@@ -513,7 +514,8 @@ InstallConfigManager::InstallConfigManager(
       exec_env_resolver_factory_(std::move(exec_env_resolver_factory)),
       copy_handler_factory_(std::move(copy_handler_factory)),
       config_fetcher_(config_fetcher), io_context_(io_context_manager.ioc()),
-      access_token_loader_(access_token_loader) {
+      access_token_loader_(access_token_loader),
+      password_manager_(password_manager) {
   if (!runtime_dir_.empty()) {
     try {
       std::filesystem::create_directories(state_dir());
@@ -539,7 +541,7 @@ InstallConfigManager::~InstallConfigManager() {}
 void InstallConfigManager::clear_cache() {
   cached_config_.reset();
   local_version_.reset();
-  bundle_passwords_.clear();
+  password_manager_.clear();
 }
 
 std::shared_ptr<dto::DeviceInstallConfigDto>
@@ -572,14 +574,14 @@ InstallConfigManager::cached_config_snapshot() {
 //       [this]() { return load_access_token(); },
 //       resource_fetch_override_,
 //       [this](const std::string &type, std::int64_t id) {
-//         return lookup_bundle_password(type, id);
+//         return password_manager_.lookup(type, id);
 //       },
 //       [this](const std::string &type, std::int64_t id,
 //              const std::string &password) {
-//         remember_bundle_password(type, id, password);
+//         password_manager_.remember(type, id, password);
 //       },
 //       [this](const std::string &type, std::int64_t id) {
-//         forget_bundle_password(type, id);
+//         password_manager_.forget(type, id);
 //       }};
 
 //   concrete->customize(std::move(runtime_cfg));
@@ -974,7 +976,8 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
 
   // First perform copy actions
   return copy_handler->apply(config, target_ob_type, target_ob_id)
-      .then([this, copy_handler, &config, &target_ob_type, target_ob_id]() {
+      .then([this, copy_handler, &config, target_ob_type,
+             target_ob_id]() {
         (void)copy_handler;
         BOOST_LOG_SEV(lg, trivial::trace)
             << "apply_copy_actions exec stage start target_ob_type="
@@ -1030,7 +1033,8 @@ monad::IO<void> InstallConfigManager::apply_import_ca_actions(
       << (target_ob_id ? std::to_string(*target_ob_id) : "<none>");
 
   return import_handler->apply(config, target_ob_type, target_ob_id)
-      .then([this, import_handler, &config, &target_ob_type, target_ob_id]() {
+      .then([this, import_handler, &config, target_ob_type,
+             target_ob_id]() {
         (void)import_handler;
         std::optional<std::vector<std::string>> allowed_types = std::nullopt;
         if (target_ob_type) {
@@ -1107,7 +1111,7 @@ InstallConfigManager::resolve_exec_env_for_item(const dto::InstallItem &item) {
     return std::nullopt;
   }
 
-  auto password = lookup_bundle_password(*item.ob_type, *item.ob_id);
+  auto password = password_manager_.lookup(*item.ob_type, *item.ob_id);
   if (!password || password->empty()) {
     return std::nullopt;
   }
@@ -1115,38 +1119,6 @@ InstallConfigManager::resolve_exec_env_for_item(const dto::InstallItem &item) {
   std::unordered_map<std::string, std::string> env;
   env.emplace(kPfxPasswordEnvVar, *password);
   return env;
-}
-
-std::optional<std::string>
-InstallConfigManager::lookup_bundle_password(const std::string &ob_type,
-                                             std::int64_t ob_id) const {
-  auto type_it = bundle_passwords_.find(ob_type);
-  if (type_it == bundle_passwords_.end()) {
-    return std::nullopt;
-  }
-  auto id_it = type_it->second.find(ob_id);
-  if (id_it == type_it->second.end()) {
-    return std::nullopt;
-  }
-  return id_it->second;
-}
-
-void InstallConfigManager::remember_bundle_password(
-    const std::string &ob_type, std::int64_t ob_id,
-    const std::string &password) {
-  bundle_passwords_[ob_type][ob_id] = password;
-}
-
-void InstallConfigManager::forget_bundle_password(const std::string &ob_type,
-                                                  std::int64_t ob_id) {
-  auto type_it = bundle_passwords_.find(ob_type);
-  if (type_it == bundle_passwords_.end()) {
-    return;
-  }
-  type_it->second.erase(ob_id);
-  if (type_it->second.empty()) {
-    bundle_passwords_.erase(type_it);
-  }
 }
 
 } // namespace certctrl

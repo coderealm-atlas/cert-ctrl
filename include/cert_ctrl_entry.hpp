@@ -26,11 +26,11 @@
 #include "handlers/install_actions/function_adapters.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_actions/install_resource_materializer.hpp"
+#include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
 #include "handlers/install_config_apply_handler.hpp"
 #include "handlers/install_config_handler.hpp"
 #include "handlers/install_config_manager.hpp"
-#include "handlers/install_workflow/install_workflow_runner.hpp"
 #include "handlers/login_handler.hpp"
 #include "handlers/update_handler.hpp"
 #include "handlers/updates_polling_handler.hpp"
@@ -184,6 +184,9 @@ public:
             .to<certctrl::install_actions::DeviceInstallConfigFetcher>(),
         di::bind<certctrl::install_actions::IResourceFetcher>().to<
             certctrl::install_actions::ResourceFetcher>(),
+    di::bind<certctrl::install_actions::IMaterializePasswordManager>()
+      .to<certctrl::install_actions::MaterializePasswordManager>()
+      .in(di::singleton),
         di::bind<certctrl::install_actions::InstallResourceMaterializer>().in(
             di::unique),
         di::bind<certctrl::install_actions::IResourceMaterializer::Factory>()
@@ -232,32 +235,6 @@ public:
                         certctrl::install_actions::ImportCaActionHandler>>();
                   }};
             }),
-
-        // di_utils::safe_factory_binding_for<
-        //     certctrl::install_actions::IResourceMaterializer,
-        //     certctrl::install_actions::InstallResourceMaterializer,
-        //     certctrl::ICertctrlConfigProvider&,
-        //                       customio::ConsoleOutput&,
-        //                       client_async::HttpClientManager*>(),
-        // di::bind<certctrl::InstallConfigManager>()
-        //     .to([](cjj365::ConfigSources &config_sources,
-        //            certctrl::ICertctrlConfigProvider &config_provider,
-        //            customio::ConsoleOutput &output,
-        //            client_async::HttpClientManager &http_client) {
-        //       auto runtime_dir = config_sources.paths_.empty()
-        //                              ? std::filesystem::path{}
-        //                              : config_sources.paths_.back();
-        //       return certctrl::InstallConfigManager(
-        //           runtime_dir, config_provider, output, &http_client);
-        //     })
-        //     .in(di::singleton),
-        // di::bind<certctrl::InstallWorkflowRunner>()
-        //     .to([](std::shared_ptr<certctrl::InstallConfigManager> manager,
-        //            customio::ConsoleOutput &output) {
-        //       return certctrl::InstallWorkflowRunner(std::move(manager),
-        //                                              output);
-        //     })
-        //     .in(di::singleton),
         di::bind<customio::IOutput>().to(output_hub),
         di::bind<certctrl::CliCtx>().to(cli_ctx_));
     // Register all handlers for aggregate injection; DI will convert to

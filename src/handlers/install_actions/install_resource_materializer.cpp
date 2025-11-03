@@ -13,15 +13,16 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
-#include <random>
 #include <sstream>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include <fmt/format.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 #include "base64.h"
 #include "http_client_monad.hpp"
@@ -34,9 +35,6 @@
 #include "util/user_key_crypto.hpp"
 
 namespace certctrl::install_actions {
-
-using monad::Error;
-using monad::Result;
 
 namespace {
 
@@ -485,12 +483,14 @@ InstallResourceMaterializer::InstallResourceMaterializer(
     customio::ConsoleOutput &output,                    //
     IResourceFetcher &resource_fetcher,                 //
     client_async::HttpClientManager &http_client,       //
-    install_actions::IAccessTokenLoader &access_token_loader)
+    install_actions::IAccessTokenLoader &access_token_loader,
+    IMaterializePasswordManager &password_manager)
     : config_provider_(config_provider), output_(output),
       resource_fetcher_(resource_fetcher), http_client_(http_client),
       io_context_(io_context_manager.ioc()),
       runtime_dir_(config_provider.get().runtime_dir),
-      access_token_loader_(access_token_loader) {}
+      access_token_loader_(access_token_loader),
+      password_manager_(password_manager) {}
 
 InstallResourceMaterializer::~InstallResourceMaterializer() {}
 
@@ -551,30 +551,6 @@ InstallResourceMaterializer::resource_current_dir(const std::string &ob_type,
   return resource_root;
 }
 
-std::optional<std::string>
-InstallResourceMaterializer::lookup_bundle_password(const std::string &ob_type,
-                                                    std::int64_t ob_id) const {
-  if (!bundle_lookup_) {
-    return std::nullopt;
-  }
-  return bundle_lookup_(ob_type, ob_id);
-}
-
-void InstallResourceMaterializer::remember_bundle_password(
-    const std::string &ob_type, std::int64_t ob_id,
-    const std::string &password) {
-  if (bundle_remember_) {
-    bundle_remember_(ob_type, ob_id, password);
-  }
-}
-
-void InstallResourceMaterializer::forget_bundle_password(
-    const std::string &ob_type, std::int64_t ob_id) {
-  if (bundle_forget_) {
-    bundle_forget_(ob_type, ob_id);
-  }
-}
-
 monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
     const dto::InstallItem &item) {
   using namespace std::chrono_literals;
@@ -617,7 +593,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
 
   if (all_present) {
     if (state->is_cert && bundle_requested &&
-        !lookup_bundle_password(state->ob_type, state->ob_id)) {
+        !password_manager_.lookup(state->ob_type, state->ob_id)) {
       all_present = false;
     }
   }
@@ -891,10 +867,13 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
   //     });
   //   }
   // }
-  auto pipeline = resource_fetcher_.fetch(access_token_loader_.load_token(), state);
+  auto pipeline = fetch_with_refresh(state);
 
   pipeline = pipeline.then([self, state, get_string_field, extract_pem,
                             decode_base64_string]() {
+    self->output_.logger().debug()
+        << "Materializing resources for " << state->ob_type << '/'
+        << state->ob_id << std::endl;
     try {
       std::filesystem::create_directories(state->current_dir);
 
@@ -1045,8 +1024,8 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
               }
 
               std::string pfx_password;
-              if (auto existing = self->lookup_bundle_password(state->ob_type,
-                                                               state->ob_id)) {
+              if (auto existing = self->password_manager_.lookup(
+                      state->ob_type, state->ob_id)) {
                 pfx_password = *existing;
               } else {
                 pfx_password = cjj365::cryptutil::generateApiSecret(40);
@@ -1056,8 +1035,8 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
                   pkey, pfx_chain, alias, pfx_password);
               binary_outputs["bundle.pfx"] =
                   std::vector<unsigned char>(pkcs12.begin(), pkcs12.end());
-              self->remember_bundle_password(state->ob_type, state->ob_id,
-                                             pfx_password);
+              self->password_manager_.remember(state->ob_type, state->ob_id,
+                                               pfx_password);
             } catch (const std::exception &ex) {
               return monad::IO<void>::fail(monad::make_error(
                   my_errors::GENERAL::UNEXPECTED_RESULT,
@@ -1084,12 +1063,12 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
             if (auto *pfx_val = detail_view->if_contains("bundle_pfx_b64")) {
               if (auto bytes = decode_base64_to_bytes(*pfx_val)) {
                 binary_outputs["bundle.pfx"] = std::move(*bytes);
-                self->forget_bundle_password(state->ob_type, state->ob_id);
+                self->password_manager_.forget(state->ob_type, state->ob_id);
               }
             } else if (auto *pfx_val = detail_view->if_contains("pkcs12_b64")) {
               if (auto bytes = decode_base64_to_bytes(*pfx_val)) {
                 binary_outputs["bundle.pfx"] = std::move(*bytes);
-                self->forget_bundle_password(state->ob_type, state->ob_id);
+                self->password_manager_.forget(state->ob_type, state->ob_id);
               }
             }
           }
@@ -1225,6 +1204,243 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
   });
 
   return pipeline;
+}
+
+monad::IO<void> InstallResourceMaterializer::fetch_with_refresh(
+    std::shared_ptr<MaterializationData> state, bool attempted_refresh) {
+  auto self = shared_from_this();
+
+  self->output_.logger().debug()
+      << "Starting fetch for " << state->ob_type << '/' << state->ob_id
+      << " attempted_refresh=" << (attempted_refresh ? "true" : "false")
+      << std::endl;
+
+  auto access_token = access_token_loader_.load_token();
+  const bool token_missing = !access_token || access_token->empty();
+
+  return resource_fetcher_.fetch(access_token, state)
+      .catch_then([self, state, attempted_refresh, token_missing](
+                      monad::Error err) {
+        self->output_.logger().warning()
+            << "Fetch failed for " << state->ob_type << '/' << state->ob_id
+            << " status=" << err.response_status
+            << " code=" << err.code << " what=" << err.what << std::endl;
+        const bool is_auth_error =
+            err.response_status == 401 || err.response_status == 403;
+        const bool token_unavailable_error =
+            err.code == my_errors::GENERAL::INVALID_ARGUMENT &&
+            err.what.find("Device access token unavailable") !=
+                std::string::npos;
+
+        const bool should_retry_with_refresh =
+            !attempted_refresh && (is_auth_error ||
+                                   (token_missing && token_unavailable_error));
+
+        if (!should_retry_with_refresh) {
+          if (is_auth_error) {
+            err.what += " (device session refresh already attempted)";
+          }
+          return monad::IO<void>::fail(std::move(err));
+        }
+
+        auto refresh_token = self->load_refresh_token();
+        if (!refresh_token || refresh_token->empty()) {
+          return monad::IO<void>::fail(monad::make_error(
+              my_errors::GENERAL::INVALID_ARGUMENT,
+              "Device session expired and no refresh token available; run 'cert-ctrl login' before continuing."));
+        }
+
+        self->output_.logger().warning()
+            << "Resource fetch retry triggered by authentication failure for "
+            << state->ob_type << '/' << state->ob_id << std::endl;
+
+        return self->refresh_access_token(*refresh_token)
+            .then([self, state]() {
+              return self->fetch_with_refresh(state, true);
+            });
+      });
+}
+
+std::optional<std::string> InstallResourceMaterializer::load_refresh_token()
+    const {
+  auto state_dir = runtime_state_dir();
+  if (state_dir.empty()) {
+    return std::nullopt;
+  }
+
+  auto token_path = state_dir / "refresh_token.txt";
+  std::ifstream ifs(token_path, std::ios::binary);
+  if (!ifs.is_open()) {
+    return std::nullopt;
+  }
+
+  std::string token((std::istreambuf_iterator<char>(ifs)),
+                    std::istreambuf_iterator<char>());
+
+  auto first = token.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    return std::nullopt;
+  }
+  auto last = token.find_last_not_of(" \t\r\n");
+  if (last == std::string::npos || last < first) {
+    return std::nullopt;
+  }
+
+  return token.substr(first, last - first + 1);
+}
+
+monad::IO<void>
+InstallResourceMaterializer::refresh_access_token(
+    const std::string &refresh_token) {
+  using monad::PostJsonTag;
+  using monad::http_io;
+  using monad::http_request_io;
+
+  auto state_dir = runtime_state_dir();
+  if (state_dir.empty()) {
+    return monad::IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT,
+        "Unable to resolve runtime state directory for token refresh"));
+  }
+
+  const auto refresh_url =
+      fmt::format("{}/auth/refresh", config_provider_.get().base_url);
+  auto payload_obj = std::make_shared<boost::json::object>(
+      boost::json::object{{"refresh_token", refresh_token}});
+
+  output_.logger().info()
+      << "Refreshing device session via " << refresh_url << std::endl;
+
+  return http_io<PostJsonTag>(refresh_url)
+      .map([payload_obj](auto ex) {
+        ex->setRequestJsonBody(*payload_obj);
+        return ex;
+      })
+      .then(http_request_io<PostJsonTag>(http_client_))
+      .then([this, state_dir = std::move(state_dir), refresh_url](auto ex)
+                -> monad::IO<void> {
+        if (!ex->is_2xx()) {
+          std::string error_msg = "Refresh token request failed";
+          if (ex->response) {
+            error_msg +=
+                " (HTTP " + std::to_string(ex->response->result_int()) + ")";
+            if (!ex->response->body().empty()) {
+              error_msg += ": " + std::string(ex->response->body());
+            }
+          }
+          return monad::IO<void>::fail(monad::make_error(
+              my_errors::GENERAL::UNEXPECTED_RESULT, std::move(error_msg)));
+        }
+
+        auto payload_result =
+            ex->template parseJsonDataResponse<boost::json::object>();
+        if (payload_result.is_err()) {
+          return monad::IO<void>::fail(payload_result.error());
+        }
+
+        auto payload_obj = payload_result.value();
+        const boost::json::object *data_ptr = &payload_obj;
+        if (auto *data = payload_obj.if_contains("data");
+            data && data->is_object()) {
+          data_ptr = &data->as_object();
+        }
+
+        auto get_string =
+            [](const boost::json::object &obj,
+               std::string_view key) -> std::optional<std::string> {
+          if (auto *p = obj.if_contains(key); p && p->is_string()) {
+            return boost::json::value_to<std::string>(*p);
+          }
+          return std::nullopt;
+        };
+
+        std::optional<std::string> new_access_token =
+            get_string(*data_ptr, "access_token");
+        std::optional<std::string> new_refresh_token =
+            get_string(*data_ptr, "refresh_token");
+        std::optional<int> new_expires_in;
+        if (auto *p = data_ptr->if_contains("expires_in");
+            p && p->is_number()) {
+          new_expires_in = boost::json::value_to<int>(*p);
+        }
+
+        if ((!new_access_token || !new_refresh_token) &&
+            data_ptr->if_contains("session")) {
+          if (auto *session_ptr = data_ptr->if_contains("session");
+              session_ptr && session_ptr->is_object()) {
+            const auto &session_obj = session_ptr->as_object();
+            if (!new_access_token) {
+              new_access_token = get_string(session_obj, "access_token");
+            }
+            if (!new_refresh_token) {
+              new_refresh_token = get_string(session_obj, "refresh_token");
+            }
+            if (!new_expires_in) {
+              if (auto *p = session_obj.if_contains("expires_in");
+                  p && p->is_number()) {
+                new_expires_in = boost::json::value_to<int>(*p);
+              }
+            }
+          }
+        }
+
+        if (!new_access_token || new_access_token->empty() ||
+            !new_refresh_token || new_refresh_token->empty()) {
+          return monad::IO<void>::fail(monad::make_error(
+              my_errors::GENERAL::UNEXPECTED_RESULT,
+              "Refresh response missing tokens"));
+        }
+
+        auto access_path = state_dir / "access_token.txt";
+        auto refresh_path = state_dir / "refresh_token.txt";
+
+        if (auto err = write_text_0600(access_path, *new_access_token)) {
+          output_.logger().warning() << *err << std::endl;
+        }
+        if (auto err = write_text_0600(refresh_path, *new_refresh_token)) {
+          output_.logger().warning() << *err << std::endl;
+        }
+
+        output_.logger().info()
+            << "Device session refreshed; new access token expires in "
+            << new_expires_in.value_or(0) << "s" << std::endl;
+
+        return monad::IO<void>::pure();
+      });
+}
+
+std::optional<std::string> InstallResourceMaterializer::write_text_0600(
+    const std::filesystem::path &p, const std::string &text) {
+  try {
+    std::error_code ec;
+    if (auto parent = p.parent_path(); !parent.empty()) {
+      std::filesystem::create_directories(parent, ec);
+      if (ec) {
+        return std::string{"create_directories failed: "} + ec.message();
+      }
+    }
+    std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) {
+      return std::string{"open failed for "} + p.string();
+    }
+    ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!ofs) {
+      return std::string{"write failed for "} + p.string();
+    }
+#ifndef _WIN32
+    ::chmod(p.c_str(), 0600);
+#endif
+    return std::nullopt;
+  } catch (const std::exception &ex) {
+    return std::string{"write_text_0600 exception: "} + ex.what();
+  }
+}
+
+std::filesystem::path InstallResourceMaterializer::runtime_state_dir() const {
+  if (runtime_dir_.empty()) {
+    return {};
+  }
+  return runtime_dir_ / "state";
 }
 
 // boost::asio::io_context &InstallResourceMaterializer::ensure_io_context() {

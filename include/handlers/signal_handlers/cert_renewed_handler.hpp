@@ -29,6 +29,12 @@ public:
     }
     
     monad::IO<void> handle(const ::data::DeviceUpdateSignal& signal) override {
+        if (!config_manager_) {
+            output_hub_.logger().warning()
+                << "CertRenewedHandler missing InstallConfigManager; skipping signal"
+                << std::endl;
+            return monad::IO<void>::pure();
+        }
         output_hub_.logger().info()
             << "Processing cert.renewed: "
             << boost::json::serialize(signal.ref) << std::endl;

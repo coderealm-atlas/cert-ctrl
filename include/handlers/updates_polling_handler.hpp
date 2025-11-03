@@ -87,17 +87,20 @@ class UpdatesPollingHandler
 
 public:
   UpdatesPollingHandler(
-      cjj365::IoContextManager &io_context_manager,
-      cjj365::ConfigSources &config_sources,
-      certctrl::ICertctrlConfigProvider &certctrl_config_provider,
-      CliCtx &cli_ctx, customio::ConsoleOutput &output_hub,
-      client_async::HttpClientManager &http_client)
+      cjj365::IoContextManager &io_context_manager, //
+      cjj365::ConfigSources &config_sources, //
+      certctrl::ICertctrlConfigProvider &certctrl_config_provider, //
+      CliCtx &cli_ctx,  //
+      customio::ConsoleOutput &output_hub, //
+      client_async::HttpClientManager &http_client, //
+      std::shared_ptr<InstallConfigManager> install_config_manager)
       : ioc_(io_context_manager.ioc()), config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
         output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
         opt_desc_("updates polling options"),
         endpoint_base_(fmt::format("{}/apiv1/devices/self/updates",
-                                   certctrl_config_provider_.get().base_url)) {
+                                   certctrl_config_provider_.get().base_url)),
+        install_config_manager_(std::move(install_config_manager)) {
     exec_ = boost::asio::make_strand(ioc_);
     po::options_description create_opts("Updates Polling Options");
     create_opts.add_options()("wait", po::value<int>()->default_value(0),
@@ -134,23 +137,27 @@ public:
 
     // Initialize signal dispatcher with handlers
     auto runtime_dir = config_sources_.paths_.back();
-    signal_dispatcher_ = std::make_unique<SignalDispatcher>(runtime_dir);
+  signal_dispatcher_ = std::make_unique<SignalDispatcher>(runtime_dir);
 
-    // install_config_manager_ = std::make_shared<InstallConfigManager>(
-    //     runtime_dir, certctrl_config_provider_, output_hub_, &http_client_);
-
+  if (!install_config_manager_) {
+    output_hub_.logger().warning()
+      << "InstallConfigManager dependency missing; install/update signals "
+       "will be skipped"
+      << std::endl;
+  } else {
     // Register signal handlers
     signal_dispatcher_->register_handler(
-        std::make_shared<signal_handlers::InstallUpdatedHandler>(
-            install_config_manager_, output_hub_));
+      std::make_shared<signal_handlers::InstallUpdatedHandler>(
+        install_config_manager_, output_hub_));
 
     signal_dispatcher_->register_handler(
-        std::make_shared<signal_handlers::CertRenewedHandler>(
-            install_config_manager_, output_hub_));
+      std::make_shared<signal_handlers::CertRenewedHandler>(
+        install_config_manager_, output_hub_));
 
     signal_dispatcher_->register_handler(
-        std::make_shared<signal_handlers::CertRevokedHandler>(
-            install_config_manager_, output_hub_));
+      std::make_shared<signal_handlers::CertRevokedHandler>(
+        install_config_manager_, output_hub_));
+  }
 
     output_hub_.logger().info()
         << "Registered " << signal_dispatcher_->handler_count()

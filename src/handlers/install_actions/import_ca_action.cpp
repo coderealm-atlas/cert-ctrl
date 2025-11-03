@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <fmt/format.h>
 #include <memory>
 #include <optional>
@@ -247,6 +248,54 @@ void log_warning(customio::ConsoleOutput &output, const dto::InstallItem &item,
       << "import_ca item '" << item.id << "': " << message << std::endl;
 }
 
+std::filesystem::path import_state_directory(
+    const std::filesystem::path &runtime_dir) {
+  return runtime_dir / "state" / "import_ca";
+}
+
+std::optional<std::string>
+load_canonical_state(const std::filesystem::path &state_file) {
+  std::ifstream ifs(state_file);
+  if (!ifs.is_open()) {
+    return std::nullopt;
+  }
+
+  std::string line;
+  std::getline(ifs, line);
+  if (!ifs && !ifs.eof()) {
+    return std::nullopt;
+  }
+
+  auto first = line.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    return std::nullopt;
+  }
+  auto last = line.find_last_not_of(" \t\r\n");
+  if (last == std::string::npos) {
+    return std::nullopt;
+  }
+
+  return line.substr(first, last - first + 1);
+}
+
+std::optional<std::string>
+persist_canonical_state(const std::filesystem::path &state_file,
+                        const std::string &canonical_name) {
+  std::ofstream ofs(state_file, std::ios::trunc);
+  if (!ofs.is_open()) {
+    return fmt::format("failed to open '{}' for writing",
+                       state_file.string());
+  }
+
+  ofs << canonical_name;
+  if (!ofs.good()) {
+    return fmt::format("failed to write canonical name '{}' to '{}'",
+                       canonical_name, state_file.string());
+  }
+
+  return std::nullopt;
+}
+
 } // namespace
 monad::IO<void> ImportCaActionHandler::process_one_item(
     const dto::InstallItem &item,
@@ -327,7 +376,29 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
 
         auto label = item.ob_name.value_or(std::string{});
         auto sanitized = sanitize_label(label, *item.ob_id);
-        auto destination = trust.directory / (sanitized + ".crt");
+        auto canonical_name = fmt::format("certctrl-ca-{}", *item.ob_id);
+        if (!sanitized.empty() && sanitized != canonical_name) {
+          canonical_name = fmt::format("{}-{}", canonical_name, sanitized);
+        }
+        auto destination = trust.directory / (canonical_name + ".crt");
+
+        auto state_dir = import_state_directory(self->runtime_dir_);
+        std::error_code state_dir_ec;
+        std::filesystem::create_directories(state_dir, state_dir_ec);
+        if (state_dir_ec) {
+          auto err = monad::make_error(
+              my_errors::GENERAL::FILE_READ_WRITE,
+              fmt::format("failed to prepare CA state directory '{}': {}",
+                          state_dir.string(), state_dir_ec.message()));
+          if (item.continue_on_error) {
+            log_warning(self->output_, item, err.what);
+            return ReturnIO::pure();
+          }
+          return ReturnIO::fail(std::move(err));
+        }
+
+        auto state_file = state_dir / fmt::format("ca-{}.name", *item.ob_id);
+        auto previous_canonical = load_canonical_state(state_file);
 
         BOOST_LOG_SEV(app_logger(), trivial::trace)
             << "import_ca item '" << item.id << "' copying '" << ca_pem_path
@@ -346,9 +417,36 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
           return ReturnIO::fail(std::move(error_obj));
         }
 
-        self->output_.logger().info()
-            << "Imported CA '" << sanitized << "' into " << trust.directory
-            << std::endl;
+        if (previous_canonical && *previous_canonical != canonical_name) {
+          auto legacy_path = trust.directory / (*previous_canonical + ".crt");
+          std::error_code remove_ec;
+          if (std::filesystem::exists(legacy_path)) {
+            std::filesystem::remove(legacy_path, remove_ec);
+            if (remove_ec) {
+              auto err = monad::make_error(
+                  my_errors::GENERAL::FILE_READ_WRITE,
+                  fmt::format("failed to remove legacy CA '{}' at '{}': {}",
+                              *previous_canonical, legacy_path.string(),
+                              remove_ec.message()));
+              BOOST_LOG_SEV(app_logger(), trivial::error)
+                  << "import_ca item '" << item.id
+                  << "' legacy removal failed: " << err.what;
+              if (item.continue_on_error) {
+                log_warning(self->output_, item, err.what);
+                return ReturnIO::pure();
+              }
+              return ReturnIO::fail(std::move(err));
+            }
+
+            BOOST_LOG_SEV(app_logger(), trivial::trace)
+                << "import_ca item '" << item.id << "' removed legacy CA "
+                << *previous_canonical;
+          }
+        }
+
+    self->output_.logger().info()
+      << "Imported CA '" << canonical_name << "' into "
+      << trust.directory << std::endl;
 
         BOOST_LOG_SEV(app_logger(), trivial::trace)
             << "import_ca item '" << item.id << "' completed filesystem copy";
@@ -374,6 +472,19 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
           }
           BOOST_LOG_SEV(app_logger(), trivial::trace)
               << "import_ca item '" << item.id << "' update command succeeded";
+        }
+
+        if (auto err = persist_canonical_state(state_file, canonical_name)) {
+          auto error_obj = monad::make_error(
+              my_errors::GENERAL::FILE_READ_WRITE, *err);
+          BOOST_LOG_SEV(app_logger(), trivial::error)
+              << "import_ca item '" << item.id
+              << "' state persistence failed: " << *err;
+          if (item.continue_on_error) {
+            log_warning(self->output_, item, error_obj.what);
+            return ReturnIO::pure();
+          }
+          return ReturnIO::fail(std::move(error_obj));
         }
 
         return ReturnIO::pure();

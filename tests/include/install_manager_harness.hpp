@@ -6,25 +6,26 @@
 #include <unordered_map>
 
 #include "customio/console_output.hpp"
+#include "data/install_config_dto.hpp"
 #include "handlers/install_actions/copy_action.hpp"
 #include "handlers/install_actions/exec_action.hpp"
 #include "handlers/install_actions/function_adapters.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_actions/install_resource_materializer.hpp"
+#include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_config_manager.hpp"
-#include "data/install_config_dto.hpp"
 #include "install_config_manager_test_utils.hpp"
 #include "test_config_utils.hpp"
 
 struct InstallManagerDiHarness {
   InstallManagerDiHarness(
-    std::filesystem::path config_dir, std::filesystem::path runtime_dir,
-    std::string base_url,
-    certctrl::install_actions::IDeviceInstallConfigFetcher &fetcher,
-    certctrl::install_actions::IResourceFetcher &resource_fetcher,
-    int http_threads = 1,
-    certctrl::install_actions::IAccessTokenLoader *token_loader_override =
-      nullptr) {
+      std::filesystem::path config_dir, std::filesystem::path runtime_dir,
+      std::string base_url,
+      certctrl::install_actions::IDeviceInstallConfigFetcher &fetcher,
+      certctrl::install_actions::IResourceFetcher &resource_fetcher,
+      int http_threads = 1,
+      certctrl::install_actions::IAccessTokenLoader *token_loader_override =
+          nullptr) {
     config_dir_ = std::move(config_dir);
     runtime_dir_ = std::move(runtime_dir);
 
@@ -39,8 +40,7 @@ struct InstallManagerDiHarness {
     cfg_opts.ioc_threads = 1;
     testinfra::write_basic_config_files(config_dir_, cfg_opts);
 
-    config_sources_holder_ =
-        testinfra::make_config_sources({config_dir_}, {});
+    config_sources_holder_ = testinfra::make_config_sources({config_dir_}, {});
     config_sources_ = config_sources_holder_.get();
 
     auto injector = di::make_injector(
@@ -55,11 +55,11 @@ struct InstallManagerDiHarness {
     auto &inj = *inj_holder;
 
     output_ = &inj.create<customio::ConsoleOutput &>();
-  auto config_provider_impl =
-    inj.create<std::unique_ptr<certctrl::CertctrlConfigProviderFile>>();
-  config_provider_owner_ = std::unique_ptr<certctrl::ICertctrlConfigProvider>(
-    std::move(config_provider_impl));
-  config_provider_ = config_provider_owner_.get();
+    auto config_provider_impl =
+        inj.create<std::unique_ptr<certctrl::CertctrlConfigProviderFile>>();
+    config_provider_owner_ = std::unique_ptr<certctrl::ICertctrlConfigProvider>(
+        std::move(config_provider_impl));
+    config_provider_ = config_provider_owner_.get();
 
     io_context_manager_owner_ =
         inj.create<std::unique_ptr<cjj365::IoContextManager>>();
@@ -72,13 +72,17 @@ struct InstallManagerDiHarness {
     if (token_loader_override) {
       token_loader_ = token_loader_override;
     } else {
-    auto token_loader_impl = inj.create<std::unique_ptr<
-      certctrl::install_actions::AccessTokenLoaderFile>>();
-    token_loader_owner_ = std::unique_ptr<
-      certctrl::install_actions::IAccessTokenLoader>(
-      std::move(token_loader_impl));
-    token_loader_ = token_loader_owner_.get();
+      auto token_loader_impl = inj.create<
+          std::unique_ptr<certctrl::install_actions::AccessTokenLoaderFile>>();
+      token_loader_owner_ =
+          std::unique_ptr<certctrl::install_actions::IAccessTokenLoader>(
+              std::move(token_loader_impl));
+      token_loader_ = token_loader_owner_.get();
     }
+
+    password_manager_owner_ = std::make_unique<
+        certctrl::install_actions::MaterializePasswordManager>();
+    password_manager_ = password_manager_owner_.get();
 
     resource_factory = make_resource_factory();
     exec_env_factory = make_exec_env_factory();
@@ -90,7 +94,7 @@ struct InstallManagerDiHarness {
         *io_context_manager_, *config_provider_, *output_,
         *http_client_manager_, resource_factory, import_ca_handler_factory,
         exec_action_handler_factory, copy_action_handler_factory,
-        exec_env_factory, *fetcher_, *token_loader_);
+        exec_env_factory, *fetcher_, *token_loader_, *password_manager_);
     install_manager_ = install_manager_storage_.get();
   }
 
@@ -150,26 +154,24 @@ struct InstallManagerDiHarness {
 private:
   certctrl::install_actions::IResourceMaterializer::Factory
   make_resource_factory() {
-    return certctrl::install_actions::IResourceMaterializer::Factory(
-        [this]() {
-          return std::make_shared<
-              certctrl::install_actions::InstallResourceMaterializer>(
-              *io_context_manager_, *config_provider_, *output_,
-              *resource_fetcher_, *http_client_manager_, *token_loader_);
-        });
+    return certctrl::install_actions::IResourceMaterializer::Factory([this]() {
+      return std::make_shared<
+          certctrl::install_actions::InstallResourceMaterializer>(
+          *io_context_manager_, *config_provider_, *output_, *resource_fetcher_,
+          *http_client_manager_, *token_loader_, *password_manager_);
+    });
   }
 
   certctrl::install_actions::IExecEnvironmentResolver::Factory
   make_exec_env_factory() {
     using Resolver = certctrl::install_actions::FunctionExecEnvironmentResolver;
-    return certctrl::install_actions::IExecEnvironmentResolver::Factory(
-        []() {
-          return std::make_shared<Resolver>(
-              [](const dto::InstallItem &)
-                  -> std::optional<std::unordered_map<std::string, std::string>> {
-                return std::nullopt;
-              });
-        });
+    return certctrl::install_actions::IExecEnvironmentResolver::Factory([]() {
+      return std::make_shared<Resolver>(
+          [](const dto::InstallItem &)
+              -> std::optional<std::unordered_map<std::string, std::string>> {
+            return std::nullopt;
+          });
+    });
   }
 
   certctrl::install_actions::ImportCaActionHandler::Factory
@@ -187,8 +189,7 @@ private:
     auto resource_factory_copy = resource_factory;
     return certctrl::install_actions::CopyActionHandler::Factory(
         [this, resource_factory_copy]() {
-          return std::make_shared<
-              certctrl::install_actions::CopyActionHandler>(
+          return std::make_shared<certctrl::install_actions::CopyActionHandler>(
               *config_provider_, *output_, resource_factory_copy);
         });
   }
@@ -198,8 +199,7 @@ private:
     auto exec_env_factory_copy = exec_env_factory;
     return certctrl::install_actions::ExecActionHandler::Factory(
         [this, resource_factory_copy, exec_env_factory_copy]() {
-          return std::make_shared<
-              certctrl::install_actions::ExecActionHandler>(
+          return std::make_shared<certctrl::install_actions::ExecActionHandler>(
               *config_provider_, *output_, resource_factory_copy,
               exec_env_factory_copy);
         });
@@ -219,6 +219,9 @@ private:
   std::unique_ptr<client_async::HttpClientManager> http_client_manager_owner_{};
   std::unique_ptr<certctrl::install_actions::IAccessTokenLoader>
       token_loader_owner_{};
+  std::unique_ptr<certctrl::install_actions::MaterializePasswordManager>
+      password_manager_owner_{};
+  certctrl::install_actions::IMaterializePasswordManager *password_manager_{};
   certctrl::InstallConfigManager *install_manager_{nullptr};
   certctrl::install_actions::IDeviceInstallConfigFetcher *fetcher_{nullptr};
   certctrl::install_actions::IResourceFetcher *resource_fetcher_{nullptr};

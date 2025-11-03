@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "common_macros.hpp"
 #include "io_monad.hpp"
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
@@ -216,8 +217,8 @@ CopyActionHandler::CopyActionHandler(
       resource_materializer_ = resource_materializer_factory_();
     } catch (const std::exception &ex) {
       output_.logger().error()
-          << "CopyActionHandler failed to precreate materializer: "
-          << ex.what() << std::endl;
+          << "CopyActionHandler failed to precreate materializer: " << ex.what()
+          << std::endl;
     }
   }
 }
@@ -255,9 +256,12 @@ CopyActionHandler::apply(const dto::DeviceInstallConfigDto &config,
                                             target_ob_type, target_ob_id));
     }
 
+    DEBUG_PRINT("**Dispatching copy action_ios count=" << action_ios.size());
+
     auto self = shared_from_this();
-    return monad::collect_result_io(action_ios)
+    return monad::collect_result_io(std::move(action_ios))
         .then([self](auto results) -> ReturnIO {
+          DEBUG_PRINT("**action_ios** returned.");
           for (const auto &res : results) {
             if (res.is_err()) {
               self->failure_messages_.push_back(res.error().what);
@@ -306,7 +310,7 @@ CopyActionHandler::apply(const dto::DeviceInstallConfigDto &config,
 
 monad::IO<void> CopyActionHandler::process_one_item(
     const dto::InstallItem &item,
-  IResourceMaterializer::Ptr resource_materializer,
+    IResourceMaterializer::Ptr resource_materializer,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
   using ReturnIO = monad::IO<void>;
@@ -349,10 +353,16 @@ monad::IO<void> CopyActionHandler::process_one_item(
 
   const std::string ob_type = *item.ob_type;
   const std::int64_t ob_id = *item.ob_id;
+  output_.logger().debug() << "Processing copy item '" << item.id
+                           << "' ob_type=" << ob_type << " ob_id=" << ob_id
+                           << std::endl;
   auto self = shared_from_this();
 
   return resource_materializer->ensure_materialized(item)
       .then([self, item, ob_type, ob_id]() -> ReturnIO {
+        self->output_.logger().debug()
+            << "ensure_materialized complete for '" << item.id
+            << "' ob_type=" << ob_type << " ob_id=" << ob_id << std::endl;
         auto resource_root =
             resource_root_for(self->runtime_dir_, ob_type, ob_id);
 
@@ -394,6 +404,9 @@ monad::IO<void> CopyActionHandler::process_one_item(
         return ReturnIO::pure();
       })
       .catch_then([self, item](monad::Error err) -> ReturnIO {
+        self->output_.logger().warning()
+            << "ensure_materialized failed for '" << item.id
+            << "': " << err.what << std::endl;
         auto msg = fmt::format("copy item '{}': {}", item.id, err.what);
         self->failure_messages_.push_back(std::move(msg));
         return ReturnIO::pure();
