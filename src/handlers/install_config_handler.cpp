@@ -280,7 +280,6 @@ monad::IO<void> InstallConfigHandler::run_copy_stage() {
 }
 
 monad::IO<void> InstallConfigHandler::run_import_stage() {
-  DEBUG_PRINT("NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN");
   using ReturnIO = monad::IO<void>;
   if (!active_config_ || !active_options_) {
     return ReturnIO::fail(

@@ -11,6 +11,7 @@ PRESET="debug-asan"
 JOBS=""
 CONFIGURE_FIRST=true
 BUILD_FIRST=true
+TEST_ENV_FILE="$PROJECT_ROOT/tests/test-env"
 
 usage() {
     cat <<'EOF'
@@ -54,6 +55,14 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -f "$TEST_ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$TEST_ENV_FILE"
+    if [ -z "${CERTCTRL_REAL_SERVER_TESTS:-}" ]; then
+        export CERTCTRL_REAL_SERVER_TESTS=1
+    fi
+fi
 
 if [ ! -f "$PROJECT_ROOT/CMakePresets.json" ]; then
     echo "Error: CMakePresets.json not found in project root ($PROJECT_ROOT)." >&2

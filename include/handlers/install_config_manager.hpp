@@ -16,7 +16,9 @@
 #include "handlers/install_actions/exec_environment_resolver.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_actions/install_resource_materializer.hpp"
+#include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
+#include "resource_fetcher.hpp"
 #include "http_client_manager.hpp"
 #include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
@@ -46,7 +48,8 @@ public:
       install_actions::IExecEnvironmentResolver::Factory
           exec_env_resolver_factory,
       install_actions::IDeviceInstallConfigFetcher &config_fetcher,
-      install_actions::IAccessTokenLoader &access_token_loader);
+      install_actions::IAccessTokenLoader &access_token_loader,
+      install_actions::IMaterializePasswordManager &password_manager);
 
   ~InstallConfigManager();
 
@@ -98,12 +101,6 @@ private:
   std::optional<std::unordered_map<std::string, std::string>>
   resolve_exec_env_for_item(const dto::InstallItem &item);
 
-  std::optional<std::string> lookup_bundle_password(const std::string &ob_type,
-                                                    std::int64_t ob_id) const;
-  void remember_bundle_password(const std::string &ob_type, std::int64_t ob_id,
-                                const std::string &password);
-  void forget_bundle_password(const std::string &ob_type, std::int64_t ob_id);
-
 private:
   std::filesystem::path runtime_dir_;
   certctrl::ICertctrlConfigProvider &config_provider_;
@@ -117,8 +114,6 @@ private:
   std::optional<std::int64_t> local_version_;
   logsrc::severity_logger<trivial::severity_level> lg;
 
-  std::unordered_map<std::string, std::unordered_map<std::int64_t, std::string>>
-      bundle_passwords_;
   install_actions::IResourceMaterializer::Factory
       resource_materializer_factory_;
   install_actions::ExecActionHandler::Factory exec_handler_factory_;
@@ -126,6 +121,7 @@ private:
   certctrl::install_actions::CopyActionHandler::Factory copy_handler_factory_;
   boost::asio::io_context &io_context_;
   install_actions::IAccessTokenLoader &access_token_loader_;
+    install_actions::IMaterializePasswordManager &password_manager_;
 };
 
 } // namespace certctrl

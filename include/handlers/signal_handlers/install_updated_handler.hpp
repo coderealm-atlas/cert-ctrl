@@ -29,6 +29,12 @@ public:
     }
     
     monad::IO<void> handle(const ::data::DeviceUpdateSignal& signal) override {
+        if (!config_manager_) {
+            output_hub_.logger().warning()
+                << "InstallUpdatedHandler missing InstallConfigManager; skipping signal"
+                << std::endl;
+            return monad::IO<void>::pure();
+        }
         output_hub_.logger().info()
             << "Processing install.updated: "
             << boost::json::serialize(signal.ref) << std::endl;
@@ -36,6 +42,9 @@ public:
     }
     
     bool should_process(const ::data::DeviceUpdateSignal& signal) const override {
+        if (!config_manager_) {
+            return false;
+        }
         auto typed = ::data::get_install_updated(signal);
         if (typed) {
             auto local = config_manager_->local_version();

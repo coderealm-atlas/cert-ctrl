@@ -7,7 +7,9 @@
 #include "handlers/install_actions/function_adapters.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_actions/install_resource_materializer.hpp"
+#include "handlers/install_actions/materialize_password_manager.hpp"
 #include "http_client_config_provider.hpp"
+#include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
 
@@ -33,6 +35,12 @@ inline auto build_base_injector(cjj365::ConfigSources &config_sources) {
           .to<certctrl::CertctrlConfigProviderFile>(),
       di::bind<certctrl::install_actions::IAccessTokenLoader>()
           .to<certctrl::install_actions::AccessTokenLoaderFile>(),
+      di::bind<certctrl::install_actions::IMaterializePasswordManager>()
+          .to<certctrl::install_actions::MaterializePasswordManager>()
+          .in(di::singleton),
+    //   di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>()
+    //       .to<certctrl::install_actions::DeviceInstallConfigFetcher>()
+    //       .in(di::singleton),
 
       di::bind<certctrl::install_actions::InstallResourceMaterializer>().in(
           di::unique),
