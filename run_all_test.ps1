@@ -74,15 +74,15 @@ function Resolve-PresetBinaryDir {
     return [System.IO.Path]::GetFullPath($resolved)
 }
 
-$isWindows = $false
+[bool]$isWindowsHost = $false
 try {
-    $isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    $isWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
 } catch {
-    $isWindows = $false
+    $isWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 }
 
 function Ensure-VsBuildToolsOnPath {
-    if (-not $isWindows) { return }
+    if (-not $isWindowsHost) { return }
 
     if (Get-Command dumpbin -ErrorAction SilentlyContinue) {
         return
@@ -204,6 +204,31 @@ if (-not (Get-Command ctest -ErrorAction SilentlyContinue)) {
 }
 
 Ensure-VsBuildToolsOnPath
+
+# Load tests/test-env to enable real-server tests (mirror run_all_test.sh)
+$testEnvFile = Join-Path -Path $projectRoot -ChildPath 'tests\test-env'
+if (Test-Path -Path $testEnvFile -PathType Leaf) {
+    foreach ($raw in Get-Content -Path $testEnvFile -Encoding UTF8) {
+        $line = ($raw -as [string]).Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line.StartsWith('#')) { continue }
+        if ($line.StartsWith('export ')) { $line = $line.Substring(7) }
+        $eq = $line.IndexOf('=')
+        if ($eq -gt 0) {
+            $name = $line.Substring(0, $eq).Trim()
+            $value = $line.Substring($eq + 1).Trim()
+            if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($name)) {
+                Set-Item -Path Env:$name -Value $value
+            }
+        }
+    }
+}
+if ([string]::IsNullOrEmpty($env:CERTCTRL_REAL_SERVER_TESTS)) {
+    $env:CERTCTRL_REAL_SERVER_TESTS = '1'
+}
 
 if ($configureFirst) {
     Write-Host "[run_all_test] Configuring with preset '$preset'..."

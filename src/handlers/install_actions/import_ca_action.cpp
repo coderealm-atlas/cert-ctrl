@@ -13,6 +13,11 @@
 #include <system_error>
 #include <utility>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <wincrypt.h>
+#endif
+
 #include <boost/json/serialize.hpp>
 
 #include "my_error_codes.hpp"
@@ -132,7 +137,10 @@ copy_ca_material(const std::filesystem::path &source,
 #endif
 
     if (std::filesystem::exists(destination)) {
-      auto backup = destination;
+      auto backup_dir = parent / ".backups";
+      std::error_code mk_ec;
+      std::filesystem::create_directories(backup_dir, mk_ec);
+      auto backup = backup_dir / destination.filename();
       backup += ".bak";
       backup += generate_temp_suffix();
       std::error_code ec;
@@ -204,6 +212,27 @@ std::optional<TrustStoreTarget> detect_system_trust_store() {
 #elif defined(_WIN32)
   if (auto override_target = trust_store_from_env()) {
     return override_target;
+  }
+  // Windows: stage files under ProgramData and import into LocalMachine Root store via PowerShell
+  try {
+    std::filesystem::path base = [] {
+      const char *pd = std::getenv("ProgramData");
+      if (pd && *pd) return std::filesystem::path(pd);
+      return std::filesystem::path("C:/ProgramData");
+    }();
+    std::filesystem::path dir = base / "certctrl" / "trust-anchors";
+    TrustStoreTarget target;
+    target.directory = dir;
+    // PowerShell imports all .crt files from the directory into LocalMachine\Root
+    // Note: requires Administrator privileges.
+    std::string cmd = fmt::format(
+        "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; $d='{}'; if (-not (Test-Path -LiteralPath $d)) {{ New-Item -ItemType Directory -Force -Path $d | Out-Null }}; Get-ChildItem -LiteralPath $d -Filter *.crt | ForEach-Object {{ Import-Certificate -FilePath $_.FullName -CertStoreLocation 'Cert:\\LocalMachine\\Root' }}\"",
+        dir.string());
+    target.update_command = std::move(cmd);
+    target.description = "Windows ProgramData staged trust and PowerShell importer";
+    return target;
+  } catch (...) {
+    // Fall through to std::nullopt
   }
 #elif defined(__APPLE__)
   if (auto override_target = trust_store_from_env()) {
@@ -451,6 +480,7 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
         BOOST_LOG_SEV(app_logger(), trivial::trace)
             << "import_ca item '" << item.id << "' completed filesystem copy";
 
+#ifndef _WIN32
         if (!trust.update_command.empty()) {
           BOOST_LOG_SEV(app_logger(), trivial::trace)
               << "import_ca item '" << item.id
@@ -473,6 +503,7 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
           BOOST_LOG_SEV(app_logger(), trivial::trace)
               << "import_ca item '" << item.id << "' update command succeeded";
         }
+#endif
 
         if (auto err = persist_canonical_state(state_file, canonical_name)) {
           auto error_obj = monad::make_error(
