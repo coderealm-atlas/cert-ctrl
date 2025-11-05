@@ -656,7 +656,7 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     )
 
 if(APPLE)
-    target_link_libraries(${CERT_CTRL_APP_NAME} PRIVATE c++abi)
+    target_link_libraries(${CERT_CTRL_APP_NAME} PRIVATE c++abi "-framework Security" "-framework CoreFoundation")
 endif()
 
 if(OpenMP_CXX_FOUND)

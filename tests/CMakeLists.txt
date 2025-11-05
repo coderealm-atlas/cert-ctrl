@@ -271,7 +271,7 @@ target_link_libraries(test_install_config_manager PRIVATE
   di_config
 )
 if(APPLE)
-  target_link_libraries(test_install_config_manager PRIVATE c++abi)
+  target_link_libraries(test_install_config_manager PRIVATE c++abi "-framework Security" "-framework CoreFoundation")
 endif()
 
 if(APPLE)
@@ -309,6 +309,33 @@ target_link_libraries(test_exec_action PRIVATE
 certctrl_use_static_atomic(test_exec_action)
 
 gtest_discover_tests(test_exec_action DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+
+add_executable(test_import_ca_action
+  test_import_ca_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
+  ${CMAKE_SOURCE_DIR}/external/http_client/src/base64.cpp
+)
+target_compile_features(test_import_ca_action PRIVATE cxx_std_17)
+target_include_directories(test_import_ca_action PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+)
+target_link_libraries(test_import_ca_action PRIVATE
+  GTest::gtest_main
+  Boost::log
+  Boost::log_setup
+  Boost::json
+  fmt::fmt
+  certctrl_libatomic
+  di_config
+)
+if(APPLE)
+  target_link_libraries(test_import_ca_action PRIVATE c++abi "-framework Security" "-framework CoreFoundation")
+  add_dependencies(test_import_ca_action atomic_stub)
+endif()
+certctrl_use_static_atomic(test_import_ca_action)
+
+gtest_discover_tests(test_import_ca_action DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
 add_executable(test_updates_polling_handler
   test_updates_polling_handler.cpp
@@ -355,7 +382,7 @@ target_link_libraries(test_updates_polling_handler PRIVATE
   di_config
 )
 if(APPLE)
-  target_link_libraries(test_updates_polling_handler PRIVATE c++abi)
+  target_link_libraries(test_updates_polling_handler PRIVATE c++abi "-framework Security" "-framework CoreFoundation")
 endif()
 if(APPLE)
   add_dependencies(test_updates_polling_handler atomic_stub)

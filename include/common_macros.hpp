@@ -9,7 +9,7 @@
 #ifdef DEBUG_BUILD
 #define DEBUG_PRINT(...)                                                     \
   do {                                                                       \
-    std::cerr << __VA_ARGS__ << std::endl;                                   \
+    std::cerr << "[DEBUG_PRINT] " << __VA_ARGS__ << std::endl;                                   \
   } while (0)
   // std::cout << "File: " << __FILE__ << " Line: " << __LINE__ << std::endl; 
 
@@ -23,7 +23,7 @@
                                 [](std::string& acc, std::string& sv_) { \
                                   return acc + sv_.data() + ", ";        \
                                 });                                      \
-    std::cout << "sv: " << s << std::endl;                               \
+    std::cout << "[PRINT_SEGMENTS] " << "sv: " << s << std::endl;                               \
   } while (0)
 
 #else
@@ -35,7 +35,7 @@
 #ifdef DEBUG_BUILD_1
 #define DEBUG_PRINT_1(...)                 \
   do {                                     \
-    std::cout << __VA_ARGS__ << std::endl; \
+    std::cout << "[DEBUG_PRINT_1] " << __VA_ARGS__ << std::endl; \
   } while (0)
 #else
 #define DEBUG_PRINT_1(...)  // No operation
@@ -46,7 +46,7 @@
 #define CJJ365_VERBOSE_LOG(...)                     \
   do {                                              \
     if (std::getenv("CJJ365_VERBOSE") != nullptr) { \
-      std::cout << __VA_ARGS__ << std::endl;        \
+      std::cout << "[CJJ365_VERBOSE_LOG] " << __VA_ARGS__ << std::endl;        \
     }                                               \
   } while (0)
 

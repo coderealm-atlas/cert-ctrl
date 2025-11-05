@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <boost/asio.hpp>
+#include <boost/beast/http.hpp>
 #include <boost/di.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
@@ -13,6 +14,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <string>
@@ -65,16 +67,15 @@ public:
       try {
         asio::io_context poke_ctx;
         asio::ip::tcp::socket poke_socket(poke_ctx);
-        asio::ip::tcp::endpoint endpoint{
-            asio::ip::make_address("127.0.0.1"), port_};
+        asio::ip::tcp::endpoint endpoint{asio::ip::make_address("127.0.0.1"),
+                                         port_};
         poke_socket.connect(endpoint, ec);
         if (ec) {
           ec.clear();
         } else {
           boost::system::error_code shutdown_ec;
-          [[maybe_unused]] auto shutdown_status =
-              poke_socket.shutdown(asio::ip::tcp::socket::shutdown_both,
-                                   shutdown_ec);
+          [[maybe_unused]] auto shutdown_status = poke_socket.shutdown(
+              asio::ip::tcp::socket::shutdown_both, shutdown_ec);
           if (shutdown_ec) {
             shutdown_ec.clear();
           }
@@ -137,6 +138,184 @@ private:
   std::thread thread_;
   std::atomic<bool> stopped_{false};
   std::uint16_t port_{0};
+};
+
+class MockRefreshServer {
+public:
+  MockRefreshServer()
+      : acceptor_(ioc_, asio::ip::tcp::endpoint(
+                            asio::ip::make_address("127.0.0.1"), 0)) {
+    port_ = acceptor_.local_endpoint().port();
+    thread_ = std::thread([this] { run(); });
+  }
+
+  ~MockRefreshServer() { stop(); }
+
+  std::string base_url() const {
+    return fmt::format("http://127.0.0.1:{}", port_);
+  }
+
+  void set_expected_refresh_token(std::string token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    expected_refresh_token_ = std::move(token);
+  }
+
+  void set_response_tokens(std::string access_token,
+                           std::string refresh_token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    response_access_token_ = std::move(access_token);
+    response_refresh_token_ = std::move(refresh_token);
+  }
+
+  int refresh_calls() const { return refresh_calls_.load(); }
+
+  std::string last_refresh_token() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return last_refresh_token_;
+  }
+
+  bool observed_expected_token() const {
+    return observed_expected_token_.load();
+  }
+
+  void stop() {
+    bool expected = false;
+    if (!stopped_.compare_exchange_strong(expected, true)) {
+      return;
+    }
+    boost::system::error_code ec;
+    if (acceptor_.is_open()) {
+      try {
+        asio::io_context poke_ctx;
+        asio::ip::tcp::socket poke_socket(poke_ctx);
+        asio::ip::tcp::endpoint endpoint{asio::ip::make_address("127.0.0.1"),
+                                         port_};
+        poke_socket.connect(endpoint, ec);
+        if (!ec) {
+          boost::system::error_code shutdown_ec;
+          [[maybe_unused]] auto shutdown_status = poke_socket.shutdown(
+              asio::ip::tcp::socket::shutdown_both, shutdown_ec);
+          if (shutdown_ec) {
+            shutdown_ec.clear();
+          }
+        } else {
+          ec.clear();
+        }
+        boost::system::error_code close_ec;
+        [[maybe_unused]] auto close_status = poke_socket.close(close_ec);
+        if (close_ec) {
+          close_ec.clear();
+        }
+      } catch (const std::exception &) {
+        // Ignore shutdown failures.
+      }
+      [[maybe_unused]] auto close_status = acceptor_.close(ec);
+    }
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+private:
+  void run() {
+    while (!stopped_.load()) {
+      boost::system::error_code ec;
+      asio::ip::tcp::socket socket(ioc_);
+      [[maybe_unused]] auto accept_status = acceptor_.accept(socket, ec);
+      if (ec) {
+        if (stopped_.load()) {
+          break;
+        }
+        continue;
+      }
+      handle_connection(std::move(socket));
+    }
+  }
+
+  void handle_connection(asio::ip::tcp::socket socket) {
+    namespace http = boost::beast::http;
+
+    try {
+      boost::beast::flat_buffer buffer;
+      http::request<http::string_body> req;
+      boost::system::error_code read_ec;
+      http::read(socket, buffer, req, read_ec);
+      if (read_ec) {
+        return;
+      }
+
+      http::response<http::string_body> res{http::status::ok, req.version()};
+      res.set(http::field::server, "MockRefreshServer");
+      res.set(http::field::content_type, "application/json");
+      res.keep_alive(false);
+
+      if (req.method() == http::verb::post && req.target() == "/auth/refresh") {
+        refresh_calls_.fetch_add(1);
+        std::string provided_refresh;
+        try {
+          auto parsed = json::parse(req.body());
+          if (parsed.is_object()) {
+            auto &obj = parsed.as_object();
+            if (auto *token = obj.if_contains("refresh_token");
+                token && token->is_string()) {
+              provided_refresh = std::string(token->as_string().c_str(),
+                                             token->as_string().size());
+            }
+          }
+        } catch (...) {
+          provided_refresh.clear();
+        }
+
+        bool matches = false;
+        std::string access;
+        std::string refresh;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          last_refresh_token_ = provided_refresh;
+          matches = !expected_refresh_token_.empty() &&
+                    provided_refresh == expected_refresh_token_;
+          access = response_access_token_;
+          refresh = response_refresh_token_;
+        }
+        if (matches) {
+          observed_expected_token_.store(true);
+        }
+
+        json::object data{{"access_token", access},
+                          {"refresh_token", refresh},
+                          {"expires_in", 900}};
+        res.body() = json::serialize(json::object{{"data", std::move(data)}});
+        res.prepare_payload();
+      } else {
+        res.result(http::status::not_found);
+        res.body() = "{}";
+        res.prepare_payload();
+      }
+
+      boost::system::error_code write_ec;
+      http::write(socket, res, write_ec);
+      boost::system::error_code shutdown_ec;
+      [[maybe_unused]] auto shutdown_status =
+          socket.shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_ec);
+      boost::system::error_code close_ec;
+      [[maybe_unused]] auto close_status = socket.close(close_ec);
+    } catch (const std::exception &) {
+      // Ignore connection errors during teardown.
+    }
+  }
+
+  asio::io_context ioc_;
+  asio::ip::tcp::acceptor acceptor_;
+  std::thread thread_;
+  std::atomic<bool> stopped_{false};
+  std::uint16_t port_{0};
+  std::atomic<int> refresh_calls_{0};
+  std::atomic<bool> observed_expected_token_{false};
+  mutable std::mutex mutex_;
+  std::string expected_refresh_token_;
+  std::string last_refresh_token_;
+  std::string response_access_token_ = "refreshed-access";
+  std::string response_refresh_token_ = "refreshed-refresh";
 };
 
 std::filesystem::path make_temp_runtime_dir() {
@@ -468,8 +647,8 @@ TEST_F(InstallConfigManagerFixture, AppliesCopyActionsFullPlan) {
   static MockerResourceFetcher resource_fetcher{""};
   static MockAccessTokenLoaderFixed token_loader{std::nullopt};
   harness_ = std::make_unique<InstallManagerDiHarness>(
-    config_dir, runtime_dir, "https://api.example.test", fetcher,
-    resource_fetcher, 1, &token_loader);
+      config_dir, runtime_dir, "https://api.example.test", fetcher,
+      resource_fetcher, 1, &token_loader);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
@@ -547,8 +726,8 @@ TEST_F(InstallConfigManagerFixture, SkipsCopyActionsWithEmptyDestinations) {
   static MockerResourceFetcher resource_fetcher{""};
   static MockAccessTokenLoaderFixed token_loader{std::nullopt};
   harness_ = std::make_unique<InstallManagerDiHarness>(
-    config_dir, runtime_dir, "https://api.example.test", fetcher,
-    resource_fetcher, 1, &token_loader);
+      config_dir, runtime_dir, "https://api.example.test", fetcher,
+      resource_fetcher, 1, &token_loader);
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
@@ -605,18 +784,18 @@ TEST_F(InstallConfigManagerFixture, CopyActionsAggregateFailures) {
 
   auto fetch_override =
       [config](std::optional<std::string> /*access_token*/,
-                std::optional<std::int64_t> expected_version,
-                const std::optional<std::string> &expected_hash)
+               std::optional<std::int64_t> expected_version,
+               const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
-        dto::DeviceInstallConfigDto copy = config;
-        if (expected_version) {
-          copy.version = *expected_version;
-        }
-        if (expected_hash) {
-          copy.installs_hash = *expected_hash;
-        }
-        return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(copy));
-      };
+    dto::DeviceInstallConfigDto copy = config;
+    if (expected_version) {
+      copy.version = *expected_version;
+    }
+    if (expected_hash) {
+      copy.installs_hash = *expected_hash;
+    }
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(copy));
+  };
 
   createHarness(
       config_dir, runtime_dir,
@@ -665,7 +844,7 @@ TEST_F(InstallConfigManagerFixture, CopiesCaIntoOverrideDirectory) {
 
   createHarness(config_dir, runtime_dir,
                 std::make_unique<MockInstallConfigFetcher>(config),
-        std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockerResourceFetcher>(""),
                 std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   auto runtime_dir_path = harness_->runtime_dir();
@@ -1025,11 +1204,11 @@ TEST_F(InstallConfigManagerFixture,
       (install_root / "cert" / "meta.json").string()};
   config.installs.push_back(copy_item);
 
-  createHarness(config_dir, runtime_dir,
-                std::make_unique<MockInstallConfigFetcher>(config),
-        std::make_unique<MockerResourceFetcher>(
-          boost::json::serialize(payload)),
-                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  createHarness(
+      config_dir, runtime_dir,
+      std::make_unique<MockInstallConfigFetcher>(config),
+      std::make_unique<MockerResourceFetcher>(boost::json::serialize(payload)),
+      std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   std::shared_ptr<const dto::DeviceInstallConfigDto> plan;
   std::optional<
@@ -1112,24 +1291,22 @@ TEST_F(InstallConfigManagerFixture,
 
   int call_count = 0;
   bool saw_expected_version = false;
-  auto fetch_override =
-      [&config, &call_count,
-       &saw_expected_version](std::optional<std::string> /*access_token*/,
-                              std::optional<std::int64_t> expected_version,
-                              const std::optional<std::string>
-                                  &expected_hash)
+  auto fetch_override = [&config, &call_count, &saw_expected_version](
+                            std::optional<std::string> /*access_token*/,
+                            std::optional<std::int64_t> expected_version,
+                            const std::optional<std::string> &expected_hash)
       -> monad::IO<dto::DeviceInstallConfigDto> {
-        ++call_count;
-        dto::DeviceInstallConfigDto copy = config;
-        if (expected_version) {
-          saw_expected_version = (*expected_version == config.version);
-          copy.version = *expected_version;
-        }
-        if (expected_hash) {
-          copy.installs_hash = *expected_hash;
-        }
-        return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(copy));
-      };
+    ++call_count;
+    dto::DeviceInstallConfigDto copy = config;
+    if (expected_version) {
+      saw_expected_version = (*expected_version == config.version);
+      copy.version = *expected_version;
+    }
+    if (expected_hash) {
+      copy.installs_hash = *expected_hash;
+    }
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(copy));
+  };
 
   createHarness(
       config_dir, runtime_dir,
@@ -1175,15 +1352,13 @@ TEST_F(InstallConfigManagerFixture, PropagatesFetcherFailure) {
   auto fetch_override =
       [&call_count](std::optional<std::string> /*access_token*/,
                     std::optional<std::int64_t> /*expected_version*/,
-                    const std::optional<std::string>
-                        & /*expected_hash*/)
+                    const std::optional<std::string> & /*expected_hash*/)
       -> monad::IO<dto::DeviceInstallConfigDto> {
-        ++call_count;
-        auto err = monad::make_error(
-            my_errors::GENERAL::UNEXPECTED_RESULT,
-            "install-config fetch returned stale version");
-        return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
-      };
+    ++call_count;
+    auto err = monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                                 "install-config fetch returned stale version");
+    return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
+  };
 
   createHarness(
       config_dir, runtime_dir,
@@ -1206,6 +1381,84 @@ TEST_F(InstallConfigManagerFixture, PropagatesFetcherFailure) {
   EXPECT_EQ(op_r->error().code, my_errors::GENERAL::UNEXPECTED_RESULT);
   EXPECT_FALSE(harness_->install_manager().local_version());
   EXPECT_EQ(call_count, 1);
+
+  std::filesystem::remove_all(runtime_dir);
+}
+
+TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
+  misc::ThreadNotifier notifier(3000);
+
+  MockRefreshServer refresh_server;
+  refresh_server.set_expected_refresh_token("refresh-initial");
+  refresh_server.set_response_tokens("refreshed-access", "refreshed-refresh");
+  auto base_url = refresh_server.base_url();
+
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
+  auto state_access = runtime_dir / "state" / "access_token.txt";
+  auto state_refresh = runtime_dir / "state" / "refresh_token.txt";
+  write_file(state_access, "expired-access");
+  write_file(state_refresh, "refresh-initial");
+
+  auto fetch_call_count = std::make_shared<std::atomic<int>>(0);
+  auto first_token = std::make_shared<std::string>("<unset>");
+  auto second_token = std::make_shared<std::string>("<unset>");
+
+  auto fetch_override =
+      [fetch_call_count, first_token,
+       second_token](std::optional<std::string> access_token,
+                     std::optional<std::int64_t> /*expected_version*/,
+                     const std::optional<std::string> & /*expected_hash*/)
+      -> monad::IO<dto::DeviceInstallConfigDto> {
+    const int call_index = fetch_call_count->fetch_add(1);
+    if (call_index == 0) {
+      *first_token = access_token.value_or("<missing>");
+      auto err = monad::make_error(my_errors::NETWORK::READ_ERROR,
+                                   "install-config fetch HTTP status 401");
+      err.response_status = 401;
+      return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
+    }
+
+    *second_token = access_token.value_or("<missing>");
+    dto::DeviceInstallConfigDto cfg{};
+    cfg.version = 77;
+    cfg.user_device_id = 1234;
+    return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(cfg));
+  };
+
+  createHarness(
+      config_dir, runtime_dir,
+      std::make_unique<LambdaInstallConfigFetcher>(std::move(fetch_override)),
+      std::make_unique<MockerResourceFetcher>(""), nullptr, base_url);
+
+  std::optional<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+      op_r;
+  harness_->install_manager()
+      .ensure_config_version(std::nullopt, std::nullopt)
+      .run([&](auto result) {
+        op_r = std::move(result);
+        notifier.notify();
+      });
+  notifier.waitForNotification();
+
+  ASSERT_TRUE(op_r.has_value());
+  ASSERT_TRUE(op_r->is_ok())
+      << "ensure_config_version failed: " << op_r->error();
+  const auto plan = op_r->value();
+  ASSERT_TRUE(plan);
+  EXPECT_EQ(plan->version, 77);
+
+  EXPECT_EQ(fetch_call_count->load(), 2);
+  EXPECT_EQ(*first_token, "expired-access");
+  EXPECT_EQ(*second_token, "refreshed-access");
+
+  EXPECT_EQ(refresh_server.refresh_calls(), 1);
+  EXPECT_EQ(refresh_server.last_refresh_token(), "refresh-initial");
+  EXPECT_TRUE(refresh_server.observed_expected_token());
+
+  EXPECT_EQ(read_file(state_access), "refreshed-access");
+  EXPECT_EQ(read_file(state_refresh), "refreshed-refresh");
 
   std::filesystem::remove_all(runtime_dir);
 }

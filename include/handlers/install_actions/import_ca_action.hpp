@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
@@ -41,5 +42,17 @@ private:
                    std::optional<std::int64_t> target_ob_id);
   install_actions::IResourceMaterializer::Ptr resource_materializer_;
 };
+
+#if defined(__APPLE__)
+namespace detail {
+struct MacTrustStoreProbe {
+  std::filesystem::path directory;
+  std::string update_command;
+  bool uses_native_import;
+};
+
+std::optional<MacTrustStoreProbe> detect_mac_trust_store_for_test();
+} // namespace detail
+#endif
 
 } // namespace certctrl::install_actions
