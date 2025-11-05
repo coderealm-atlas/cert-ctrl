@@ -1,6 +1,0 @@
-CompileFlags:
-  Remove: [-fsanitize=address]
-  Add:
-    - "-I/home/jianglibo/cert-ctrl/build/debug-asan"
-    - "-isystem/home/jianglibo/cert-ctrl/build/debug-asan/vcpkg_installed/x64-linux-cpp17/include"
-    - "-resource-dir=/usr/lib/llvm-14/lib/clang/14.0.0"
