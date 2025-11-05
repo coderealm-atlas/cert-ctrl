@@ -18,11 +18,11 @@
 #include "handlers/install_actions/install_resource_materializer.hpp"
 #include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
-#include "resource_fetcher.hpp"
 #include "http_client_manager.hpp"
 #include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
 #include "io_monad.hpp"
+#include "resource_fetcher.hpp"
 #include "util/my_logging.hpp"
 
 namespace certctrl {
@@ -34,10 +34,10 @@ namespace certctrl {
 class InstallConfigManager {
 public:
   InstallConfigManager(
-      cjj365::IoContextManager &io_context_manager, //
+      cjj365::IoContextManager &io_context_manager,       //
       certctrl::ICertctrlConfigProvider &config_provider, //
-      customio::ConsoleOutput &output, //
-      client_async::HttpClientManager &http_client, //
+      customio::ConsoleOutput &output,                    //
+      client_async::HttpClientManager &http_client,       //
       install_actions::IResourceMaterializer::Factory
           resource_materializer_factory,
       install_actions::ImportCaActionHandler::Factory
@@ -86,11 +86,21 @@ private:
   refresh_from_remote(std::optional<std::int64_t> expected_version,
                       const std::optional<std::string> &expected_hash);
 
+  monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
+  refresh_from_remote_with_retry(
+      std::optional<std::int64_t> expected_version,
+      const std::optional<std::string> &expected_hash, bool attempted_refresh);
+
   std::optional<dto::DeviceInstallConfigDto> load_from_disk();
 
   monad::IO<void> persist_config(const dto::DeviceInstallConfigDto &config);
 
   //   std::optional<std::string> load_access_token() const;
+
+  std::optional<std::string> load_refresh_token() const;
+  monad::IO<void> refresh_access_token(const std::string &refresh_token);
+  static std::optional<std::string>
+  write_text_0600(const std::filesystem::path &p, const std::string &text);
 
   std::filesystem::path state_dir() const;
   std::filesystem::path config_file_path() const;
@@ -121,7 +131,7 @@ private:
   certctrl::install_actions::CopyActionHandler::Factory copy_handler_factory_;
   boost::asio::io_context &io_context_;
   install_actions::IAccessTokenLoader &access_token_loader_;
-    install_actions::IMaterializePasswordManager &password_manager_;
+  install_actions::IMaterializePasswordManager &password_manager_;
 };
 
 } // namespace certctrl

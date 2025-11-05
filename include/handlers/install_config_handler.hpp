@@ -81,7 +81,7 @@ public:
       certctrl::ICertctrlConfigProvider &config_provider);
 
   ~InstallConfigHandler() {
-    DEBUG_PRINT("DEBUG_PRINT: InstallConfigHandler destroyed");
+    DEBUG_PRINT("InstallConfigHandler destroyed");
   }
 
   std::string command() const override;

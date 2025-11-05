@@ -42,3 +42,4 @@ CMakeUserPresets.json
 .venv/
 .ccache/
 tests/test-env
+.clangd

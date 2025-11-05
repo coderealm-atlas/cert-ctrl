@@ -7,22 +7,30 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
-PRESET="debug-asan"
+
+DEFAULT_PRESET="debug-asan"
+case "$(uname -s)" in
+    Darwin*) DEFAULT_PRESET="macos-debug" ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT*) DEFAULT_PRESET="windows-ninja-debug" ;;
+    *) DEFAULT_PRESET="debug-asan" ;;
+esac
+
+PRESET="$DEFAULT_PRESET"
 JOBS=""
 CONFIGURE_FIRST=true
 BUILD_FIRST=true
 TEST_ENV_FILE="$PROJECT_ROOT/tests/test-env"
 
 usage() {
-    cat <<'EOF'
+        cat <<EOF
 Usage: ./run_all_test.sh [options]
 
 Options:
-  --preset <name>     CMake configure/build preset to use (default: debug-asan)
-  --jobs <n>          Override parallelism passed to CTest (CTEST_PARALLEL_LEVEL)
-  --skip-configure    Skip the cmake --preset <name> configure step
-  --skip-build        Skip the cmake --build step (requires artifacts already built)
-  -h, --help          Show this help message
+    --preset <name>     CMake configure/build preset to use (default: ${DEFAULT_PRESET})
+    --jobs <n>          Override parallelism passed to CTest (CTEST_PARALLEL_LEVEL)
+    --skip-configure    Skip the cmake --preset <name> configure step
+    --skip-build        Skip the cmake --build step (requires artifacts already built)
+    -h, --help          Show this help message
 EOF
 }
 

@@ -333,9 +333,9 @@ std::string to_visible_or_hex(const std::string& str, bool escape_newline) {
           // convert unpintable characters to hex format
           // result.push_back(printf("\\x%02x", c));
           // Correct way to format non-printable characters as hex
-          char hex_repr[5];  // 4 chars for \xNN and 1 for the null terminator
-          sprintf(hex_repr, "\\x%02x",
-                  static_cast<unsigned char>(c));  // Format hex value
+    char hex_repr[5];  // 4 chars for \xNN and 1 for the null terminator
+          snprintf(hex_repr, sizeof(hex_repr), "\\x%02x",
+                   static_cast<unsigned char>(c));
           result.append(hex_repr);  // Append the formatted string
       }
     }
