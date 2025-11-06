@@ -17,6 +17,7 @@ struct InstallItem {
   // Common
   std::string id;                            // stable id within plan
   std::string type;                          // "copy" | "exec"
+  bool enabled{true};                        // server toggle; skip when false
   bool continue_on_error{false};
   std::vector<std::string> depends_on;       // ids of prior items
   std::vector<std::string> tags;             // optional grouping labels
@@ -63,6 +64,9 @@ inline InstallItem tag_invoke(boost::json::value_to_tag<InstallItem>,
     }
     if (auto const* type_p = obj->if_contains("type")) {
       if (type_p->is_string()) item.type = json::value_to<std::string>(*type_p);
+    }
+    if (auto const* enabled_p = obj->if_contains("enabled")) {
+      if (enabled_p->is_bool()) item.enabled = enabled_p->as_bool();
     }
     if (auto const* coe_p = obj->if_contains("continue_on_error")) {
       if (coe_p->is_bool()) item.continue_on_error = coe_p->as_bool();
@@ -154,6 +158,7 @@ inline void tag_invoke(boost::json::value_from_tag, boost::json::value& v,
   json::object o;
   o["id"] = x.id;
   o["type"] = x.type;
+  o["enabled"] = x.enabled;
   o["continue_on_error"] = x.continue_on_error;
   o["depends_on"] = json::value_from(x.depends_on);
   o["tags"] = json::value_from(x.tags);

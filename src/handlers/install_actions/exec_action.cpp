@@ -470,6 +470,10 @@ monad::IO<void>
 ExecActionHandler::process_one_item(const dto::InstallItem &item) {
   using ReturnIO = monad::IO<void>;
 
+  if (!item.enabled) {
+    return ReturnIO::pure();
+  }
+
   if ((!item.cmd || item.cmd->empty()) &&
       (!item.cmd_argv || item.cmd_argv->empty())) {
     return ReturnIO::pure();
@@ -556,6 +560,10 @@ monad::IO<void> ExecActionHandler::apply(
 
     for (const auto &item : config.installs) {
       if (!is_allowed(item)) {
+        continue;
+      }
+
+      if (!item.enabled) {
         continue;
       }
 
