@@ -644,6 +644,13 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
   BOOST_LOG_SEV(app_logger(), trivial::trace)
       << "Processing import_ca item '" << item.id << "'";
 
+  if (!item.enabled) {
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "import_ca item '" << item.id
+        << "' disabled via configuration; skipping";
+    return ReturnIO::pure();
+  }
+
   if (should_skip_item(item, target_ob_type, target_ob_id)) {
     return ReturnIO::pure();
   }

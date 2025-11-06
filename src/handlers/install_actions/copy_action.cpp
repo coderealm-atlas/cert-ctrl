@@ -318,6 +318,12 @@ monad::IO<void> CopyActionHandler::process_one_item(
     return ReturnIO::pure();
   }
 
+  if (!item.enabled) {
+    output_.logger().debug() << "Skipping disabled copy item '" << item.id
+                             << "'" << std::endl;
+    return ReturnIO::pure();
+  }
+
   if (target_ob_type) {
     if (!item.ob_type || *item.ob_type != *target_ob_type) {
       return ReturnIO::pure();
