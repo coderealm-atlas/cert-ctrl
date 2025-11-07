@@ -21,6 +21,7 @@
 #include <iostream>
 #include <random>
 #include <sstream>
+#include <system_error>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -542,9 +543,66 @@ InstallConfigManager::InstallConfigManager(
 InstallConfigManager::~InstallConfigManager() {}
 
 void InstallConfigManager::clear_cache() {
+  invalidate_all_caches();
+}
+
+void InstallConfigManager::invalidate_all_caches() {
   cached_config_.reset();
   local_version_.reset();
   password_manager_.clear();
+
+  remove_file_quiet(config_file_path());
+  remove_file_quiet(version_file_path());
+
+  if (!runtime_dir_.empty()) {
+    auto resources_root = runtime_dir_ / "resources";
+    remove_cached_resource_scope(resources_root);
+  }
+}
+
+void InstallConfigManager::invalidate_resource_cache(const std::string &ob_type,
+                                                     std::int64_t ob_id) {
+  if (runtime_dir_.empty()) {
+    return;
+  }
+  auto current_dir = resource_current_dir(ob_type, ob_id);
+  auto resource_scope = current_dir.parent_path();
+  remove_cached_resource_scope(resource_scope);
+  password_manager_.forget(ob_type, ob_id);
+}
+
+void InstallConfigManager::remove_cached_resource_scope(
+    const std::filesystem::path &root) {
+  if (root.empty()) {
+    return;
+  }
+  std::error_code ec;
+  auto removed = std::filesystem::remove_all(root, ec);
+  if (ec) {
+    output_.logger().warning()
+        << "Failed to remove cached resource scope '" << root
+        << "': " << ec.message() << std::endl;
+    return;
+  }
+  if (removed > 0) {
+    output_.logger().info() << "Removed cached resource scope '" << root
+                            << "' (" << removed << " entries)."
+                            << std::endl;
+  }
+}
+
+void InstallConfigManager::remove_file_quiet(
+    const std::filesystem::path &file_path) {
+  if (file_path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::remove(file_path, ec);
+  if (ec && ec != std::errc::no_such_file_or_directory) {
+    output_.logger().warning()
+        << "Failed to remove cached file '" << file_path
+        << "': " << ec.message() << std::endl;
+  }
 }
 
 std::shared_ptr<dto::DeviceInstallConfigDto>
@@ -1312,6 +1370,7 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
 
   if (signal.type == "cert.renewed") {
     if (auto typed = ::data::get_cert_renewed(signal)) {
+      invalidate_resource_cache("cert", typed->cert_id);
       return ensure_cached_config().then([this, cert_id = typed->cert_id](
                                              auto config_ptr) {
         return apply_copy_actions(*config_ptr, std::string("cert"), cert_id);
@@ -1320,9 +1379,14 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
   }
 
   if (signal.type == "cert.revoked") {
-    // TODO: Implement removal / quarantine logic
-    output_.logger().warning()
-        << "cert.revoked handling not yet implemented" << std::endl;
+    if (auto typed = ::data::get_cert_revoked(signal)) {
+      invalidate_resource_cache("cert", typed->cert_id);
+      output_.logger().info()
+          << "cert.revoked received; local cache purged for cert "
+          << typed->cert_id << std::endl;
+    } else {
+      output_.logger().warning() << "cert.revoked signal missing cert_id";
+    }
     return ReturnIO::pure();
   }
 
