@@ -840,6 +840,7 @@ TEST_F(InstallConfigManagerFixture, CopiesCaIntoOverrideDirectory) {
   import_item.ob_type = std::string{"ca"};
   import_item.ob_id = static_cast<std::int64_t>(55);
   import_item.ob_name = std::string{"Example Root CA"};
+  import_item.continue_on_error = true;
   config.installs.push_back(import_item);
 
   createHarness(config_dir, runtime_dir,
