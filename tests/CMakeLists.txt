@@ -233,6 +233,7 @@ add_executable(test_install_config_manager
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/copy_action.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/exec_action.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/browser_trust_sync.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/install_resource_materializer.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/materialize_password_manager.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
@@ -313,6 +314,7 @@ gtest_discover_tests(test_exec_action DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT
 add_executable(test_import_ca_action
   test_import_ca_action.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/browser_trust_sync.cpp
   ${CMAKE_SOURCE_DIR}/external/http_client/src/base64.cpp
 )
 target_compile_features(test_import_ca_action PRIVATE cxx_std_17)
@@ -343,6 +345,7 @@ add_executable(test_updates_polling_handler
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/copy_action.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/exec_action.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/browser_trust_sync.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/install_resource_materializer.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/materialize_password_manager.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp

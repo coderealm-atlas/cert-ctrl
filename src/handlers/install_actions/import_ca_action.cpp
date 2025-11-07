@@ -13,7 +13,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <type_traits>
 #include <utility>
 
 #ifdef _WIN32
@@ -28,6 +27,7 @@
 
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
+#include "util/browser_trust_sync.hpp"
 #include "util/my_logging.hpp"
 
 namespace certctrl::install_actions {
@@ -844,6 +844,23 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
               << "import_ca item '" << item.id << "' update command succeeded";
         }
 #endif
+
+        certctrl::util::BrowserTrustSync browser_sync(self->output_,
+                                                      self->runtime_dir_);
+        if (auto sync_err =
+                browser_sync.sync_ca(canonical_name, previous_canonical,
+                                      ca_pem_path)) {
+          auto error_obj = monad::make_error(
+              my_errors::GENERAL::UNEXPECTED_RESULT, *sync_err);
+          BOOST_LOG_SEV(app_logger(), trivial::error)
+              << "import_ca item '" << item.id
+              << "' browser trust sync failed: " << *sync_err;
+          if (item.continue_on_error) {
+            log_warning(self->output_, item, error_obj.what);
+            return ReturnIO::pure();
+          }
+          return ReturnIO::fail(std::move(error_obj));
+        }
 
         if (auto err = persist_canonical_state(state_file, canonical_name)) {
           auto error_obj =
