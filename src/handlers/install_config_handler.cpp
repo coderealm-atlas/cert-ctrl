@@ -39,6 +39,11 @@ monad::IO<void> InstallConfigHandler::start() {
 
   const std::string action = cli_ctx_.positionals[1];
 
+  output_.logger().info()
+      << "CLI install-config command detected; invalidating cached state"
+      << std::endl;
+  install_config_manager_->invalidate_all_caches();
+
   if (action == "pull") {
     return handle_pull();
   }
@@ -198,7 +203,7 @@ monad::IO<void> InstallConfigHandler::handle_show() {
 
 monad::IO<void> InstallConfigHandler::handle_clear_cache() {
   install_config_manager_->clear_cache();
-  std::cerr << "Cleared cached install-config state (memory only)."
+  std::cerr << "Cleared cached install-config state (disk and memory)."
             << std::endl;
   return monad::IO<void>::pure();
 }

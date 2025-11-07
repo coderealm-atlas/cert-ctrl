@@ -80,6 +80,9 @@ public:
   std::shared_ptr<dto::DeviceInstallConfigDto> cached_config_snapshot();
 
   void clear_cache();
+    void invalidate_all_caches();
+    void invalidate_resource_cache(const std::string &ob_type,
+                                                                 std::int64_t ob_id);
 
 private:
   monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
@@ -107,6 +110,8 @@ private:
   std::filesystem::path version_file_path() const;
   std::filesystem::path resource_current_dir(const std::string &ob_type,
                                              std::int64_t ob_id) const;
+    void remove_cached_resource_scope(const std::filesystem::path &root);
+    void remove_file_quiet(const std::filesystem::path &file_path);
 
   std::optional<std::unordered_map<std::string, std::string>>
   resolve_exec_env_for_item(const dto::InstallItem &item);

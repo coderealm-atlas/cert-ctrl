@@ -151,14 +151,22 @@ inline monad::IO<AcmeAccountInfo> create_acme_account_io(
   
   return http_io<monad::PostJsonTag>(url)
       .map([=](auto ex) {
+        std::string provider_val = provider;
+        if (ca_id > 0) {
+          // When linking to a user-owned CA, use the SELF_CA provider by default
+          provider_val = "SELF_CA";
+        }
         json::object body{
             {"name", name},
             {"email", email},
-            {"provider", provider}
+            {"provider", provider_val}
         };
-        // Only include ca_id if it's > 0 (for self-CA)
+        // Only include ca-specific fields when linking to a self-CA
         if (ca_id > 0) {
           body["ca_id"] = ca_id;
+          body["cert_valid_seconds"] = 315360000;
+          body["leaf_key_algorithm"] = "ECDSA";
+          body["leaf_ec_curve"] = "prime256v1";
         }
         ex->setRequestJsonBody(std::move(body));
         ex->request.set(http::field::cookie, cookie);

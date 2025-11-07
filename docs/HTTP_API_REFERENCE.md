@@ -481,6 +481,23 @@ Methods:
   - Response 200:
     { "data": { "id": 42, "user_id": 1, "name": "letsencrypt-main", "email": "admin@example.com", "provider": "letsencrypt", "kid": null, "ca_id": 0 } }
 
+- Create ACME account linked to a user-owned self-CA (immediate issuance path):
+  - POST /apiv1/users/1/acme-accounts
+  - Body (example):
+    {
+      "name": "temp-test",
+      "email": "jianglibo@hotmail.com",
+      "provider": "SELF_CA",
+      "ca_id": 6,
+      "leaf_key_algorithm": "RSA",
+      "leaf_rsa_bits": 2048,
+      "leaf_ec_curve": null,
+      "cert_valid_seconds": 315360000
+    }
+  - Notes: when `provider` is `SELF_CA` and `ca_id` references a valid user-owned CA, the server treats issuance requests synchronously (200) and will immediately issue certificates from the referenced CA.
+  - Response 200 (example):
+    { "data": { "id": 165, "name": "temp-test", "email": "jianglibo@hotmail.com", "provider": "SELF_CA", "ca_id": 6 } }
+
 - Update ACME account (name/email/provider):
   - PUT /apiv1/users/1/acme-accounts/42
   - Body:

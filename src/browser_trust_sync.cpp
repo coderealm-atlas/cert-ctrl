@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <boost/log/trivial.hpp>
 #include <cctype>
 #include <cerrno>
 #include <csignal>
@@ -436,7 +437,7 @@ std::optional<std::string> BrowserTrustSync::sync_ca(
 
   std::vector<std::string> errors;
   for (const auto &profile : profiles) {
-    output_.logger().warning()
+    output_.logger().info()
         << "Syncing CA '" << canonical_name << "' with NSS db '"
         << profile.db_path << "' (user=" << profile.owner << ")" << std::endl;
 
@@ -449,7 +450,7 @@ std::optional<std::string> BrowserTrustSync::sync_ca(
 
     if (auto init_err = ensure_db_initialized(*certutil_path, profile)) {
       errors.push_back(*init_err);
-      BOOST_LOG_SEV(app_logger(), trivial::warning)
+      BOOST_LOG_SEV(app_logger(), trivial::info)
           << "Browser trust init warning: " << *init_err;
       continue;
     }
