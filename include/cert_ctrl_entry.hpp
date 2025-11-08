@@ -16,11 +16,12 @@
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
-#include "handlers/certificates_handler.hpp"
 #include "handlers/agent_update_checker.hpp"
 #include "handlers/conf_handler.hpp"
+#include "handlers/certificates_handler.hpp"
 #include "handlers/handler_dispatcher.hpp"
 #include "handlers/i_handler.hpp"
+#include "handlers/info_handler.hpp"
 #include "handlers/install_actions/copy_action.hpp"
 #include "handlers/install_actions/exec_action.hpp"
 #include "handlers/install_actions/exec_environment_resolver.hpp"
@@ -138,6 +139,7 @@ public:
           di::bind<certctrl::LoginHandler>().in(di::unique),
           di::bind<certctrl::UpdateHandler>().in(di::unique),
           di::bind<certctrl::UpdatesPollingHandler>().in(di::unique),
+          di::bind<certctrl::InfoHandler>().in(di::unique),
           di::bind<certctrl::CertificatesHandler>().in(di::unique),
           di::bind<certctrl::InstallConfigApplyHandler>().in(di::unique),
           di::bind<certctrl::IHandlerFactory>().to(
@@ -163,6 +165,9 @@ public:
                       } else if (subcmd == "certificates") {
                         return inj.template create<
                             std::shared_ptr<certctrl::CertificatesHandler>>();
+                      } else if (subcmd == "info") {
+                        return inj.template create<
+                            std::shared_ptr<certctrl::InfoHandler>>();
                       } else if (subcmd == "install") {
                         return inj.template create<std::shared_ptr<
                             certctrl::InstallConfigApplyHandler>>();
@@ -398,7 +403,7 @@ public:
         // }
         output_hub_->logger().error()
             << "No valid subcommand provided. Available: "
-      << "conf, install-config, login, update, updates-polling, certificates"
+        << "conf, install-config, login, update, updates-polling, certificates, info"
             << ". Also 'account' (TBD)." << std::endl;
         return shutdown();
       }

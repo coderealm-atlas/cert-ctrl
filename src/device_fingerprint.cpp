@@ -156,13 +156,12 @@ DeviceInfo gather_device_info(const std::string& user_agent) {
 }
 
 std::string generate_device_fingerprint_hex(const DeviceInfo& info,
-                                            const std::string& additional_entropy) {
-  // Keep format consistent with docs: concatenate UA + PLATFORM + MODEL + entropy
-  // Include more fields for collision resistance while preserving determinism per input
+                      const std::string& additional_entropy) {
+  // Keep format consistent with docs: concatenate stable device traits plus optional entropy
+  // Exclude volatile fields (like user agent) so version bumps do not rotate the ID
   std::ostringstream oss;
-  oss << info.user_agent << '|' << info.platform << '|' << info.model
-      << '|' << info.os_version << '|' << info.cpu_model << '|' << info.memory_info
-      << '|' << info.hostname << '|' << additional_entropy;
+  oss << info.platform << '|' << info.model << '|' << info.os_version << '|' << info.cpu_model
+    << '|' << info.memory_info << '|' << info.hostname << '|' << additional_entropy;
   return cjj365::opensslutil::sha256_hex(oss.str());
 }
 

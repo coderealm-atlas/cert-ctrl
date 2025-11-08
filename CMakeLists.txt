@@ -546,6 +546,7 @@ list(APPEND APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_actions/materialize_password_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_workflow/install_workflow_runner.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_handler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/info_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/certificates_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/update_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_apply_handler.cpp
