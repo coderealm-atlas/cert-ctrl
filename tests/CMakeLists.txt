@@ -87,6 +87,32 @@ gtest_discover_tests(test_boost_di_lifetimes DISCOVERY_TIMEOUT ${TEST_DISCOVERY_
 
 gtest_discover_tests(test_program_options DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
+add_executable(test_device_fingerprint
+  test_device_fingerprint.cpp
+  ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
+  ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
+  ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
+  ${HTTP_CLIENT_SRCS}
+)
+target_compile_features(test_device_fingerprint PRIVATE cxx_std_17)
+target_include_directories(test_device_fingerprint PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+  ${CMAKE_SOURCE_DIR}/external/http_client
+)
+target_link_libraries(test_device_fingerprint PRIVATE
+  GTest::gtest_main
+  Boost::json
+  fmt::fmt
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  certctrl_libatomic
+)
+
+certctrl_use_static_atomic(test_device_fingerprint)
+
+gtest_discover_tests(test_device_fingerprint DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+
 add_executable(test_login_handler_workflow
   test_login_handler_workflow.cpp
   ${CMAKE_SOURCE_DIR}/src/login_handler.cpp

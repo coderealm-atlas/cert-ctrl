@@ -19,8 +19,9 @@ struct DeviceInfo {
 // Gather best-effort basic system information (Linux-focused; graceful fallbacks elsewhere)
 DeviceInfo gather_device_info(const std::string& user_agent = {});
 
-// Compute deterministic device fingerprint (hex-encoded SHA-256) from DeviceInfo + optional entropy
-// The algorithm concatenates key fields and additional_entropy, then hashes with SHA-256.
+// Compute deterministic device fingerprint (hex-encoded SHA-256) from DeviceInfo + optional entropy.
+// Only stable traits (platform/model/os_version/cpu/memory/hostname) plus additional_entropy are used
+// so cosmetic metadata such as user agent strings do not rotate the fingerprint across releases.
 std::string generate_device_fingerprint_hex(const DeviceInfo& info,
                                             const std::string& additional_entropy = {});
 

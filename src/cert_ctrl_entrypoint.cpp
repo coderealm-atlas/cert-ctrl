@@ -321,6 +321,10 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
       std::cerr << "  install-config Manage install configuration "
                    "(pull/apply/show/clear-cache)."
                 << std::endl
+           << "  certificates   Inspect staged certificate materials."
+           << std::endl
+           << "  info           Show device and environment diagnostics."
+           << std::endl
                 << std::endl;
       std::cerr << "Default behavior:" << std::endl;
       std::cerr << "  No subcommand -> agent update check followed by a device "
