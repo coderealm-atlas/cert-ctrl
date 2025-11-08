@@ -16,6 +16,7 @@
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
+#include "handlers/certificates_handler.hpp"
 #include "handlers/agent_update_checker.hpp"
 #include "handlers/conf_handler.hpp"
 #include "handlers/handler_dispatcher.hpp"
@@ -137,6 +138,7 @@ public:
           di::bind<certctrl::LoginHandler>().in(di::unique),
           di::bind<certctrl::UpdateHandler>().in(di::unique),
           di::bind<certctrl::UpdatesPollingHandler>().in(di::unique),
+          di::bind<certctrl::CertificatesHandler>().in(di::unique),
           di::bind<certctrl::InstallConfigApplyHandler>().in(di::unique),
           di::bind<certctrl::IHandlerFactory>().to(
               [](const auto &inj) -> certctrl::IHandlerFactory & {
@@ -158,6 +160,9 @@ public:
                       } else if (subcmd == "updates-polling") {
                         return inj.template create<
                             std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+                      } else if (subcmd == "certificates") {
+                        return inj.template create<
+                            std::shared_ptr<certctrl::CertificatesHandler>>();
                       } else if (subcmd == "install") {
                         return inj.template create<std::shared_ptr<
                             certctrl::InstallConfigApplyHandler>>();
@@ -341,7 +346,7 @@ public:
           if (r.is_err()) {
             self->print_error(r.error());
           } else {
-            self->info("Handler completed successfully.");
+            self->debug("Handler completed successfully.");
           }
           return self->blocker_.stop();
         });
@@ -392,7 +397,7 @@ public:
         // }
         output_hub_->logger().error()
             << "No valid subcommand provided. Available: "
-            << "conf, install-config, login, update, updates-polling"
+      << "conf, install-config, login, update, updates-polling, certificates"
             << ". Also 'account' (TBD)." << std::endl;
         return shutdown();
       }
