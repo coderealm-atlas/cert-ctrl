@@ -271,6 +271,9 @@ target_link_libraries(test_install_config_manager PRIVATE
   certctrl_libatomic
   di_config
 )
+if(WIN32)
+  target_link_libraries(test_install_config_manager PRIVATE crypt32)
+endif()
 if(APPLE)
   target_link_libraries(test_install_config_manager PRIVATE c++abi "-framework Security" "-framework CoreFoundation")
 endif()
@@ -331,6 +334,9 @@ target_link_libraries(test_import_ca_action PRIVATE
   certctrl_libatomic
   di_config
 )
+if(WIN32)
+  target_link_libraries(test_import_ca_action PRIVATE crypt32)
+endif()
 if(APPLE)
   target_link_libraries(test_import_ca_action PRIVATE c++abi "-framework Security" "-framework CoreFoundation")
   add_dependencies(test_import_ca_action atomic_stub)
@@ -384,6 +390,9 @@ target_link_libraries(test_updates_polling_handler PRIVATE
   certctrl_libatomic
   di_config
 )
+if(WIN32)
+  target_link_libraries(test_updates_polling_handler PRIVATE crypt32)
+endif()
 if(APPLE)
   target_link_libraries(test_updates_polling_handler PRIVATE c++abi "-framework Security" "-framework CoreFoundation")
 endif()

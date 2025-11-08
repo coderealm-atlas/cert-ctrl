@@ -657,6 +657,10 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE di_config
     )
 
+if(WIN32)
+    target_link_libraries(${CERT_CTRL_APP_NAME} PRIVATE crypt32)
+endif()
+
 if(APPLE)
     target_link_libraries(${CERT_CTRL_APP_NAME} PRIVATE c++abi "-framework Security" "-framework CoreFoundation")
 endif()

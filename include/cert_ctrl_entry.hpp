@@ -346,7 +346,8 @@ public:
           if (r.is_err()) {
             self->print_error(r.error());
           } else {
-            self->debug("Handler completed successfully.");
+            self->output_hub_->logger().debug() << "Handler completed successfully."
+                                                << std::endl;
           }
           return self->blocker_.stop();
         });
