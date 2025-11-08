@@ -14,6 +14,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #include <wincrypt.h>
@@ -49,6 +50,7 @@ struct TrustStoreTarget {
   std::string update_command;
   std::string description;
   bool use_native_mac_import{false};
+  bool use_native_windows_import{false};
 };
 
 std::string sanitize_label(std::string_view raw_label,
@@ -171,6 +173,196 @@ copy_ca_material(const std::filesystem::path &source,
     return ex.what();
   }
 }
+
+#if defined(_WIN32)
+
+std::string format_windows_error(DWORD error) {
+  LPSTR message_buffer = nullptr;
+  DWORD size = FormatMessageA(
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+          FORMAT_MESSAGE_IGNORE_INSERTS,
+      nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+      reinterpret_cast<LPSTR>(&message_buffer), 0, nullptr);
+
+  std::string message;
+  if (size != 0 && message_buffer) {
+    message.assign(message_buffer, message_buffer + size);
+    LocalFree(message_buffer);
+  }
+
+  if (message.empty()) {
+    message = fmt::format("0x{:08X}", error);
+  } else {
+    while (!message.empty() &&
+           (message.back() == '\r' || message.back() == '\n')) {
+      message.pop_back();
+    }
+  }
+
+  return message;
+}
+
+std::optional<std::vector<wchar_t>> utf8_to_wide_null_terminated(
+    const std::string &input) {
+  if (input.empty()) {
+    return std::vector<wchar_t>{L'\0'};
+  }
+
+  int required =
+      MultiByteToWideChar(CP_UTF8, 0, input.c_str(), -1, nullptr, 0);
+  if (required <= 0) {
+    return std::nullopt;
+  }
+
+  std::vector<wchar_t> buffer(static_cast<std::size_t>(required));
+  int written = MultiByteToWideChar(CP_UTF8, 0, input.c_str(), -1,
+                                    buffer.data(), required);
+  if (written <= 0) {
+    return std::nullopt;
+  }
+
+  return buffer;
+}
+
+std::optional<std::string>
+load_first_certificate_der_windows(const std::filesystem::path &pem_path,
+                                   std::vector<BYTE> &der_out) {
+  std::ifstream ifs(pem_path, std::ios::binary);
+  if (!ifs.is_open()) {
+    return fmt::format("failed to open certificate '{}'", pem_path.string());
+  }
+
+  bool inside_block = false;
+  std::string base64_payload;
+  std::string line;
+  while (std::getline(ifs, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+
+    if (!inside_block &&
+        line.find("-----BEGIN CERTIFICATE-----") != std::string::npos) {
+      inside_block = true;
+      continue;
+    }
+
+    if (inside_block &&
+        line.find("-----END CERTIFICATE-----") != std::string::npos) {
+      break;
+    }
+
+    if (inside_block) {
+      for (char ch : line) {
+        if (!std::isspace(static_cast<unsigned char>(ch))) {
+          base64_payload.push_back(ch);
+        }
+      }
+    }
+  }
+
+  if (base64_payload.empty()) {
+    return fmt::format("no PEM certificate block found in '{}'",
+                       pem_path.string());
+  }
+
+  DWORD der_size = 0;
+  if (!CryptStringToBinaryA(base64_payload.c_str(),
+                            static_cast<DWORD>(base64_payload.size()),
+                            CRYPT_STRING_BASE64, nullptr, &der_size, nullptr,
+                            nullptr)) {
+    return fmt::format("failed to decode certificate '{}' (size query): {}",
+                       pem_path.string(), format_windows_error(GetLastError()));
+  }
+
+  std::vector<BYTE> der(der_size);
+  if (!CryptStringToBinaryA(base64_payload.c_str(),
+                            static_cast<DWORD>(base64_payload.size()),
+                            CRYPT_STRING_BASE64, der.data(), &der_size, nullptr,
+                            nullptr)) {
+    return fmt::format("failed to decode certificate '{}': {}",
+                       pem_path.string(), format_windows_error(GetLastError()));
+  }
+
+  der.resize(der_size);
+  der_out = std::move(der);
+  return std::nullopt;
+}
+
+std::optional<std::string> import_certificate_to_windows_store(
+    const std::filesystem::path &pem_path, const std::string &friendly_name) {
+  std::vector<BYTE> der_data;
+  if (auto err =
+          load_first_certificate_der_windows(pem_path, der_data)) {
+    return err;
+  }
+
+  PCCERT_CONTEXT context = CertCreateCertificateContext(
+      X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, der_data.data(),
+      static_cast<DWORD>(der_data.size()));
+  if (!context) {
+    return fmt::format(
+        "CertCreateCertificateContext failed for '{}': {}",
+        pem_path.string(), format_windows_error(GetLastError()));
+  }
+
+  HCERTSTORE store = CertOpenStore(
+    CERT_STORE_PROV_SYSTEM, 0, static_cast<HCRYPTPROV_LEGACY>(0),
+      CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG,
+      L"ROOT");
+  if (!store) {
+    auto error_message = fmt::format(
+        "CertOpenStore(LocalMachine\\Root) failed: {}",
+        format_windows_error(GetLastError()));
+    CertFreeCertificateContext(context);
+    return error_message;
+  }
+
+  PCCERT_CONTEXT added_context = nullptr;
+  if (!CertAddCertificateContextToStore(store, context,
+                                        CERT_STORE_ADD_REPLACE_EXISTING,
+                                        &added_context)) {
+    auto error_message = fmt::format(
+        "CertAddCertificateContextToStore failed: {}",
+        format_windows_error(GetLastError()));
+    CertCloseStore(store, 0);
+    CertFreeCertificateContext(context);
+    return error_message;
+  }
+
+  PCCERT_CONTEXT target_context = added_context ? added_context : context;
+
+  if (!friendly_name.empty()) {
+    auto wide_name_opt = utf8_to_wide_null_terminated(friendly_name);
+    if (!wide_name_opt) {
+      BOOST_LOG_SEV(app_logger(), trivial::warning)
+          << "windows trust import: failed to convert friendly name '"
+          << friendly_name << "' to UTF-16";
+    } else {
+      CRYPT_DATA_BLOB name_blob;
+      name_blob.pbData =
+          reinterpret_cast<BYTE *>(wide_name_opt->data());
+      name_blob.cbData =
+          static_cast<DWORD>(wide_name_opt->size() * sizeof(wchar_t));
+      if (!CertSetCertificateContextProperty(
+              target_context, CERT_FRIENDLY_NAME_PROP_ID, 0, &name_blob)) {
+        BOOST_LOG_SEV(app_logger(), trivial::warning)
+            << "windows trust import: failed to set friendly name '"
+            << friendly_name
+            << "': " << format_windows_error(GetLastError());
+      }
+    }
+  }
+
+  if (added_context) {
+    CertFreeCertificateContext(added_context);
+  }
+
+  CertCloseStore(store, 0);
+  CertFreeCertificateContext(context);
+  return std::nullopt;
+}
+
+#endif // defined(_WIN32)
 
 #if defined(__APPLE__)
 
@@ -491,7 +683,7 @@ std::optional<TrustStoreTarget> detect_system_trust_store() {
     return override_target;
   }
   // Windows: stage files under ProgramData and import into LocalMachine Root
-  // store via PowerShell
+  // store using the native CryptoAPI
   try {
     std::filesystem::path base = [] {
       const char *pd = std::getenv("ProgramData");
@@ -502,19 +694,10 @@ std::optional<TrustStoreTarget> detect_system_trust_store() {
     std::filesystem::path dir = base / "certctrl" / "trust-anchors";
     TrustStoreTarget target;
     target.directory = dir;
-    // PowerShell imports all .crt files from the directory into
-    // LocalMachine\Root Note: requires Administrator privileges.
-    std::string cmd = fmt::format(
-        "powershell -NoProfile -ExecutionPolicy Bypass -Command "
-        "\"$ErrorActionPreference='Stop'; $d='{}'; if (-not (Test-Path "
-        "-LiteralPath $d)) {{ New-Item -ItemType Directory -Force -Path $d | "
-        "Out-Null }}; Get-ChildItem -LiteralPath $d -Filter *.crt | "
-        "ForEach-Object {{ Import-Certificate -FilePath $_.FullName "
-        "-CertStoreLocation 'Cert:\\LocalMachine\\Root' }}\"",
-        dir.string());
-    target.update_command = std::move(cmd);
+    target.update_command.clear();
+    target.use_native_windows_import = true;
     target.description =
-        "Windows ProgramData staged trust and PowerShell importer";
+        "Windows ProgramData staged trust with CryptoAPI importer";
     return target;
   } catch (...) {
     // Fall through to std::nullopt
@@ -783,6 +966,33 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
           BOOST_LOG_SEV(app_logger(), trivial::trace)
               << "import_ca item '" << item.id
               << "' macOS keychain import succeeded";
+        }
+#endif
+
+#if defined(_WIN32)
+        if (trust.use_native_windows_import) {
+          BOOST_LOG_SEV(app_logger(), trivial::trace)
+              << "import_ca item '" << item.id
+              << "' performing native Windows trust import using '"
+              << destination << "'";
+
+          if (auto err = import_certificate_to_windows_store(destination,
+                                                             canonical_name)) {
+            auto error_obj = monad::make_error(
+                my_errors::GENERAL::UNEXPECTED_RESULT, *err);
+            BOOST_LOG_SEV(app_logger(), trivial::error)
+                << "import_ca item '" << item.id
+                << "' Windows trust import failed: " << *err;
+            if (item.continue_on_error) {
+              log_warning(self->output_, item, error_obj.what);
+              return ReturnIO::pure();
+            }
+            return ReturnIO::fail(std::move(error_obj));
+          }
+
+          BOOST_LOG_SEV(app_logger(), trivial::trace)
+              << "import_ca item '" << item.id
+              << "' Windows trust import succeeded";
         }
 #endif
 
