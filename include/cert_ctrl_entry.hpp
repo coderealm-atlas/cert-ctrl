@@ -403,7 +403,8 @@ public:
         // }
         output_hub_->logger().error()
             << "No valid subcommand provided. Available: "
-        << "conf, install-config, login, update, updates-polling, certificates, info"
+        // << "conf, install-config, login, update, updates-polling, certificates, info"
+        << " install-config, login, certificates, info"
             << ". Also 'account' (TBD)." << std::endl;
         return shutdown();
       }

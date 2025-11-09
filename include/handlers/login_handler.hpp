@@ -17,6 +17,7 @@
 #include <string>
 #include <filesystem>
 #include <chrono>
+#include <optional>
 
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
@@ -32,7 +33,9 @@ namespace po = boost::program_options;
 
 namespace certctrl {
 
-struct LoginHandlerOptions {};
+struct LoginHandlerOptions {
+  bool force{false};
+};
 
 class LoginHandler : public certctrl::IHandler,
                      public std::enable_shared_from_this<LoginHandler> {
@@ -50,6 +53,7 @@ class LoginHandler : public certctrl::IHandler,
   std::optional<::data::deviceauth::PollResp> poll_resp_;
   bool registration_completed_{false};
   boost::asio::any_io_executor exec_;
+  std::optional<std::filesystem::path> runtime_dir_;
 
 public:
   LoginHandler(cjj365::IoContextManager &io_context_manager,
@@ -62,11 +66,23 @@ public:
         config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
         output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
-  device_auth_url_(fmt::format("{}/auth/device",
-             certctrl_config_provider_.get().base_url)),
+        device_auth_url_(fmt::format("{}/auth/device",
+                                     certctrl_config_provider_.get().base_url)),
         opt_desc_("misc subcommand options") {
     exec_ = boost::asio::make_strand(ioc_);
+    try {
+      if (!config_sources.paths_.empty()) {
+        runtime_dir_ = std::filesystem::path(config_sources.paths_.back());
+      }
+    } catch (...) {
+      runtime_dir_.reset();
+    }
+
     boost::program_options::options_description create_opts("Login Options");
+    create_opts.add_options()
+        ("force",
+         po::bool_switch(&options_.force)->default_value(false),
+         "Force device re-authorization; clears cached session tokens before login.");
     opt_desc_.add(create_opts);
     po::parsed_options parsed = po::command_line_parser(cli_ctx_.unrecognized)
                                     .options(opt_desc_)
@@ -104,6 +120,7 @@ public:
   monad::IO<::data::deviceauth::PollResp> poll_device_once();
 
 private:
+  void clear_cached_session();
   monad::IO<bool> reuse_existing_session_if_possible();
   monad::IO<bool> refresh_session_with_token(const std::string &refresh_token,
                                              const std::filesystem::path &out_dir);
