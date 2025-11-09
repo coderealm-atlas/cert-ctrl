@@ -86,11 +86,8 @@ std::string determine_device_ip(asio::io_context &ioc,
 } // namespace
 
 std::optional<std::filesystem::path> LoginHandler::resolve_runtime_dir() const {
-  try {
-    if (!config_sources_.paths_.empty()) {
-      return std::filesystem::path(config_sources_.paths_.back());
-    }
-  } catch (...) {
+  if (runtime_dir_) {
+    return runtime_dir_;
   }
   return std::nullopt;
 }
@@ -132,6 +129,41 @@ bool LoginHandler::is_access_token_valid(const std::string &token,
   } catch (...) {
     return false;
   }
+}
+
+void LoginHandler::clear_cached_session() {
+  auto runtime_dir = resolve_runtime_dir();
+  if (!runtime_dir) {
+    output_hub_.logger().info()
+        << "Force login requested but runtime directory unavailable; nothing to clear."
+        << std::endl;
+    return;
+  }
+
+  const auto state_dir = *runtime_dir / "state";
+  bool removed_any = false;
+  auto remove_file = [&](const std::filesystem::path &file) {
+    std::error_code ec;
+    if (std::filesystem::remove(file, ec)) {
+      removed_any = true;
+    } else if (ec) {
+      output_hub_.logger().warning()
+          << "Failed to remove cached session file '" << file
+          << "': " << ec.message() << std::endl;
+    }
+  };
+
+  remove_file(state_dir / "access_token.txt");
+  remove_file(state_dir / "refresh_token.txt");
+
+  if (removed_any) {
+    output_hub_.printer().yellow()
+        << "Cleared cached device session tokens." << std::endl;
+  }
+
+  registration_completed_ = false;
+  poll_resp_.reset();
+  start_resp_.reset();
 }
 
 monad::IO<bool> LoginHandler::reuse_existing_session_if_possible() {
@@ -304,16 +336,7 @@ VoidPureIO LoginHandler::start() {
   using namespace monad;
 
   auto self = shared_from_this();
-
-  return self->reuse_existing_session_if_possible().then([self](bool reused) {
-    if (reused) {
-      self->output_hub_.printer().green()
-          << "Existing device session is still "
-             "valid; skipping device authorization."
-          << std::endl;
-      return VoidPureIO::pure();
-    }
-
+  auto begin_authorization = [self]() -> VoidPureIO {
     return self->start_device_authorization().then([self](auto start_resp) {
       self->output_hub_.printer().yellow()
           << "Device Authorization started.\n"
@@ -324,7 +347,27 @@ VoidPureIO LoginHandler::start() {
           << "Complete the authorization in your browser." << std::endl;
       return self->poll();
     });
-  });
+  };
+
+  if (options_.force) {
+    self->output_hub_.printer().yellow()
+        << "--force flag detected; starting fresh device authorization." << std::endl;
+    self->clear_cached_session();
+    return begin_authorization();
+  }
+
+  return self->reuse_existing_session_if_possible().then(
+    [self, begin_authorization](bool reused) {
+        if (reused) {
+          self->output_hub_.printer().green()
+              << "Existing device session is still "
+                 "valid; skipping device authorization."
+              << std::endl;
+          return VoidPureIO::pure();
+        }
+
+        return begin_authorization();
+      });
 }
 
 monad::IO<::data::deviceauth::StartResp>
@@ -510,15 +553,9 @@ VoidPureIO LoginHandler::register_device() {
                           std::string{"libsodium init failed: "} + e.what()));
   }
 
-  // Determine output directory: last config source path
-  std::filesystem::path out_dir;
-  try {
-    if (!self->config_sources_.paths_.empty()) {
-      out_dir = std::filesystem::path(self->config_sources_.paths_.back());
-    }
-  } catch (...) {
-    // leave empty, will error later if used
-  }
+  // Determine output directory: cached runtime path (if available)
+  std::filesystem::path out_dir =
+      self->runtime_dir_.value_or(std::filesystem::path{});
 
   auto write_file_0600 = [](const std::filesystem::path &p,
                             const unsigned char *data,

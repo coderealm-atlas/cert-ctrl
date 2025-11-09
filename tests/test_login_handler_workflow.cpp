@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -21,7 +22,6 @@
 #include <regex>
 #include <sstream>
 #include <string>
-#include <iterator>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -153,7 +153,8 @@ public:
     try {
       asio::io_context tmp_ioc;
       asio::ip::tcp::socket poke(tmp_ioc);
-      auto endpoint = asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port_);
+      auto endpoint =
+          asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port_);
       try {
         poke.connect(endpoint);
         poke.close();
@@ -223,8 +224,8 @@ private:
     } else if (req.method() == http::verb::post &&
                req.target() == "/auth/refresh") {
       handle_refresh(std::move(req), res);
-  } else if (req.method() == http::verb::post &&
-         req.target() == "/apiv1/device/registration") {
+    } else if (req.method() == http::verb::post &&
+               req.target() == "/apiv1/device/registration") {
       handle_registration(std::move(req), res);
     } else {
       res.result(http::status::not_found);
@@ -244,13 +245,13 @@ private:
     if (action == "device_start") {
       ++start_calls_;
       std::cerr << "device_start" << std::endl;
-  json::object body{{"device_code", device_code_},
-        {"user_code", "ABCD-EFGH"},
-        {"verification_uri", base_url() + "/device"},
-        {"verification_uri_complete",
-         base_url() + "/device?user_code=ABCD-EFGH"},
-        {"interval", 1},
-        {"expires_in", 600}};
+      json::object body{{"device_code", device_code_},
+                        {"user_code", "ABCD-EFGH"},
+                        {"verification_uri", base_url() + "/device"},
+                        {"verification_uri_complete",
+                         base_url() + "/device?user_code=ABCD-EFGH"},
+                        {"interval", 1},
+                        {"expires_in", 600}};
       res.body() = json::serialize(json::object{{"data", body}});
     } else if (action == "device_poll") {
       ++poll_calls_;
@@ -309,9 +310,8 @@ private:
                           {"device", std::move(device_obj)},
                           {"session", std::move(session_obj)}};
 
-    res.body() =
-        json::serialize(json::object{{"data", std::move(data_obj)}});
-  res.prepare_payload();
+    res.body() = json::serialize(json::object{{"data", std::move(data_obj)}});
+    res.prepare_payload();
   }
 
   void handle_refresh(http::request<http::string_body> &&req,
@@ -329,8 +329,8 @@ private:
     if (auto *obj = parsed.if_object()) {
       if (auto *token = obj->if_contains("refresh_token");
           token && token->is_string()) {
-        provided_refresh = std::string(token->as_string().c_str(),
-                                       token->as_string().size());
+        provided_refresh =
+            std::string(token->as_string().c_str(), token->as_string().size());
       }
     }
     if (provided_refresh.empty()) {
@@ -388,17 +388,18 @@ class LoginHandlerWorkflowTest : public ::testing::Test {
 protected:
   std::shared_ptr<void> injector_holder_;
   std::shared_ptr<certctrl::LoginHandler> handler_;
-  TestDeviceServer *server_;
+  std::unique_ptr<TestDeviceServer> server_;
   TempDir temp_dir;
   certctrl::ICertctrlConfigProvider *config_provider_;
   cjj365::IIoContextManager *io_context_manager_{nullptr};
   client_async::HttpClientManager *http_client_manager_{nullptr};
   std::unique_ptr<cjj365::ConfigSources> config_sources_ptr_;
-  std::unique_ptr<customio::ConsoleOutputWithColor> output_ptr_;
+  std::shared_ptr<customio::ConsoleOutputWithColor> output_ptr_;
+  static std::shared_ptr<customio::ConsoleOutputWithColor> shared_output_;
   std::unique_ptr<certctrl::CliCtx> cli_ctx_ptr_;
   void SetUp() override {
 
-  json::object app_json{{"auto_apply_config", false},
+    json::object app_json{{"auto_apply_config", false},
                           {"verbose", "info"},
                           {"url_base", "to_set"}};
     write_json_file(temp_dir.path / "application.json", app_json);
@@ -415,32 +416,36 @@ protected:
     json::object ioc_json{{"threads_num", 1}, {"name", "test-ioc"}};
     write_json_file(temp_dir.path / "ioc_config.json", ioc_json);
 
-  certctrl::CliParams params;
-  params.subcmd = "login";
-  params.config_dirs = {temp_dir.path};
+    certctrl::CliParams params;
+    params.subcmd = "login";
+    params.config_dirs = {temp_dir.path};
 
-  auto vm = boost::program_options::variables_map{};
-  auto positionals = std::vector<std::string>{"login"};
-  auto unrecognized = std::vector<std::string>{};
-  cli_ctx_ptr_ = std::make_unique<certctrl::CliCtx>(
-    std::move(vm), std::move(positionals), std::move(unrecognized),
-    std::move(params));
+    auto vm = boost::program_options::variables_map{};
+    auto positionals = std::vector<std::string>{"login"};
+    auto unrecognized = std::vector<std::string>{};
+    cli_ctx_ptr_ = std::make_unique<certctrl::CliCtx>(
+        std::move(vm), std::move(positionals), std::move(unrecognized),
+        std::move(params));
 
-  std::vector<fs::path> config_paths{temp_dir.path};
-  std::vector<std::string> profiles;
+    std::vector<fs::path> config_paths{temp_dir.path};
+    std::vector<std::string> profiles;
 
-  config_sources_ptr_ =
-    std::make_unique<cjj365::ConfigSources>(config_paths, profiles);
-  output_ptr_ = std::make_unique<customio::ConsoleOutputWithColor>(5);
+    config_sources_ptr_ =
+        std::make_unique<cjj365::ConfigSources>(config_paths, profiles);
+    if (!shared_output_) {
+      shared_output_ = std::make_shared<customio::ConsoleOutputWithColor>(5);
+    }
+    output_ptr_ = shared_output_;
 
     auto injector = di::make_injector(
-    di::bind<cjj365::ConfigSources>().to(*config_sources_ptr_),
+        di::bind<cjj365::ConfigSources>().to(*config_sources_ptr_),
         di::bind<cjj365::IHttpclientConfigProvider>()
             .to<cjj365::HttpclientConfigProviderFile>(),
         di::bind<cjj365::IIocConfigProvider>()
             .to<cjj365::IocConfigProviderFile>(),
-    di::bind<customio::IOutput>().to(*output_ptr_),
-    di::bind<certctrl::CliCtx>().to(*cli_ctx_ptr_),
+        di::bind<customio::IOutput>().to(*output_ptr_),
+        di::bind<certctrl::CliCtx>().to(*cli_ctx_ptr_),
+        di::bind<certctrl::LoginHandler>().in(di::unique),
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>()
             .in(di::singleton),
@@ -450,9 +455,12 @@ protected:
     auto real_inj = std::make_shared<InjT>(std::move(injector));
     injector_holder_ = real_inj;
     auto &inj = *real_inj;
-    server_ = &inj.create<TestDeviceServer &>();
+    server_ = inj.create<std::unique_ptr<TestDeviceServer>>();
     config_provider_ = &inj.create<certctrl::ICertctrlConfigProvider &>();
     config_provider_->get().base_url = server_->base_url();
+    // if you obtain a shared_ptr from injector, the instance will be in
+    // singleton static scope. only if you explicitly bind to unique, you can
+    // get a new instance each time.
     handler_ = inj.create<std::shared_ptr<certctrl::LoginHandler>>();
     io_context_manager_ = &inj.create<cjj365::IIoContextManager &>();
     http_client_manager_ = &inj.create<client_async::HttpClientManager &>();
@@ -465,15 +473,18 @@ protected:
       server_ = nullptr;
     }
 
-    if (http_client_manager_ != nullptr) {
-      http_client_manager_->stop();
-      http_client_manager_ = nullptr;
-    }
+    // because io_context_manager_ and http_client_manager_ are singletons(aka static allocated),
+    // so you shouldn't stop them here in TearDown. or else other tests that use the same
+    // singletons will fail.
+    // if (http_client_manager_ != nullptr) {
+    //   http_client_manager_->stop();
+    //   http_client_manager_ = nullptr;
+    // }
 
-    if (io_context_manager_ != nullptr) {
-      io_context_manager_->stop();
-      io_context_manager_ = nullptr;
-    }
+    // if (io_context_manager_ != nullptr) {
+    //   io_context_manager_->stop();
+    //   io_context_manager_ = nullptr;
+    // }
 
     injector_holder_.reset();
     config_provider_ = nullptr;
@@ -494,8 +505,8 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   notifier.waitForNotification();
   int start_calls = server_->start_calls();
   int poll_calls = server_->poll_calls();
-  std::cerr << "start_calls=" << start_calls
-            << " poll_calls=" << poll_calls << std::endl;
+  std::cerr << "start_calls=" << start_calls << " poll_calls=" << poll_calls
+            << std::endl;
   ASSERT_TRUE(start_result.has_value())
       << "start_calls=" << start_calls << " poll_calls=" << poll_calls;
   ASSERT_FALSE(start_result->is_err()) << start_result->error();
@@ -564,13 +575,6 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
     std::string stored_refresh((std::istreambuf_iterator<char>(ifs)), {});
     EXPECT_EQ(stored_refresh, server_->refresh_token());
   }
-
-  //   auto &http_manager = injector.create<client_async::HttpClientManager
-  //   &>(); auto &io_manager = injector.create<cjj365::IoContextManager &>();
-  //   http_manager.stop();
-  //   io_manager.stop();
-  //   server.stop();
-  //   cjj365::ConfigSources::instance_count.store(0);
 }
 
 TEST_F(LoginHandlerWorkflowTest, PollRetriesBeforeApproval) {
@@ -617,7 +621,7 @@ TEST_F(LoginHandlerWorkflowTest, ReusesExistingValidTokens) {
           .set_type("JWT")
           .set_payload_claim("sub", jwt::claim(server_->expected_user_id()))
           .set_payload_claim("device_id",
-                              jwt::claim(std::string{"device-code-xyz"}))
+                             jwt::claim(std::string{"device-code-xyz"}))
           .set_expires_at(now + std::chrono::hours(1))
           .sign(jwt::algorithm::hs256{"secret"});
   auto refresh_token = server_->refresh_token();
@@ -701,7 +705,7 @@ TEST_F(LoginHandlerWorkflowTest, RefreshesUsingStoredRefreshToken) {
           .set_type("JWT")
           .set_payload_claim("sub", jwt::claim(server_->expected_user_id()))
           .set_payload_claim("device_id",
-                              jwt::claim(std::string{"device-code-xyz"}))
+                             jwt::claim(std::string{"device-code-xyz"}))
           .set_expires_at(now + std::chrono::hours(1))
           .sign(jwt::algorithm::hs256{"secret"});
   auto refreshed_refresh = server_->refresh_token() + "-rotated";
@@ -750,6 +754,9 @@ TEST_F(LoginHandlerWorkflowTest, RefreshesUsingStoredRefreshToken) {
   ASSERT_FALSE(register_result->is_err()) << register_result->error();
   EXPECT_EQ(server_->registration_calls(), 0);
 }
+
+std::shared_ptr<customio::ConsoleOutputWithColor>
+    LoginHandlerWorkflowTest::shared_output_;
 
 // int main(int argc, char **argv) {
 //   ::testing::InitGoogleTest(&argc, argv);

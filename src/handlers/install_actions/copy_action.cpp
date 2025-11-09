@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <boost/json.hpp>
+#include <boost/log/trivial.hpp>
 #include <chrono>
 #include <filesystem>
 #include <fmt/format.h>
@@ -319,8 +320,10 @@ monad::IO<void> CopyActionHandler::process_one_item(
   }
 
   if (!item.enabled) {
-    output_.logger().debug() << "Skipping disabled copy item '" << item.id
-                             << "'" << std::endl;
+    output_.logger().debug()
+        << "Skipping disabled copy item '" << item.id << "'" << std::endl;
+    BOOST_LOG_SEV(app_logger(), trivial::debug)
+        << "Skipping disabled copy item '" << item.id << "'";
     return ReturnIO::pure();
   }
 
@@ -405,6 +408,8 @@ monad::IO<void> CopyActionHandler::process_one_item(
 
           self->output_.logger().info() << "Copied '" << source_path << "' -> '"
                                         << dest_path << "'" << std::endl;
+          BOOST_LOG_SEV(app_logger(), trivial::info)
+              << "Copied '" << source_path << "' -> '" << dest_path << "'";
         }
 
         return ReturnIO::pure();
