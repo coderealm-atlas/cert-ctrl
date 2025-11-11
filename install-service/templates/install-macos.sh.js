@@ -23,6 +23,7 @@ LOG_DIR="\${LOG_DIR:-/var/log}"
 SERVICE_LABEL="\${SERVICE_LABEL:-{{SERVICE_LABEL}}}"
 PLIST_PATH="/Library/LaunchDaemons/\${SERVICE_LABEL}.plist"
 DOWNLOAD_OS="macos"
+FORCE="\${FORCE:-{{FORCE}}}"
 RED='\x1b[0;31m'
 GREEN='\x1b[0;32m'
 BLUE='\x1b[0;34m'
@@ -46,6 +47,61 @@ log_success() {
 
 log_warn() {
     echo -e "\${YELLOW}[WARNING]\${NC} $1" >&2
+}
+
+get_installed_version() {
+    local binary_path="$1"
+
+    if [ ! -x "$binary_path" ]; then
+        echo ""
+        return 0
+    fi
+
+    local version_output=""
+    if version_output=$("$binary_path" --version 2>/dev/null); then
+        version_output=$(printf '%s\n' "$version_output" | head -n1)
+    else
+        version_output=""
+    fi
+
+    echo "$version_output"
+}
+
+maybe_skip_install() {
+    local requested_version="$1"
+    local binary_path="\${INSTALL_DIR}/cert-ctrl"
+
+    if [ "\${FORCE}" = "true" ]; then
+        log_info "Force install requested; continuing even if version matches."
+        return 0
+    fi
+
+    if [ ! -x "$binary_path" ]; then
+        return 0
+    fi
+
+    local installed_version
+    installed_version=$(get_installed_version "$binary_path")
+
+    if [ -z "$installed_version" ]; then
+        log_warn "Existing cert-ctrl binary found but version could not be determined; continuing with reinstall."
+        return 0
+    fi
+
+    local requested_trim="\${requested_version#v}"
+    local installed_trim="\${installed_version#v}"
+
+    if [ "$installed_trim" = "$requested_trim" ]; then
+    log_success "cert-ctrl \${installed_version} is already installed at $binary_path"
+    log_info ""
+    log_info "To reinstall anyway, choose one of the following:"
+        log_info "  1. URL parameter:   curl -fsSL \"\${BASE_URL}/install-macos.sh?force=1\" | sudo bash"
+        log_info "  2. Environment var: FORCE=true curl -fsSL \"\${BASE_URL}/install-macos.sh\" | sudo -E bash"
+    log_info "  3. Remove existing: sudo rm \"$binary_path\" && curl -fsSL \"\${BASE_URL}/install-macos.sh?force=1\" | sudo bash"
+        exit 0
+    fi
+
+    log_info "Existing install version \${installed_version} differs from requested \${requested_version}; continuing with upgrade."
 }
 
 check_dependencies() {
@@ -229,6 +285,7 @@ main() {
     arch=$(detect_arch)
     local version
     version=$(resolve_version)
+    maybe_skip_install "$version"
     local archive
     archive=$(download_archive "$version" "$arch")
     install_binary "$archive"

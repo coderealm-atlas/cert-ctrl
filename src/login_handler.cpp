@@ -134,9 +134,9 @@ bool LoginHandler::is_access_token_valid(const std::string &token,
 void LoginHandler::clear_cached_session() {
   auto runtime_dir = resolve_runtime_dir();
   if (!runtime_dir) {
-    output_hub_.logger().info()
-        << "Force login requested but runtime directory unavailable; nothing to clear."
-        << std::endl;
+    output_hub_.logger().info() << "Force login requested but runtime "
+                                   "directory unavailable; nothing to clear."
+                                << std::endl;
     return;
   }
 
@@ -189,11 +189,18 @@ monad::IO<bool> LoginHandler::reuse_existing_session_if_possible() {
   }
 
   if (cached_refresh && !cached_refresh->empty()) {
-    return self
-        ->refresh_session_with_token(*cached_refresh, *runtime_dir)
+    return self->refresh_session_with_token(*cached_refresh, *runtime_dir)
         .catch_then([self](const monad::Error &e) {
           self->output_hub_.logger().warning()
               << "Refresh token attempt failed: " << e.what << std::endl;
+          const std::string_view msg = e.what;
+          if (msg.find("rotated") != std::string_view::npos ||
+              msg.find("family revoked") != std::string_view::npos) {
+            self->output_hub_.printer().yellow()
+                << "Cached session tokens are no longer valid; please rerun "
+                << "`cert-ctrl login --force` to re-authorize this device."
+                << std::endl;
+          }
           return monad::IO<bool>::pure(false);
         });
   }
@@ -351,13 +358,14 @@ VoidPureIO LoginHandler::start() {
 
   if (options_.force) {
     self->output_hub_.printer().yellow()
-        << "--force flag detected; starting fresh device authorization." << std::endl;
+        << "--force flag detected; starting fresh device authorization."
+        << std::endl;
     self->clear_cached_session();
     return begin_authorization();
   }
 
   return self->reuse_existing_session_if_possible().then(
-    [self, begin_authorization](bool reused) {
+      [self, begin_authorization](bool reused) {
         if (reused) {
           self->output_hub_.printer().green()
               << "Existing device session is still "
@@ -439,15 +447,15 @@ VoidPureIO LoginHandler::poll() {
 
   const int interval_seconds = std::max(1, self->start_resp_->interval);
   const auto interval = std::chrono::seconds(interval_seconds);
-  const int base_attempts = self->start_resp_->expires_in > 0
-                                ? self->start_resp_->expires_in / interval_seconds
-                                : 0;
+  const int base_attempts =
+      self->start_resp_->expires_in > 0
+          ? self->start_resp_->expires_in / interval_seconds
+          : 0;
   const int max_retries = std::max(2, base_attempts + 1);
 
   auto spinner = std::make_shared<customio::Spinner>(
       self->exec_, self->output_hub_.printer().stream(),
-      std::string{"Polling... "},
-      std::chrono::milliseconds(120),
+      std::string{"Polling... "}, std::chrono::milliseconds(120),
       /*enabled=*/true);
   spinner->start();
 
@@ -585,9 +593,9 @@ VoidPureIO LoginHandler::register_device() {
     }
   };
 
-  auto write_text_0600 = [](const std::filesystem::path &p,
-                            const std::string &text)
-      -> std::optional<std::string> {
+  auto write_text_0600 =
+      [](const std::filesystem::path &p,
+         const std::string &text) -> std::optional<std::string> {
     try {
       std::error_code ec;
       if (auto parent = p.parent_path(); !parent.empty()) {

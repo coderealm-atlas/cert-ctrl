@@ -78,6 +78,23 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-InstalledCertCtrlVersion {
+    param(
+        [string]$BinaryPath
+    )
+
+    if (-not (Test-Path $BinaryPath)) {
+        return $null
+    }
+
+    try {
+        return (& $BinaryPath --version 2>$null | Select-Object -First 1)
+    }
+    catch {
+        return $null
+    }
+}
+
 $serviceName = "CertCtrlAgent"
 $serviceDisplayName = "Cert Ctrl Agent"
 $serviceDescription = "Maintains device certificates and polls the cert-ctrl control plane."
@@ -174,6 +191,27 @@ elseif (-not $paramUserInstall -and -not (Test-Administrator)) {
     Write-Info "Option 1: Close this window, re-launch Windows PowerShell or PowerShell with 'Run as administrator', then rerun install.ps1."
     Write-Info "You can also specify -InstallDir to point at a directory you already own."
     exit 1
+}
+
+$destinationBinary = Join-Path $installPath 'cert-ctrl.exe'
+
+if (-not $paramForceInstall) {
+    $existingVersion = Get-InstalledCertCtrlVersion -BinaryPath $destinationBinary
+    if ($existingVersion) {
+        $normalizedExisting = $existingVersion.TrimStart('v')
+        $normalizedRequested = $Version.TrimStart('v')
+        if ($normalizedExisting -eq $normalizedRequested) {
+            Write-Success "cert-ctrl $existingVersion is already installed at $destinationBinary"
+            Write-Host ""
+            Write-Info "To reinstall anyway, choose one of the following:"
+            Write-Info "  1. URL parameter:   irm \"{{BASE_URL}}/install.ps1?force=1\" | iex"
+            Write-Info "  2. Download + flag: irm \"{{BASE_URL}}/install.ps1\" -OutFile install.ps1; .\\install.ps1 -Force"
+            Write-Info "  3. Remove existing: Remove-Item -Force -Path \"$destinationBinary\"; irm \"{{BASE_URL}}/install.ps1?force=1\" | iex"
+            exit 0
+        }
+
+        Write-Info "Existing install version $existingVersion differs from requested $Version; continuing with upgrade."
+    }
 }
 
 $mirrorUrl = "{{MIRROR_URL}}"

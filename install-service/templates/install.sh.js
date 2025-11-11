@@ -69,6 +69,63 @@ log_verbose() {
     fi
 }
 
+get_installed_version() {
+    local binary_path="$1"
+
+    if [ -z "$binary_path" ] || [ ! -x "$binary_path" ]; then
+        echo ""
+        return 0
+    fi
+
+    local version_output=""
+    if version_output=$("$binary_path" --version 2>/dev/null); then
+        version_output=$(printf '%s\n' "$version_output" | head -n1)
+    else
+        version_output=""
+    fi
+
+    if [ -z "$version_output" ]; then
+        echo ""
+        return 0
+    fi
+
+    echo "$version_output"
+}
+
+maybe_skip_install() {
+    if [ "$FORCE" = "true" ]; then
+        log_verbose "Force install requested; skipping existing version check"
+        return 0
+    fi
+
+    local binary_path="$INSTALL_DIR/cert-ctrl"
+
+    if [ ! -x "$binary_path" ]; then
+        log_verbose "No existing cert-ctrl installation detected at $binary_path"
+        return 0
+    fi
+
+    local installed_version
+    installed_version=$(get_installed_version "$binary_path")
+
+    if [ -z "$installed_version" ]; then
+        log_verbose "Existing cert-ctrl binary found but version could not be determined"
+        return 0
+    fi
+
+    local requested="\${VERSION#v}"
+    local installed_trim="\${installed_version#v}"
+
+    if [ "$installed_trim" = "$requested" ]; then
+        log_success "cert-ctrl $installed_version is already installed at $binary_path"
+        log_info "Skipping download because the requested version is already present."
+        log_info "To reinstall anyway, run: curl -fsSL \"$BASE_URL/install.sh?force=1\" | sudo bash"
+        exit 0
+    fi
+
+    log_verbose "Installed version $installed_version differs from requested $VERSION; continuing with download"
+}
+
 # Detect platform if not provided
 detect_platform() {
     if [ -n "$PLATFORM" ] && [ "$PLATFORM" != "unknown" ]; then
@@ -290,7 +347,7 @@ install_config_files() {
             log_info "Configuration directory exists but continuing (non-interactive mode)"
         else
             log_warning "Configuration directory $CONFIG_DIR already exists and contains files"
-            log_info "To overwrite: Use ?force in URL or FORCE=true with sudo -E"
+            log_info "To overwrite: Use ?force=1 in URL or FORCE=true with sudo -E"
             log_info "Skipping configuration install"
             return 0
         fi
@@ -429,7 +486,7 @@ install_service_unit() {
             log_info "Overwriting existing service unit (non-interactive mode)"
         else
             log_warning "Service $SERVICE_NAME already exists."
-            log_info "To overwrite: Use ?force in URL or FORCE=true with sudo -E"
+            log_info "To overwrite: Use ?force=1 in URL or FORCE=true with sudo -E"
             log_info "Skipping service installation"
             return 0
         fi
@@ -550,9 +607,9 @@ install_binary() {
         fi
         log_info ""
         log_info "To proceed with installation, choose one of:"
-        log_info "  1. URL parameter:   curl -fsSL \"https://install.lets-script.com/install.sh?force\" | sudo bash"
-        log_info "  2. Environment var: FORCE=true curl -fsSL https://install.lets-script.com/install.sh | sudo -E bash"
-        log_info "  3. Remove existing: sudo rm $INSTALL_DIR/cert-ctrl && curl -fsSL https://install.lets-script.com/install.sh | sudo bash"
+    log_info "  1. URL parameter:   curl -fsSL \"$BASE_URL/install.sh?force=1\" | sudo bash"
+    log_info "  2. Environment var: FORCE=true curl -fsSL \"$BASE_URL/install.sh\" | sudo -E bash"
+    log_info "  3. Remove existing: sudo rm $INSTALL_DIR/cert-ctrl && curl -fsSL \"$BASE_URL/install.sh\" | sudo bash"
         log_info ""
         log_error "Installation stopped. Use one of the options above to continue."
         rm -rf "$extract_dir"
@@ -726,6 +783,8 @@ main() {
         log_error "Installation requires root privileges"
         exit 1
     fi
+
+    maybe_skip_install
     
     local temp_file=$(download_binary "$platform_arch")
 
