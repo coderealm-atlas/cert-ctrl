@@ -6,9 +6,9 @@ This guide provides comprehensive installation instructions for the cert-ctrl ce
 
 ### Automated Installer
 
-#### Linux & WSL
+#### Unix-like Systems (Linux, macOS, WSL)
 
-For most Linux distributions (including WSL), use the unified shell installer:
+For most users, the easiest installation method is our automated installer:
 
 ```bash
 curl -fsSL https://install.lets-script.com/install.sh | sudo bash
@@ -25,35 +25,11 @@ sudo bash install.sh
 ```
 
 This will automatically:
-- Detect your Linux distribution and architecture
+- Detect your platform and architecture
 - Download the latest release
 - Install to `/usr/local/bin` (requires root)
-- Set up the systemd service when supported
+- Set up systemd service (Linux only)
 - Verify the installation
-
-#### macOS
-
-macOS uses a dedicated installer script that configures launchd and mac-specific paths:
-
-```bash
-curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash
-```
-
-or, to review first:
-
-```bash
-curl -fsSL https://install.lets-script.com/install-macos.sh -o install-macos.sh
-# Inspect the script before execution
-cat install-macos.sh
-sudo bash install-macos.sh
-```
-
-The macOS installer:
-- Detects Apple Silicon vs Intel automatically
-- Installs to `/usr/local/bin` (creates the directory when needed)
-- Generates the launchd plist and loads the daemon
-- Writes defaults under `/Library/Application Support/certctrl`
-- Performs basic verification after setup
 
 #### Windows (PowerShell)
 
@@ -87,7 +63,7 @@ The installer automatically detects:
 
 ## Installation Options
 
-### Linux & WSL
+### Unix-like Systems (Linux, macOS, WSL)
 
 #### System-wide Installation (Default)
 
@@ -106,26 +82,11 @@ curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --install-dir
 #### Service Installation
 
 ```bash
-# Install binary and systemd service
+# Install binary and systemd service (Linux)
 curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --service
 
 # Install binary only, skip service
 curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --no-service
-```
-
-### macOS
-
-The macOS installer script exposes similar toggles via long options. Some common examples:
-
-```bash
-# Install for all users (requires sudo)
-curl -fsSL https://install.lets-script.com/install-macos.sh | bash
-
-# Install to a custom directory
-curl -fsSL https://install.lets-script.com/install-macos.sh | bash -s -- --install-dir /usr/local/cert-ctrl
-
-# Skip launchd registration
-curl -fsSL https://install.lets-script.com/install-macos.sh | bash -s -- --no-service
 ```
 
 ### Windows
@@ -225,7 +186,7 @@ The following package managers are planned for future releases:
 ### Linux
 
 #### Prerequisites
-- **Required**: `curl`, `tar`, `gzip`, `sha256sum` (or `shasum -a 256` on macOS)
+- **Required**: `curl`, `tar`, `gzip`, `sha256sum`
 - **Optional**: `systemctl` (for service management)
 
 #### Installation
@@ -264,14 +225,13 @@ Default configuration locations:
 ### macOS
 
 #### Prerequisites
-- **Required**: `curl`, `tar`, `gzip`, `shasum` (bundled) or `sha256sum` (`brew install coreutils`)
+- **Required**: `curl`, `tar`, `gzip`
 - **Optional**: Homebrew (for dependencies)
 
 #### Installation
 ```bash
-# Fetch installer (requires root for system service)
-curl -fsSL https://install.lets-script.com/install-macos.sh -o install-macos.sh
-sudo bash install-macos.sh
+# Install system-wide (requires root)
+sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash
 
 # Verify installation
 cert-ctrl --version
@@ -279,15 +239,44 @@ cert-ctrl --version
 
 #### Running as Service (launchd)
 ```bash
-# The macOS installer registers a LaunchDaemon automatically.
-# Useful launchctl commands:
-sudo launchctl print system/com.coderealm.certctrl
-sudo launchctl kickstart -k system/com.coderealm.certctrl
-sudo launchctl bootout system /Library/LaunchDaemons/com.coderealm.certctrl.plist
+# Create launch agent plist
+cat > ~/Library/LaunchAgents/com.certctrl.agent.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.certctrl.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/.local/bin/cert-ctrl</string>
+        <string>--config-dir</string>
+        <string>/Users/USERNAME/.config/certctrl</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/Library/Logs/certctrl.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/Library/Logs/certctrl.error.log</string>
+</dict>
+</plist>
+EOF
+
+# Replace USERNAME with your actual username
+sed -i '' "s/USERNAME/$(whoami)/g" ~/Library/LaunchAgents/com.certctrl.agent.plist
+
+# Load the service
+launchctl load ~/Library/LaunchAgents/com.certctrl.agent.plist
+
+# Start the service
+launchctl start com.certctrl.agent
 ```
 
 #### Configuration
-Default configuration location: `/Library/Application Support/certctrl`
+Default configuration location: `~/.config/certctrl/`
 
 ### Windows
 
@@ -361,8 +350,6 @@ curl -fsSL "https://github.com/coderealm-atlas/cert-ctrl/releases/download/${VER
 
 # Verify checksum (optional but recommended)
 curl -fsSL "https://github.com/coderealm-atlas/cert-ctrl/releases/download/${VERSION}/cert-ctrl-${OS}-${ARCH}.tar.gz.sha256" | sha256sum -c
-# macOS alternative:
-# curl ... | shasum -a 256 -c
 
 # Extract
 tar -xzf cert-ctrl.tar.gz
@@ -504,8 +491,7 @@ curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --non-interac
 # The installer automatically verifies checksums when available
 # Manual verification:
 curl -fsSL "https://github.com/coderealm-atlas/cert-ctrl/releases/download/v0.1.0/cert-ctrl-linux-x64.tar.gz.sha256"
-# Linux: sha256sum cert-ctrl-linux-x64.tar.gz
-# macOS: shasum -a 256 cert-ctrl-macos-x64.tar.gz
+sha256sum cert-ctrl-linux-x64.tar.gz
 ```
 
 ### Corporate/Proxy Environments
@@ -628,7 +614,7 @@ nslookup install.lets-script.com
    cert-ctrl doctor
    ```
 
-3. **Documentation**: Visit [our documentation site](https://docs.lets-script.com)
+3. **Documentation**: Visit [our documentation site](https://docs.cert-ctrl.com)
 4. **Support**: Create an issue at [GitHub Issues](https://github.com/coderealm-atlas/cert-ctrl/issues)
 
 ## Uninstallation
@@ -690,4 +676,4 @@ For detailed build instructions, see [BUILD.md](BUILD.md).
 - Regularly update to the latest version for security patches
 - Verify checksums when downloading manually
 
-For security questions, contact security@lets-script.com.
+For security questions, contact security@cert-ctrl.com.

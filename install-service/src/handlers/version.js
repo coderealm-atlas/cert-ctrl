@@ -194,9 +194,9 @@ function extractDownloadUrls(assets) {
 
 function buildInstallCommands() {
   return {
-    linux: 'curl -fsSL https://install.lets-script.com/install.sh | sudo bash',
-    macos: 'curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash',
-    windows: 'irm https://install.lets-script.com/install.ps1 | iex'
+    linux: 'curl -fsSL "https://install.lets-script.com/install.sh?force=1" | sudo bash',
+    macos: 'curl -fsSL "https://install.lets-script.com/install-macos.sh?force=1" | sudo bash',
+    windows: 'irm "https://install.lets-script.com/install.ps1?force=1" | iex'
   };
 }
 
