@@ -235,18 +235,13 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
     po::options_description generic_desc("A cert-ctrl tool");
 
     certctrl::CliParams cli_params;
+    std::vector<std::string> config_dirs_args;
 
     generic_desc.add_options() //
         ("config-dirs,c",
-         po::value<std::vector<fs::path>>(&cli_params.config_dirs)
-             ->default_value(std::vector<fs::path>{}, "")
-             ->notifier([&](const std::vector<fs::path> &config_dirs) mutable {
-               for (const auto &config_dir : config_dirs) {
-                 if (!fs::exists(config_dir)) {
-                   throw std::runtime_error("Config directory does not exist.");
-                 }
-               }
-             }),
+         po::value<std::vector<std::string>>(&config_dirs_args)
+             ->multitoken()
+             ->composing(),
          "paths of the configuration directories.") //
         ("profiles",
          po::value<std::vector<std::string>>(&cli_params.profiles)
@@ -303,6 +298,18 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
                                     .run();
     po::store(parsed, vm);
     po::notify(vm);
+
+    if (!config_dirs_args.empty()) {
+      cli_params.config_dirs.clear();
+      for (const auto &dir_str : config_dirs_args) {
+        fs::path config_dir(dir_str);
+        if (!fs::exists(config_dir)) {
+          throw std::runtime_error("Config directory does not exist: " +
+                                   config_dir.string());
+        }
+        cli_params.config_dirs.push_back(std::move(config_dir));
+      }
+    }
 
     std::vector<std::string> positionals =
         vm["positionals"].as<std::vector<std::string>>();
