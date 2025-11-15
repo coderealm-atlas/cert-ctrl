@@ -14,6 +14,13 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <securitybaseapi.h>
+#endif
 
 namespace po = boost::program_options;
 
@@ -210,9 +217,20 @@ void add_unique_path(std::vector<fs::path> &paths, const fs::path &candidate) {
   }
 }
 
-bool is_running_as_root() {
+bool is_running_with_elevated_privileges() {
 #if defined(_WIN32)
-  return true;
+  BOOL is_admin = FALSE;
+  SID_IDENTIFIER_AUTHORITY nt_authority = SECURITY_NT_AUTHORITY;
+  PSID admin_group = nullptr;
+
+  if (AllocateAndInitializeSid(&nt_authority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                               DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
+                               &admin_group)) {
+    CheckTokenMembership(nullptr, admin_group, &is_admin);
+    FreeSid(admin_group);
+  }
+
+  return is_admin == TRUE;
 #else
   return ::geteuid() == 0;
 #endif
@@ -350,11 +368,22 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
       return 0;
     }
 
-    if (!cli_params.allow_non_root && !is_running_as_root()) {
+    if (!cli_params.allow_non_root && !is_running_with_elevated_privileges()) {
+#if defined(_WIN32)
+      const char *required_privilege = "administrator";
+      const char *rerun_instruction =
+          "For full functionality, re-run as administrator";
+#else
+      const char *required_privilege = "root";
+      const char *rerun_instruction =
+          "For full functionality, re-run as root";
+#endif
       std::cerr
-          << "Warning: cert-ctrl is not running with root privileges. "
-          << "For full functionality, re-run as root or pass --no-root to "
-          << "acknowledge running without elevated privileges." << std::endl;
+          << "Warning: cert-ctrl is not running with " << required_privilege
+          << " privileges. " << rerun_instruction
+          << " or pass --no-root to acknowledge running without elevated "
+             "privileges."
+          << std::endl;
       return EXIT_FAILURE;
     }
 
