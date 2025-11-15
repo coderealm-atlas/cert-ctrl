@@ -189,7 +189,8 @@ elseif (-not $paramUserInstall -and -not (Test-Administrator)) {
     $userInstallPath = Join-Path $env:LOCALAPPDATA "Programs\cert-ctrl"
     Write-ErrorMessage "Administrator privileges are required to install to '$installPath'."
     Write-Info "Option 1: Close this window, re-launch Windows PowerShell or PowerShell with 'Run as administrator', then rerun install.ps1."
-    Write-Info "You can also specify -InstallDir to point at a directory you already own."
+    Write-Info "Option 2: Run the installer with -UserInstall for a per-user installation at '$userInstallPath'."
+    Write-Info "Option 3: Specify -InstallDir to point at a directory you already own."
     exit 1
 }
 
