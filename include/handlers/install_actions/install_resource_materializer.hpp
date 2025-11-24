@@ -8,6 +8,7 @@
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/log/sources/logger.hpp>
+#include <boost/log/sources/severity_logger.hpp>
 #include <boost/log/trivial.hpp>
 
 #include "conf/certctrl_config.hpp"

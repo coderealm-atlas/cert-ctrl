@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -25,6 +26,7 @@
 #endif
 
 #include "base64.h"
+#include "handlers/session_refresh_retry.hpp"
 #include "http_client_monad.hpp"
 #include "my_error_codes.hpp"
 #include "openssl/crypt_util.hpp"
@@ -1305,108 +1307,156 @@ InstallResourceMaterializer::refresh_access_token(
 
   const auto refresh_url =
       fmt::format("{}/auth/refresh", config_provider_.get().base_url);
-  auto payload_obj = std::make_shared<boost::json::object>(
-      boost::json::object{{"refresh_token", refresh_token}});
+  auto single_attempt = [this, refresh_token, refresh_url,
+                         state_dir](int attempt) -> monad::IO<void> {
+    auto payload_obj = std::make_shared<boost::json::object>(
+        boost::json::object{{"refresh_token", refresh_token}});
+    BOOST_LOG_SEV(lg, trivial::debug)
+        << "Preparing to refresh device session via " << refresh_url
+        << " (attempt " << attempt << ")" << std::endl;
 
-  output_.logger().info()
-      << "Refreshing device session via " << refresh_url << std::endl;
-
-  return http_io<PostJsonTag>(refresh_url)
-      .map([payload_obj](auto ex) {
-        ex->setRequestJsonBody(*payload_obj);
-        return ex;
-      })
-      .then(http_request_io<PostJsonTag>(http_client_))
-      .then([this, state_dir = std::move(state_dir), refresh_url](auto ex)
-                -> monad::IO<void> {
-        if (!ex->is_2xx()) {
-          std::string error_msg = "Refresh token request failed";
-          if (ex->response) {
-            error_msg +=
-                " (HTTP " + std::to_string(ex->response->result_int()) + ")";
-            if (!ex->response->body().empty()) {
-              error_msg += ": " + std::string(ex->response->body());
+    return http_io<PostJsonTag>(refresh_url)
+        .map([payload_obj](auto ex) {
+          ex->setRequestJsonBody(*payload_obj);
+          return ex;
+        })
+        .then(http_request_io<PostJsonTag>(http_client_))
+        .then([this, state_dir, refresh_url](auto ex) -> monad::IO<void> {
+          if (!ex->is_2xx()) {
+            std::string error_msg = "Refresh token request failed";
+            int status = 0;
+            if (ex->response) {
+              status = static_cast<int>(ex->response->result_int());
+              error_msg += " (HTTP " + std::to_string(status) + ")";
+              if (!ex->response->body().empty()) {
+                error_msg += ": " + std::string(ex->response->body());
+              }
             }
+            auto err = monad::make_error(
+                my_errors::GENERAL::UNEXPECTED_RESULT, std::move(error_msg));
+            err.response_status = status;
+            return monad::IO<void>::fail(std::move(err));
           }
-          return monad::IO<void>::fail(monad::make_error(
-              my_errors::GENERAL::UNEXPECTED_RESULT, std::move(error_msg)));
-        }
 
-        auto payload_result =
-            ex->template parseJsonDataResponse<boost::json::object>();
-        if (payload_result.is_err()) {
-          return monad::IO<void>::fail(payload_result.error());
-        }
-
-        auto payload_obj = payload_result.value();
-        const boost::json::object *data_ptr = &payload_obj;
-        if (auto *data = payload_obj.if_contains("data");
-            data && data->is_object()) {
-          data_ptr = &data->as_object();
-        }
-
-        auto get_string =
-            [](const boost::json::object &obj,
-               std::string_view key) -> std::optional<std::string> {
-          if (auto *p = obj.if_contains(key); p && p->is_string()) {
-            return boost::json::value_to<std::string>(*p);
+          auto payload_result =
+              ex->template parseJsonDataResponse<boost::json::object>();
+          if (payload_result.is_err()) {
+            return monad::IO<void>::fail(payload_result.error());
           }
-          return std::nullopt;
-        };
 
-        std::optional<std::string> new_access_token =
-            get_string(*data_ptr, "access_token");
-        std::optional<std::string> new_refresh_token =
-            get_string(*data_ptr, "refresh_token");
-        std::optional<int> new_expires_in;
-        if (auto *p = data_ptr->if_contains("expires_in");
-            p && p->is_number()) {
-          new_expires_in = boost::json::value_to<int>(*p);
-        }
+          auto payload_obj = payload_result.value();
+          const boost::json::object *data_ptr = &payload_obj;
+          if (auto *data = payload_obj.if_contains("data");
+              data && data->is_object()) {
+            data_ptr = &data->as_object();
+          }
 
-        if ((!new_access_token || !new_refresh_token) &&
-            data_ptr->if_contains("session")) {
-          if (auto *session_ptr = data_ptr->if_contains("session");
-              session_ptr && session_ptr->is_object()) {
-            const auto &session_obj = session_ptr->as_object();
-            if (!new_access_token) {
-              new_access_token = get_string(session_obj, "access_token");
+          auto get_string =
+              [](const boost::json::object &obj,
+                 std::string_view key) -> std::optional<std::string> {
+            if (auto *p = obj.if_contains(key); p && p->is_string()) {
+              return boost::json::value_to<std::string>(*p);
             }
-            if (!new_refresh_token) {
-              new_refresh_token = get_string(session_obj, "refresh_token");
-            }
-            if (!new_expires_in) {
-              if (auto *p = session_obj.if_contains("expires_in");
-                  p && p->is_number()) {
-                new_expires_in = boost::json::value_to<int>(*p);
+            return std::nullopt;
+          };
+
+          std::optional<std::string> new_access_token =
+              get_string(*data_ptr, "access_token");
+          std::optional<std::string> new_refresh_token =
+              get_string(*data_ptr, "refresh_token");
+          std::optional<int> new_expires_in;
+          if (auto *p = data_ptr->if_contains("expires_in");
+              p && p->is_number()) {
+            new_expires_in = boost::json::value_to<int>(*p);
+          }
+
+          if ((!new_access_token || !new_refresh_token) &&
+              data_ptr->if_contains("session")) {
+            if (auto *session_ptr = data_ptr->if_contains("session");
+                session_ptr && session_ptr->is_object()) {
+              const auto &session_obj = session_ptr->as_object();
+              if (!new_access_token) {
+                new_access_token = get_string(session_obj, "access_token");
+              }
+              if (!new_refresh_token) {
+                new_refresh_token = get_string(session_obj, "refresh_token");
+              }
+              if (!new_expires_in) {
+                if (auto *p = session_obj.if_contains("expires_in");
+                    p && p->is_number()) {
+                  new_expires_in = boost::json::value_to<int>(*p);
+                }
               }
             }
           }
-        }
 
-        if (!new_access_token || new_access_token->empty() ||
-            !new_refresh_token || new_refresh_token->empty()) {
-          return monad::IO<void>::fail(monad::make_error(
-              my_errors::GENERAL::UNEXPECTED_RESULT,
-              "Refresh response missing tokens"));
-        }
+          if (!new_access_token || new_access_token->empty() ||
+              !new_refresh_token || new_refresh_token->empty()) {
+            return monad::IO<void>::fail(monad::make_error(
+                my_errors::GENERAL::UNEXPECTED_RESULT,
+                "Refresh response missing tokens"));
+          }
 
-        auto access_path = state_dir / "access_token.txt";
-        auto refresh_path = state_dir / "refresh_token.txt";
+          auto access_path = state_dir / "access_token.txt";
+          auto refresh_path = state_dir / "refresh_token.txt";
 
-        if (auto err = write_text_0600(access_path, *new_access_token)) {
-          output_.logger().warning() << *err << std::endl;
-        }
-        if (auto err = write_text_0600(refresh_path, *new_refresh_token)) {
-          output_.logger().warning() << *err << std::endl;
-        }
+          if (auto err = write_text_0600(access_path, *new_access_token)) {
+            output_.logger().warning() << *err << std::endl;
+          }
+          if (auto err = write_text_0600(refresh_path, *new_refresh_token)) {
+            output_.logger().warning() << *err << std::endl;
+          }
 
-        output_.logger().info()
-            << "Device session refreshed; new access token expires in "
-            << new_expires_in.value_or(0) << "s" << std::endl;
+          BOOST_LOG_SEV(lg, trivial::trace)
+              << "Device session refreshed; new access token expires in "
+              << new_expires_in.value_or(0) << "s" << std::endl;
 
-        return monad::IO<void>::pure();
-      });
+          return monad::IO<void>::pure();
+        });
+  };
+
+  auto retry_fn = std::make_shared<
+      std::function<monad::IO<void>(std::chrono::milliseconds, int)>>();
+  std::weak_ptr<std::function<monad::IO<void>(std::chrono::milliseconds, int)>>
+      weak_retry = retry_fn;
+
+  *retry_fn = [this, single_attempt,
+               weak_retry](std::chrono::milliseconds delay,
+                           int attempt) -> monad::IO<void> {
+    return single_attempt(attempt).catch_then(
+        [this, weak_retry, delay, attempt](const monad::Error &err)
+            -> monad::IO<void> {
+          if (!session_refresh::is_retryable_error(err)) {
+            output_.logger().error()
+                << "Device session refresh failed (attempt " << attempt
+                << "): " << err.what << std::endl;
+            return monad::IO<void>::fail(err);
+          }
+
+          auto wait = std::clamp(delay, session_refresh::kInitialRetryDelay,
+                                 session_refresh::kMaxRetryDelay);
+          output_.logger().warning()
+              << "Device session refresh attempt " << attempt
+              << " failed: " << err.what << "; retrying in "
+              << wait.count() << "ms" << std::endl;
+          auto next_delay = session_refresh::next_delay(wait);
+
+          return monad::IO<void>::pure()
+              .delay(io_context_.get_executor(), wait)
+              .then([weak_retry, next_delay, attempt]() {
+                if (auto retry = weak_retry.lock()) {
+                  return (*retry)(next_delay, attempt + 1);
+                }
+                return monad::IO<void>::fail(monad::make_error(
+                    my_errors::GENERAL::UNEXPECTED_RESULT,
+                    "Refresh retry context expired"));
+              });
+        });
+  };
+
+  return monad::IO<void>::pure().then([retry_fn]() {
+    return (*retry_fn)(session_refresh::kInitialRetryDelay, 1);
+  });
 }
 
 std::optional<std::string> InstallResourceMaterializer::write_text_0600(
