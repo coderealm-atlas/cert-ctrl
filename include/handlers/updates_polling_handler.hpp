@@ -1,10 +1,12 @@
 #pragma once
 
 #include <algorithm>
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
+#include <boost/log/sources/severity_logger.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
@@ -37,6 +39,7 @@
 #include "util/my_logging.hpp" // IWYU pragma: keep
 
 namespace po = boost::program_options;
+namespace asio = boost::asio;
 
 namespace certctrl {
 
@@ -74,6 +77,10 @@ class UpdatesPollingHandler
   int interval_ms_{
       5000}; // delay between polls when not long-polling (default 5s)
   // removed max_loops_ – service runs continuously while keep_running
+  int consecutive_failures_{0};
+  static constexpr int kFailureRetryBaseMs = 5000;
+  static constexpr int kFailureRetryMaxMs = 60000;
+  static constexpr int kFailureRetryMaxExponent = 5;
   // signal counters (cumulative this run)
   size_t install_updated_count_{0};
   size_t cert_renewed_count_{0};
@@ -183,9 +190,10 @@ public:
     output_hub_.logger().trace()
         << "Starting poll iteration " << iter << std::endl;
     return poll_once()
-        .catch_then([self = this->shared_from_this(), iter](monad::Error e) {
-          self->output_hub_.logger().error()
-              << "poll iteration error: " << e.what << std::endl;
+        .catch_then([self = this->shared_from_this()](monad::Error e) {
+          ++self->consecutive_failures_;
+              BOOST_LOG_SEV(self->lg, trivial::error)
+                  << "poll iteration error: " << e;
           return monad::IO<void>::pure(); // continue
         })
         .then([self = this->shared_from_this(), iter]() {
@@ -197,13 +205,32 @@ public:
           }
           // Use asynchronous delay to avoid blocking thread when not
           // long-polling
-          if (!self->options_.long_poll) {
-            int delay_ms =
-                self->server_override_delay_ms_.value_or(self->interval_ms_);
-            if (delay_ms < 10000) {
-              delay_ms = 10000;
+          bool needs_delay = self->server_override_delay_ms_.has_value() ||
+                             self->consecutive_failures_ > 0 ||
+                             !self->options_.long_poll;
+          if (needs_delay) {
+            int delay_ms = 0;
+            if (self->server_override_delay_ms_) {
+              delay_ms = *self->server_override_delay_ms_;
+              self->server_override_delay_ms_.reset();
+            } else if (self->consecutive_failures_ > 0) {
+              delay_ms = self->compute_failure_delay_ms();
+            } else {
+              delay_ms = self->interval_ms_;
             }
-            self->server_override_delay_ms_.reset();
+
+            if (delay_ms <= 0) {
+              delay_ms = self->interval_ms_ > 0 ? self->interval_ms_
+                                                : kFailureRetryBaseMs;
+            }
+
+            if (self->consecutive_failures_ > 0) {
+              self->output_hub_.logger().info()
+                  << "Retrying updates poll in " << delay_ms
+                  << " ms after " << self->consecutive_failures_
+                  << " consecutive failures" << std::endl;
+            }
+
             return monad::delay_for<void>(self->ioc_,
                                           std::chrono::milliseconds(delay_ms))
                 .then([self, iter]() { return self->poll_loop(iter + 1); });
@@ -355,7 +382,7 @@ private:
     auto payload_obj = std::make_shared<boost::json::object>(
         boost::json::object{{"refresh_token", *refresh_token_opt}});
 
-    output_hub_.logger().info()
+    BOOST_LOG_SEV(lg, trivial::info)
         << "Refreshing device session via " << refresh_url << std::endl;
 
     return http_io<PostJsonTag>(refresh_url)
@@ -454,7 +481,7 @@ private:
           cached_access_token_ = *new_access_token;
           cached_access_token_mtime_.reset();
 
-          output_hub_.printer().yellow()
+    BOOST_LOG_SEV(lg, trivial::trace) 
               << "Device session refreshed; new access token expires in "
               << new_expires_in.value_or(0) << "s" << std::endl;
 
@@ -469,6 +496,7 @@ private:
     namespace http = boost::beast::http;
 
     // Extract cursor from ETag header
+    consecutive_failures_ = 0;
     if (auto it = ex->response->find(http::field::etag);
         it != ex->response->end()) {
       std::string etag = std::string(it->value());
@@ -497,6 +525,7 @@ private:
     }
 
     auto resp = std::move(parse_result).value();
+    consecutive_failures_ = 0;
 
     // Update cursor
     cursor_ = resp.data.cursor;
@@ -614,6 +643,38 @@ private:
     }
   }
 
+  int compute_failure_delay_ms() const {
+    if (consecutive_failures_ <= 0) {
+      return interval_ms_ > 0 ? interval_ms_ : kFailureRetryBaseMs;
+    }
+
+    int upper = kFailureRetryMaxMs;
+    if (interval_ms_ > 0) {
+      upper = std::min(upper, interval_ms_);
+    }
+    int lower = kFailureRetryBaseMs;
+    if (interval_ms_ > 0) {
+      lower = std::min(lower, interval_ms_);
+    }
+    if (upper < lower) {
+      upper = lower;
+    }
+
+    int exponent = std::min(consecutive_failures_ - 1, kFailureRetryMaxExponent);
+    int candidate = kFailureRetryBaseMs << exponent;
+    if (candidate > upper) {
+      candidate = upper;
+    }
+    if (candidate < lower) {
+      candidate = lower;
+    }
+    if (candidate <= 0) {
+      candidate = lower > 0 ? lower : kFailureRetryBaseMs;
+    }
+
+    return candidate;
+  }
+
   monad::IO<void> poll_once(bool allow_refresh_retry = true) {
     using namespace monad;
     namespace http = boost::beast::http;
@@ -690,14 +751,14 @@ private:
             // Has updates - parse JSON and dispatch signals
             return handle_ok_with_signals(ex);
           } else if ((status == 401 || status == 403) && allow_refresh_retry) {
-            output_hub_.logger().info()
+            BOOST_LOG_SEV(lg, trivial::info)
                 << "Received HTTP " << status
                 << " while polling; attempting token refresh." << std::endl;
             auto self = shared_from_this();
             return refresh_access_token()
                 .then([self]() { return self->poll_once(false); })
                 .catch_then([self, ex, status](const monad::Error &err) {
-                  self->output_hub_.logger().error()
+                  BOOST_LOG_SEV(self->lg, trivial::error)
                       << "Token refresh failed: " << err.what << std::endl;
                   return self->handle_error_status(ex, status);
                 });
