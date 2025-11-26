@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include "boost/di.hpp"
 #include "conf/certctrl_config.hpp"
 #include "handlers/install_actions/copy_action.hpp"
@@ -8,8 +10,8 @@
 #include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_actions/install_resource_materializer.hpp"
 #include "handlers/install_actions/materialize_password_manager.hpp"
+#include "handlers/session_refresher.hpp"
 #include "http_client_config_provider.hpp"
-#include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
 
@@ -22,8 +24,18 @@ inline customio::ConsoleOutputWithColor &shared_output() {
   return out;
 }
 
+namespace detail {
+using DefaultSessionRefresherBinding = decltype(
+    di::bind<certctrl::ISessionRefresher>()
+        .to<certctrl::SessionRefresher>()
+        .in(di::singleton));
+} // namespace detail
+
 // Base injector for handler/service integration tests
-inline auto build_base_injector(cjj365::ConfigSources &config_sources) {
+template <typename SessionBinding = detail::DefaultSessionRefresherBinding>
+inline auto build_base_injector(
+    cjj365::ConfigSources &config_sources,
+    SessionBinding session_binding = SessionBinding{}) {
   return di::make_injector(
       di::bind<cjj365::ConfigSources>().to(config_sources),
       di::bind<customio::IOutput>().to(shared_output()),
@@ -82,14 +94,15 @@ inline auto build_base_injector(cjj365::ConfigSources &config_sources) {
           }),
       di::bind<certctrl::install_actions::ImportCaActionHandler>().in(
           di::unique),
-      di::bind<certctrl::install_actions::ImportCaActionHandler::Factory>().to(
-          [](const auto &inj) {
-            return certctrl::install_actions::ImportCaActionHandler::Factory{
-                [&inj]() {
-                  return inj.template create<std::shared_ptr<
-                      certctrl::install_actions::ImportCaActionHandler>>();
-                }};
-          }),
+            di::bind<certctrl::install_actions::ImportCaActionHandler::Factory>().to(
+                    [](const auto &inj) {
+                        return certctrl::install_actions::ImportCaActionHandler::Factory{
+                                [&inj]() {
+                                    return inj.template create<std::shared_ptr<
+                                            certctrl::install_actions::ImportCaActionHandler>>();
+                                }};
+                    }),
+            std::move(session_binding),
       di::bind<cjj365::IIoContextManager>().to<cjj365::IoContextManager>());
 }
 

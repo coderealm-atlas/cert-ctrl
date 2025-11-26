@@ -4,7 +4,6 @@
 #include "handlers/install_actions/function_adapters.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_actions/install_resource_materializer.hpp"
-#include "handlers/session_refresh_retry.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/beast/http.hpp>
@@ -19,13 +18,11 @@
 #include <fmt/format.h>
 #include <fstream>
 #include <functional>
-#include <future>
 #include <iostream>
 #include <random>
 #include <sstream>
 #include <system_error>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -35,9 +32,7 @@
 #endif
 
 #include "base64.h"
-#include "http_client_monad.hpp"
 #include "my_error_codes.hpp"
-#include "openssl/crypt_util.hpp"
 #include "openssl/openssl_raii.hpp"
 #include "result_monad.hpp"
 #include "util/secret_util.hpp"
@@ -509,7 +504,8 @@ InstallConfigManager::InstallConfigManager(
         exec_env_resolver_factory,
     install_actions::IDeviceInstallConfigFetcher &config_fetcher,
     install_actions::IAccessTokenLoader &access_token_loader,
-    install_actions::IMaterializePasswordManager &password_manager)
+  install_actions::IMaterializePasswordManager &password_manager,
+  std::shared_ptr<ISessionRefresher> session_refresher)
     : runtime_dir_(config_provider.get().runtime_dir),
       config_provider_(config_provider), output_(output),
       http_client_(http_client),
@@ -521,7 +517,8 @@ InstallConfigManager::InstallConfigManager(
       copy_handler_factory_(std::move(copy_handler_factory)),
       config_fetcher_(config_fetcher), io_context_(io_context_manager.ioc()),
       access_token_loader_(access_token_loader),
-      password_manager_(password_manager) {
+      password_manager_(password_manager),
+      session_refresher_(std::move(session_refresher)) {
   if (!runtime_dir_.empty()) {
     try {
       std::filesystem::create_directories(state_dir());
@@ -769,19 +766,24 @@ InstallConfigManager::refresh_from_remote_with_retry(
           return ReturnIO::fail(std::move(err));
         }
 
-        auto refresh_token = load_refresh_token();
-        if (!refresh_token || refresh_token->empty()) {
+        if (!session_refresher_) {
           return ReturnIO::fail(monad::make_error(
-              my_errors::GENERAL::INVALID_ARGUMENT,
-              "Device session expired and no refresh token available; run "
-              "'cert-ctrl login' before continuing."));
+              my_errors::GENERAL::UNEXPECTED_RESULT,
+              "Session refresher unavailable; rerun cert-ctrl login."));
         }
 
         output_.logger().warning() << "install-config fetch authentication "
                                       "failure; attempting session refresh"
                                    << std::endl;
 
-        return refresh_access_token(*refresh_token)
+        std::string reason = "install-config fetch auth failure";
+        if (err.response_status > 0) {
+          reason = fmt::format("install-config fetch HTTP {}", err.response_status);
+        } else if (token_missing && token_unavailable_error) {
+          reason = "install-config fetch missing access token";
+        }
+
+        return session_refresher_->refresh(std::move(reason))
             .then([this, expected_version, expected_hash]() -> ReturnIO {
               return refresh_from_remote_with_retry(expected_version,
                                                     expected_hash,
@@ -924,230 +926,6 @@ InstallConfigManager::refresh_from_remote_with_retry(
 //         return ReturnIO::pure(cached_config_);
 //       });
 //     });
-
-std::optional<std::string> InstallConfigManager::load_refresh_token() const {
-  if (runtime_dir_.empty()) {
-    return std::nullopt;
-  }
-
-  auto token_path = state_dir() / "refresh_token.txt";
-  std::ifstream ifs(token_path, std::ios::binary);
-  if (!ifs.is_open()) {
-    return std::nullopt;
-  }
-
-  std::string token((std::istreambuf_iterator<char>(ifs)),
-                    std::istreambuf_iterator<char>());
-  auto first = token.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) {
-    return std::nullopt;
-  }
-  auto last = token.find_last_not_of(" \t\r\n");
-  if (last == std::string::npos || last < first) {
-    return std::nullopt;
-  }
-  return token.substr(first, last - first + 1);
-}
-
-monad::IO<void>
-InstallConfigManager::refresh_access_token(const std::string &refresh_token) {
-  using monad::http_io;
-  using monad::http_request_io;
-  using monad::PostJsonTag;
-
-  if (runtime_dir_.empty()) {
-    return monad::IO<void>::fail(monad::make_error(
-        my_errors::GENERAL::UNEXPECTED_RESULT,
-        "Unable to resolve runtime state directory for token refresh"));
-  }
-
-  const auto refresh_url =
-      fmt::format("{}/auth/refresh", config_provider_.get().base_url);
-  auto state_path = state_dir();
-
-  auto single_attempt =
-      [this, refresh_token, refresh_url,
-       state_path](int attempt) -> monad::IO<void> {
-    auto payload_obj = std::make_shared<boost::json::object>(
-        boost::json::object{{"refresh_token", refresh_token}});
-    BOOST_LOG_SEV(lg, trivial::trace)
-        << "Refresh token payload: "
-        << boost::json::serialize(*payload_obj) << std::endl;
-    BOOST_LOG_SEV(lg, trivial::info)
-        << "Refreshing device session via " << refresh_url << " (attempt "
-        << attempt << ")" << std::endl;
-
-    return http_io<PostJsonTag>(refresh_url)
-        .map([payload_obj](auto ex) {
-          ex->setRequestJsonBody(*payload_obj);
-          return ex;
-        })
-        .then(http_request_io<PostJsonTag>(http_client_))
-        .then([this, state_path, refresh_url](auto ex) -> monad::IO<void> {
-          if (!ex->is_2xx()) {
-            std::string error_msg = "Refresh token request failed";
-            int status = 0;
-            if (ex->response) {
-              status = static_cast<int>(ex->response->result_int());
-              error_msg += " (HTTP " + std::to_string(status) + ")";
-              if (!ex->response->body().empty()) {
-                error_msg += ": " + std::string(ex->response->body());
-              }
-            }
-            auto err = monad::make_error(
-                my_errors::GENERAL::UNEXPECTED_RESULT, std::move(error_msg));
-            err.response_status = status;
-            return monad::IO<void>::fail(std::move(err));
-          }
-
-          auto payload_result =
-              ex->template parseJsonDataResponse<boost::json::object>();
-          if (payload_result.is_err()) {
-            return monad::IO<void>::fail(payload_result.error());
-          }
-
-          auto payload_obj = payload_result.value();
-          const boost::json::object *data_ptr = &payload_obj;
-          if (auto *data = payload_obj.if_contains("data");
-              data && data->is_object()) {
-            data_ptr = &data->as_object();
-          }
-
-          auto get_string =
-              [](const boost::json::object &obj,
-                 std::string_view key) -> std::optional<std::string> {
-            if (auto *p = obj.if_contains(key); p && p->is_string()) {
-              return boost::json::value_to<std::string>(*p);
-            }
-            return std::nullopt;
-          };
-
-          std::optional<std::string> new_access_token =
-              get_string(*data_ptr, "access_token");
-          std::optional<std::string> new_refresh_token =
-              get_string(*data_ptr, "refresh_token");
-          std::optional<int> new_expires_in;
-          if (auto *p = data_ptr->if_contains("expires_in");
-              p && p->is_number()) {
-            new_expires_in = boost::json::value_to<int>(*p);
-          }
-
-          if ((!new_access_token || !new_refresh_token) &&
-              data_ptr->if_contains("session")) {
-            if (auto *session_ptr = data_ptr->if_contains("session");
-                session_ptr && session_ptr->is_object()) {
-              const auto &session_obj = session_ptr->as_object();
-              if (!new_access_token) {
-                new_access_token = get_string(session_obj, "access_token");
-              }
-              if (!new_refresh_token) {
-                new_refresh_token = get_string(session_obj, "refresh_token");
-              }
-              if (!new_expires_in) {
-                if (auto *p = session_obj.if_contains("expires_in");
-                    p && p->is_number()) {
-                  new_expires_in = boost::json::value_to<int>(*p);
-                }
-              }
-            }
-          }
-
-          if (!new_access_token || new_access_token->empty() ||
-              !new_refresh_token || new_refresh_token->empty()) {
-            return monad::IO<void>::fail(monad::make_error(
-                my_errors::GENERAL::UNEXPECTED_RESULT,
-                "Refresh response missing tokens"));
-          }
-
-          auto access_path = state_path / "access_token.txt";
-          auto refresh_path = state_path / "refresh_token.txt";
-
-          if (auto err = write_text_0600(access_path, *new_access_token)) {
-            output_.logger().warning() << *err << std::endl;
-          }
-          if (auto err = write_text_0600(refresh_path, *new_refresh_token)) {
-            output_.logger().warning() << *err << std::endl;
-          }
-
-          BOOST_LOG_SEV(lg, trivial::trace)
-              << "Device session refreshed; new access token expires in "
-              << new_expires_in.value_or(0) << "s" << std::endl;
-
-          return monad::IO<void>::pure();
-        });
-  };
-
-  auto retry_fn = std::make_shared<
-      std::function<monad::IO<void>(std::chrono::milliseconds, int)>>();
-  std::weak_ptr<std::function<monad::IO<void>(std::chrono::milliseconds, int)>>
-      weak_retry = retry_fn;
-
-  *retry_fn = [this, single_attempt,
-               weak_retry](std::chrono::milliseconds delay,
-                           int attempt) -> monad::IO<void> {
-    return single_attempt(attempt).catch_then(
-        [this, weak_retry, delay, attempt](const monad::Error &err)
-            -> monad::IO<void> {
-          if (!session_refresh::is_retryable_error(err)) {
-            output_.logger().error()
-                << "Device session refresh failed (attempt " << attempt
-                << "): " << err.what << std::endl;
-            return monad::IO<void>::fail(err);
-          }
-
-          auto wait = std::clamp(delay, session_refresh::kInitialRetryDelay,
-                                 session_refresh::kMaxRetryDelay);
-          output_.logger().warning()
-              << "Device session refresh attempt " << attempt
-              << " failed: " << err.what << "; retrying in "
-              << wait.count() << "ms" << std::endl;
-          auto next_delay = session_refresh::next_delay(wait);
-
-          return monad::IO<void>::pure()
-              .delay(io_context_.get_executor(), wait)
-              .then([weak_retry, next_delay, attempt]() {
-                if (auto retry = weak_retry.lock()) {
-                  return (*retry)(next_delay, attempt + 1);
-                }
-                return monad::IO<void>::fail(monad::make_error(
-                    my_errors::GENERAL::UNEXPECTED_RESULT,
-                    "Refresh retry context expired"));
-              });
-        });
-  };
-
-  return monad::IO<void>::pure().then([retry_fn]() {
-    return (*retry_fn)(session_refresh::kInitialRetryDelay, 1);
-  });
-}
-
-std::optional<std::string>
-InstallConfigManager::write_text_0600(const std::filesystem::path &p,
-                                      const std::string &text) {
-  try {
-    std::error_code ec;
-    if (auto parent = p.parent_path(); !parent.empty()) {
-      std::filesystem::create_directories(parent, ec);
-      if (ec) {
-        return std::string{"create_directories failed: "} + ec.message();
-      }
-    }
-    std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-    if (!ofs.is_open()) {
-      return std::string{"open failed for "} + p.string();
-    }
-    ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
-    if (!ofs) {
-      return std::string{"write failed for "} + p.string();
-    }
-#ifndef _WIN32
-    ::chmod(p.c_str(), 0600);
-#endif
-    return std::nullopt;
-  } catch (const std::exception &ex) {
-    return std::string{"write_text_0600 exception: "} + ex.what();
-  }
-}
 
 std::optional<dto::DeviceInstallConfigDto>
 InstallConfigManager::load_from_disk() {

@@ -78,6 +78,11 @@ struct UpdatesPollingHandlerTestFriend {
   static void set_interval_ms(UpdatesPollingHandler &handler, int value) {
     handler.interval_ms_ = value;
   }
+
+  static monad::IO<void> ForceRefresh(UpdatesPollingHandler &handler,
+                                      std::string reason) {
+    return handler.refresh_access_token(std::move(reason));
+  }
 };
 } // namespace certctrl
 
@@ -219,13 +224,32 @@ private:
   bool active_{true};
 };
 
+class RecordingSessionRefresher : public certctrl::ISessionRefresher {
+public:
+  monad::IO<void> refresh(std::string reason) override {
+    reasons_.push_back(std::move(reason));
+    ++call_count_;
+    return monad::IO<void>::pure();
+  }
+
+  int call_count() const { return call_count_; }
+  const std::vector<std::string> &reasons() const { return reasons_; }
+
+private:
+  int call_count_{0};
+  std::vector<std::string> reasons_;
+};
+
 class UpdatesHandlerHarness {
 public:
   UpdatesHandlerHarness(std::filesystem::path config_dir,
                         std::filesystem::path runtime_dir, std::string base_url,
-                        certctrl::CliCtx &cli_ctx, int http_threads = 1)
+                        certctrl::CliCtx &cli_ctx, int http_threads = 1,
+                        std::shared_ptr<certctrl::ISessionRefresher>
+                            session_refresher_override = nullptr)
       : config_dir_(std::move(config_dir)),
-        runtime_dir_(std::move(runtime_dir)) {
+        runtime_dir_(std::move(runtime_dir)),
+        session_refresher_override_(std::move(session_refresher_override)) {
     testinfra::ConfigFileOptions cfg_opts;
     cfg_opts.base_url = base_url;
     cfg_opts.runtime_dir = runtime_dir_;
@@ -237,22 +261,42 @@ public:
     config_sources_holder_ = testinfra::make_config_sources({config_dir_}, {});
     config_sources_ = config_sources_holder_.get();
 
-    auto injector = di::make_injector(
-        testinfra::build_base_injector(*config_sources_),
-        di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>.to<certctrl::install_actions::DeviceInstallConfigFetcher>(),
-        di::bind<certctrl::install_actions::IResourceFetcher>.to<certctrl::install_actions::ResourceFetcher>(),
-        di::bind<certctrl::CliCtx>().to(cli_ctx));
+    auto configure_injector = [&](auto injector) {
+      auto inj_holder =
+          std::make_shared<decltype(injector)>(std::move(injector));
+      injector_holder_ = inj_holder;
+      auto &inj = *inj_holder;
 
-    auto inj_holder = std::make_shared<decltype(injector)>(std::move(injector));
-    injector_holder_ = inj_holder;
-    auto &inj = *inj_holder;
+      output_ = &inj.template create<customio::ConsoleOutput &>();
+      io_context_manager_ = &inj.template create<cjj365::IoContextManager &>();
+      http_client_manager_ = &inj.template create<client_async::HttpClientManager &>();
+      config_provider_ = &inj.template create<certctrl::ICertctrlConfigProvider &>();
+      config_provider_->get().base_url = std::move(base_url);
+      handler_ = inj.template create<std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+    };
 
-    output_ = &inj.create<customio::ConsoleOutput &>();
-    io_context_manager_ = &inj.create<cjj365::IoContextManager &>();
-    http_client_manager_ = &inj.create<client_async::HttpClientManager &>();
-    config_provider_ = &inj.create<certctrl::ICertctrlConfigProvider &>();
-    config_provider_->get().base_url = std::move(base_url);
-    handler_ = inj.create<std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+    auto make_final_injector = [&](auto base_injector) {
+      return di::make_injector(
+          std::move(base_injector),
+          di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>
+              .to<certctrl::install_actions::DeviceInstallConfigFetcher>(),
+          di::bind<certctrl::install_actions::IResourceFetcher>
+              .to<certctrl::install_actions::ResourceFetcher>(),
+          di::bind<certctrl::CliCtx>().to(cli_ctx));
+    };
+
+    if (session_refresher_override_) {
+      auto session_binding = di::bind<certctrl::ISessionRefresher>().to(
+          [override = session_refresher_override_](const auto &) {
+            return override;
+          });
+      auto base =
+          testinfra::build_base_injector(*config_sources_, session_binding);
+      configure_injector(make_final_injector(std::move(base)));
+    } else {
+      auto base = testinfra::build_base_injector(*config_sources_);
+      configure_injector(make_final_injector(std::move(base)));
+    }
   }
 
   ~UpdatesHandlerHarness() {
@@ -296,6 +340,7 @@ private:
   client_async::HttpClientManager *http_client_manager_{nullptr};
   certctrl::ICertctrlConfigProvider *config_provider_{nullptr};
   std::shared_ptr<certctrl::UpdatesPollingHandler> handler_;
+  std::shared_ptr<certctrl::ISessionRefresher> session_refresher_override_;
 };
 
 TEST(UpdatesPollingHandlerUnitTest, AppliesServerIntervalHints) {
@@ -351,6 +396,48 @@ TEST(UpdatesPollingHandlerUnitTest, AppliesServerIntervalHints) {
   EXPECT_EQ(certctrl::UpdatesPollingHandlerTestFriend::interval_ms(*handler),
             7000)
       << "interval should ignore non-positive hints";
+}
+
+TEST(UpdatesPollingHandlerUnitTest, UsesSessionRefresherForTokenRefresh) {
+  auto tmp_root = fs::temp_directory_path() / "updates-refresher" /
+                  make_unique_suffix();
+  std::error_code ec;
+  fs::create_directories(tmp_root, ec);
+  ASSERT_FALSE(ec) << "failed to create temp dir: " << ec.message();
+  ScopeGuard cleanup([&]() {
+    std::error_code rm_ec;
+    fs::remove_all(tmp_root, rm_ec);
+  });
+
+  certctrl::CliParams params{};
+  params.subcmd = "updates";
+  params.config_dirs = {tmp_root};
+
+  auto vm = po::variables_map{};
+  std::vector<std::string> positional{"updates"};
+  std::vector<std::string> unrecognized{"updates"};
+
+  certctrl::CliCtx cli_ctx(std::move(vm), std::move(positional),
+                           std::move(unrecognized), std::move(params));
+
+  auto fake_refresher = std::make_shared<RecordingSessionRefresher>();
+  UpdatesHandlerHarness harness(tmp_root, tmp_root, "https://example.invalid",
+                                cli_ctx, /*http_threads=*/1, fake_refresher);
+  auto handler = harness.handler();
+  ASSERT_TRUE(handler);
+
+  bool refresh_completed = false;
+  auto io = certctrl::UpdatesPollingHandlerTestFriend::ForceRefresh(
+      *handler, "unit-test refresh");
+  io.run([&](auto result) {
+    EXPECT_FALSE(result.is_err()) << result.error().what;
+    refresh_completed = true;
+  });
+
+  EXPECT_TRUE(refresh_completed);
+  ASSERT_EQ(fake_refresher->call_count(), 1);
+  ASSERT_EQ(fake_refresher->reasons().size(), 1u);
+  EXPECT_EQ(fake_refresher->reasons().front(), "unit-test refresh");
 }
 
 class UpdatesRealServerFixture : public ::testing::Test {

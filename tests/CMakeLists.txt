@@ -262,6 +262,7 @@ add_executable(test_install_config_manager
   ${CMAKE_SOURCE_DIR}/src/browser_trust_sync.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/install_resource_materializer.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/materialize_password_manager.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/session_refresher.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
@@ -380,6 +381,7 @@ add_executable(test_updates_polling_handler
   ${CMAKE_SOURCE_DIR}/src/browser_trust_sync.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/install_resource_materializer.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/materialize_password_manager.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/session_refresher.cpp
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp

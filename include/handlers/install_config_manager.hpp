@@ -18,6 +18,7 @@
 #include "handlers/install_actions/install_resource_materializer.hpp"
 #include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
+#include "handlers/session_refresher.hpp"
 #include "http_client_manager.hpp"
 #include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
@@ -49,7 +50,8 @@ public:
           exec_env_resolver_factory,
       install_actions::IDeviceInstallConfigFetcher &config_fetcher,
       install_actions::IAccessTokenLoader &access_token_loader,
-      install_actions::IMaterializePasswordManager &password_manager);
+    install_actions::IMaterializePasswordManager &password_manager,
+    std::shared_ptr<ISessionRefresher> session_refresher);
 
   ~InstallConfigManager();
 
@@ -100,11 +102,6 @@ private:
 
   //   std::optional<std::string> load_access_token() const;
 
-  std::optional<std::string> load_refresh_token() const;
-  monad::IO<void> refresh_access_token(const std::string &refresh_token);
-  static std::optional<std::string>
-  write_text_0600(const std::filesystem::path &p, const std::string &text);
-
   std::filesystem::path state_dir() const;
   std::filesystem::path config_file_path() const;
   std::filesystem::path version_file_path() const;
@@ -137,6 +134,7 @@ private:
   boost::asio::io_context &io_context_;
   install_actions::IAccessTokenLoader &access_token_loader_;
   install_actions::IMaterializePasswordManager &password_manager_;
+    std::shared_ptr<ISessionRefresher> session_refresher_;
 };
 
 } // namespace certctrl
