@@ -30,6 +30,7 @@
 #include "handlers/install_actions/install_resource_materializer.hpp"
 #include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
+#include "handlers/session_refresher.hpp"
 #include "handlers/install_config_apply_handler.hpp"
 #include "handlers/install_config_handler.hpp"
 #include "handlers/install_config_manager.hpp"
@@ -245,6 +246,7 @@ public:
                         certctrl::install_actions::ImportCaActionHandler>>();
                   }};
             }),
+        di::bind<certctrl::ISessionRefresher>().to<certctrl::SessionRefresher>().in(di::singleton),
         di::bind<customio::IOutput>().to(output_hub),
         di::bind<certctrl::CliCtx>().to(cli_ctx_));
     // Register all handlers for aggregate injection; DI will convert to

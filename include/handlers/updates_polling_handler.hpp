@@ -18,9 +18,6 @@
 #include <optional>
 #include <string>
 #include <vector> // indirectly needed via data structures; keep if build complains
-#ifndef _WIN32
-#include <sys/stat.h>
-#endif
 
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
@@ -28,6 +25,7 @@
 #include "data/data_shape.hpp"
 #include "handlers/i_handler.hpp"
 #include "handlers/install_config_manager.hpp"
+#include "handlers/session_refresher.hpp"
 #include "handlers/signal_dispatcher.hpp"
 #include "handlers/signal_handlers/cert_renewed_handler.hpp"
 #include "handlers/signal_handlers/cert_revoked_handler.hpp"
@@ -91,6 +89,7 @@ class UpdatesPollingHandler
   // signal dispatcher
   std::unique_ptr<SignalDispatcher> signal_dispatcher_;
   std::shared_ptr<InstallConfigManager> install_config_manager_;
+  std::shared_ptr<ISessionRefresher> session_refresher_;
   std::optional<int> server_override_delay_ms_;
   std::optional<std::string> cached_access_token_;
   std::optional<std::filesystem::file_time_type> cached_access_token_mtime_;
@@ -103,14 +102,16 @@ public:
       CliCtx &cli_ctx,                                             //
       customio::ConsoleOutput &output_hub,                         //
       client_async::HttpClientManager &http_client,                //
-      std::shared_ptr<InstallConfigManager> install_config_manager)
+      std::shared_ptr<InstallConfigManager> install_config_manager,
+      std::shared_ptr<ISessionRefresher> session_refresher)
       : ioc_(io_context_manager.ioc()), config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
         output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
         opt_desc_("updates polling options"),
         endpoint_base_(fmt::format("{}/apiv1/devices/self/updates",
-                                   certctrl_config_provider_.get().base_url)),
-        install_config_manager_(std::move(install_config_manager)) {
+                 certctrl_config_provider_.get().base_url)),
+        install_config_manager_(std::move(install_config_manager)),
+        session_refresher_(std::move(session_refresher)) {
     exec_ = boost::asio::make_strand(ioc_);
     po::options_description create_opts("Updates Polling Options");
     create_opts.add_options()("wait", po::value<int>()->default_value(0),
@@ -287,201 +288,17 @@ private:
     return cached_access_token_;
   }
 
-  std::optional<std::string> load_refresh_token_from_state() {
-    if (config_sources_.paths_.empty()) {
-      return std::nullopt;
+
+  monad::IO<void> refresh_access_token(std::string reason) {
+    if (!session_refresher_) {
+      return monad::IO<void>::fail(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "Session refresher unavailable; re-run cert-ctrl login."));
     }
-
-    const auto runtime_dir = config_sources_.paths_.back();
-    const auto token_path = runtime_dir / "state" / "refresh_token.txt";
-
-    std::ifstream ifs(token_path, std::ios::binary);
-    if (!ifs.is_open()) {
-      return std::nullopt;
-    }
-
-    std::string token((std::istreambuf_iterator<char>(ifs)),
-                      std::istreambuf_iterator<char>());
-    auto first = token.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) {
-      return std::nullopt;
-    }
-    auto last = token.find_last_not_of(" \t\r\n");
-    if (last == std::string::npos || last < first) {
-      return std::nullopt;
-    }
-
-    return token.substr(first, last - first + 1);
-  }
-
-  std::optional<std::filesystem::path> resolve_state_dir() const {
-    if (config_sources_.paths_.empty()) {
-      return std::nullopt;
-    }
-    try {
-      return config_sources_.paths_.back() / "state";
-    } catch (...) {
-      return std::nullopt;
-    }
-  }
-
-  static std::optional<std::string>
-  write_text_0600(const std::filesystem::path &p, const std::string &text) {
-    try {
-      std::error_code ec;
-      if (auto parent = p.parent_path(); !parent.empty()) {
-        std::filesystem::create_directories(parent, ec);
-        if (ec) {
-          return std::string{"create_directories failed: "} + ec.message();
-        }
-      }
-      std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-      if (!ofs.is_open()) {
-        return std::string{"open failed for "} + p.string();
-      }
-      ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
-      if (!ofs) {
-        return std::string{"write failed for "} + p.string();
-      }
-#ifndef _WIN32
-      ::chmod(p.c_str(), 0600);
-#endif
-      return std::nullopt;
-    } catch (const std::exception &e) {
-      return std::string{"write_text_0600 exception: "} + e.what();
-    }
-  }
-
-  monad::IO<void> refresh_access_token() {
-    using namespace monad;
-    using monad::http_io;
-    using monad::http_request_io;
-    using monad::PostJsonTag;
-
-    auto refresh_token_opt = load_refresh_token_from_state();
-    if (!refresh_token_opt || refresh_token_opt->empty()) {
-      return IO<void>::fail(
-          monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                            "Refresh token not found. Run 'cert-ctrl login' to "
-                            "authenticate before continuing."));
-    }
-
-    auto state_dir_opt = resolve_state_dir();
-    if (!state_dir_opt) {
-      return IO<void>::fail(
-          monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
-                            "unable to resolve runtime state directory"));
-    }
-
-    const auto refresh_url = fmt::format(
-        "{}/auth/refresh", certctrl_config_provider_.get().base_url);
-
-    auto payload_obj = std::make_shared<boost::json::object>(
-        boost::json::object{{"refresh_token", *refresh_token_opt}});
-
-    BOOST_LOG_SEV(lg, trivial::info)
-        << "Refreshing device session via " << refresh_url << std::endl;
-
-    return http_io<PostJsonTag>(refresh_url)
-        .map([payload_obj](auto ex) {
-          ex->setRequestJsonBody(*payload_obj);
-          return ex;
-        })
-        .then(http_request_io<PostJsonTag>(http_client_))
-        .then([this, refresh_url,
-               state_dir = *state_dir_opt](auto ex) -> monad::IO<void> {
-          if (!ex->is_2xx()) {
-            std::string error_msg = "Refresh token request failed";
-            if (ex->response) {
-              error_msg +=
-                  " (HTTP " + std::to_string(ex->response->result_int()) + ")";
-              if (!ex->response->body().empty()) {
-                error_msg += ": " + std::string(ex->response->body());
-              }
-            }
-            return monad::IO<void>::fail(monad::make_error(
-                my_errors::GENERAL::UNEXPECTED_RESULT, std::move(error_msg)));
-          }
-
-          auto payload_result =
-              ex->template parseJsonDataResponse<boost::json::object>();
-          if (payload_result.is_err()) {
-            return monad::IO<void>::fail(payload_result.error());
-          }
-
-          auto payload_obj = payload_result.value();
-          const boost::json::object *data_ptr = &payload_obj;
-          if (auto *data = payload_obj.if_contains("data");
-              data && data->is_object()) {
-            data_ptr = &data->as_object();
-          }
-
-          auto get_string =
-              [](const boost::json::object &obj,
-                 std::string_view key) -> std::optional<std::string> {
-            if (auto *p = obj.if_contains(key); p && p->is_string()) {
-              return boost::json::value_to<std::string>(*p);
-            }
-            return std::nullopt;
-          };
-
-          std::optional<std::string> new_access_token;
-          std::optional<std::string> new_refresh_token;
-          std::optional<int> new_expires_in;
-
-          // Newer responses return tokens directly under the data object.
-          new_access_token = get_string(*data_ptr, "access_token");
-          new_refresh_token = get_string(*data_ptr, "refresh_token");
-          if (auto *p = data_ptr->if_contains("expires_in");
-              p && p->is_number()) {
-            new_expires_in = boost::json::value_to<int>(*p);
-          }
-
-          // Older responses wrap the tokens within a nested "session" object.
-          if ((!new_access_token || !new_refresh_token) &&
-              data_ptr->if_contains("session")) {
-            if (auto *session_ptr = data_ptr->if_contains("session");
-                session_ptr && session_ptr->is_object()) {
-              const auto &session_obj = session_ptr->as_object();
-              if (!new_access_token) {
-                new_access_token = get_string(session_obj, "access_token");
-              }
-              if (!new_refresh_token) {
-                new_refresh_token = get_string(session_obj, "refresh_token");
-              }
-              if (!new_expires_in) {
-                if (auto *p = session_obj.if_contains("expires_in");
-                    p && p->is_number()) {
-                  new_expires_in = boost::json::value_to<int>(*p);
-                }
-              }
-            }
-          }
-
-          if (!new_access_token || new_access_token->empty() ||
-              !new_refresh_token || new_refresh_token->empty()) {
-            return monad::IO<void>::fail(
-                monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
-                                  "refresh response missing tokens"));
-          }
-
-          auto access_path = state_dir / "access_token.txt";
-          auto refresh_path = state_dir / "refresh_token.txt";
-
-          if (auto err = write_text_0600(access_path, *new_access_token)) {
-            output_hub_.logger().warning() << *err << std::endl;
-          }
-          if (auto err = write_text_0600(refresh_path, *new_refresh_token)) {
-            output_hub_.logger().warning() << *err << std::endl;
-          }
-
-          cached_access_token_ = *new_access_token;
+    return session_refresher_->refresh(std::move(reason))
+        .then([this]() -> monad::IO<void> {
+          cached_access_token_.reset();
           cached_access_token_mtime_.reset();
-
-          BOOST_LOG_SEV(lg, trivial::trace)
-              << "Device session refreshed; new access token expires in "
-              << new_expires_in.value_or(0) << "s" << std::endl;
-
           return monad::IO<void>::pure();
         });
   }
@@ -723,8 +540,8 @@ private:
           << "Access token missing; attempting refresh before polling."
           << std::endl;
       auto self = shared_from_this();
-      return refresh_access_token().then(
-          [self]() { return self->poll_once(false); });
+      return refresh_access_token("updates polling bootstrap")
+        .then([self]() { return self->poll_once(false); });
     }
 
     if (!access_token_opt || access_token_opt->empty()) {
@@ -789,7 +606,8 @@ private:
                 << "Received HTTP " << status
                 << " while polling; attempting token refresh." << std::endl;
             auto self = shared_from_this();
-            return refresh_access_token()
+            auto reason = fmt::format("updates polling HTTP {}", status);
+            return refresh_access_token(std::move(reason))
                 .then([self]() { return self->poll_once(false); })
                 .catch_then([self, ex, status](const monad::Error &err) {
                   BOOST_LOG_SEV(self->lg, trivial::error)

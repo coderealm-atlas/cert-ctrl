@@ -14,6 +14,7 @@
 #include "handlers/install_actions/install_resource_materializer.hpp"
 #include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_config_manager.hpp"
+#include "handlers/session_refresher.hpp"
 #include "install_config_manager_test_utils.hpp"
 #include "test_config_utils.hpp"
 
@@ -69,6 +70,9 @@ struct InstallManagerDiHarness {
         inj.create<std::unique_ptr<client_async::HttpClientManager>>();
     http_client_manager_ = http_client_manager_owner_.get();
 
+    session_refresher_ =
+      inj.create<std::shared_ptr<certctrl::ISessionRefresher>>();
+
     if (token_loader_override) {
       token_loader_ = token_loader_override;
     } else {
@@ -94,7 +98,8 @@ struct InstallManagerDiHarness {
         *io_context_manager_, *config_provider_, *output_,
         *http_client_manager_, resource_factory, import_ca_handler_factory,
         exec_action_handler_factory, copy_action_handler_factory,
-        exec_env_factory, *fetcher_, *token_loader_, *password_manager_);
+      exec_env_factory, *fetcher_, *token_loader_, *password_manager_,
+      session_refresher_);
     install_manager_ = install_manager_storage_.get();
   }
 
@@ -158,7 +163,8 @@ private:
       return std::make_shared<
           certctrl::install_actions::InstallResourceMaterializer>(
           *io_context_manager_, *config_provider_, *output_, *resource_fetcher_,
-          *http_client_manager_, *token_loader_, *password_manager_);
+          *http_client_manager_, *token_loader_, *password_manager_,
+          session_refresher_);
     });
   }
 
@@ -217,6 +223,7 @@ private:
   std::unique_ptr<certctrl::ICertctrlConfigProvider> config_provider_owner_{};
   std::unique_ptr<cjj365::IoContextManager> io_context_manager_owner_{};
   std::unique_ptr<client_async::HttpClientManager> http_client_manager_owner_{};
+  std::shared_ptr<certctrl::ISessionRefresher> session_refresher_{};
   std::unique_ptr<certctrl::install_actions::IAccessTokenLoader>
       token_loader_owner_{};
   std::unique_ptr<certctrl::install_actions::MaterializePasswordManager>

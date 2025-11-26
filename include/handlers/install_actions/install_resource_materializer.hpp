@@ -16,6 +16,7 @@
 #include "data/install_config_dto.hpp"
 #include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
+#include "handlers/session_refresher.hpp"
 #include "http_client_manager.hpp"
 #include "io_context_manager.hpp"
 #include "io_monad.hpp"
@@ -34,7 +35,8 @@ public:
       IResourceFetcher &resource_fetcher,                 //
       client_async::HttpClientManager &http_client,       //
       install_actions::IAccessTokenLoader &access_token_loader, //
-      IMaterializePasswordManager &password_manager);
+      IMaterializePasswordManager &password_manager,             //
+      std::shared_ptr<certctrl::ISessionRefresher> session_refresher);
 
   ~InstallResourceMaterializer();
 
@@ -51,13 +53,6 @@ private:
   monad::IO<void>
   fetch_with_refresh(std::shared_ptr<MaterializationData> state,
                      bool attempted_refresh = false);
-
-  std::optional<std::string> load_refresh_token() const;
-
-  monad::IO<void> refresh_access_token(const std::string &refresh_token);
-
-  static std::optional<std::string>
-  write_text_0600(const std::filesystem::path &p, const std::string &text);
 
   std::filesystem::path runtime_state_dir() const;
 
@@ -76,6 +71,7 @@ private:
   boost::asio::io_context &io_context_;
   install_actions::IAccessTokenLoader &access_token_loader_;
   IMaterializePasswordManager &password_manager_;
+  std::shared_ptr<certctrl::ISessionRefresher> session_refresher_;
 };
 
 } // namespace certctrl::install_actions
