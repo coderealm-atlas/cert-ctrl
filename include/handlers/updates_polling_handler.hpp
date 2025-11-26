@@ -5,8 +5,9 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/json.hpp>
-#include <boost/program_options.hpp>
 #include <boost/log/sources/severity_logger.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/program_options.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
@@ -42,6 +43,8 @@ namespace po = boost::program_options;
 namespace asio = boost::asio;
 
 namespace certctrl {
+
+struct UpdatesPollingHandlerTestFriend;
 
 // Rough initial implementation of a device updates polling handler. It expects
 // that the user already logged in and has a device access token persisted
@@ -94,12 +97,12 @@ class UpdatesPollingHandler
 
 public:
   UpdatesPollingHandler(
-      cjj365::IoContextManager &io_context_manager, //
-      cjj365::ConfigSources &config_sources, //
+      cjj365::IoContextManager &io_context_manager,                //
+      cjj365::ConfigSources &config_sources,                       //
       certctrl::ICertctrlConfigProvider &certctrl_config_provider, //
-      CliCtx &cli_ctx,  //
-      customio::ConsoleOutput &output_hub, //
-      client_async::HttpClientManager &http_client, //
+      CliCtx &cli_ctx,                                             //
+      customio::ConsoleOutput &output_hub,                         //
+      client_async::HttpClientManager &http_client,                //
       std::shared_ptr<InstallConfigManager> install_config_manager)
       : ioc_(io_context_manager.ioc()), config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
@@ -133,42 +136,36 @@ public:
     if (cli_ctx_.vm.count("limit")) {
       options_.limit = cli_ctx_.vm["limit"].as<std::size_t>();
     }
-    // if (cli_ctx_.vm.count("interval")) {
-    //   interval_ms_ = cli_ctx_.vm["interval"].as<int>();
-    //   if (interval_ms_ < 10)
     interval_ms_ = certctrl_config_provider_.get().interval_seconds * 1000;
-    // }
-    output_hub_.logger().trace()
-        << "UpdatesPollingHandler initialized with options: " << opt_desc_
-        << std::endl;
+    BOOST_LOG_SEV(lg, trivial::trace)
+        << "Using poll interval of " << interval_ms_ << " ms";
 
     // Initialize signal dispatcher with handlers
     auto runtime_dir = config_sources_.paths_.back();
-  signal_dispatcher_ = std::make_unique<SignalDispatcher>(runtime_dir);
+    signal_dispatcher_ = std::make_unique<SignalDispatcher>(runtime_dir);
 
-  if (!install_config_manager_) {
-    output_hub_.logger().warning()
-      << "InstallConfigManager dependency missing; install/update signals "
-       "will be skipped"
-      << std::endl;
-  } else {
-    // Register signal handlers
-    signal_dispatcher_->register_handler(
-      std::make_shared<signal_handlers::InstallUpdatedHandler>(
-        install_config_manager_, output_hub_));
+    if (!install_config_manager_) {
+      BOOST_LOG_SEV(lg, trivial::warning)
+          << "InstallConfigManager dependency missing; install/update signals "
+             "will be skipped";
+    } else {
+      // Register signal handlers
+      signal_dispatcher_->register_handler(
+          std::make_shared<signal_handlers::InstallUpdatedHandler>(
+              install_config_manager_, output_hub_));
 
-    signal_dispatcher_->register_handler(
-      std::make_shared<signal_handlers::CertRenewedHandler>(
-        install_config_manager_, output_hub_));
+      signal_dispatcher_->register_handler(
+          std::make_shared<signal_handlers::CertRenewedHandler>(
+              install_config_manager_, output_hub_));
 
-    signal_dispatcher_->register_handler(
-      std::make_shared<signal_handlers::CertRevokedHandler>(
-        install_config_manager_, output_hub_));
-  }
+      signal_dispatcher_->register_handler(
+          std::make_shared<signal_handlers::CertRevokedHandler>(
+              install_config_manager_, output_hub_));
+    }
 
-    output_hub_.logger().info()
+    BOOST_LOG_SEV(lg, trivial::info)
         << "Registered " << signal_dispatcher_->handler_count()
-        << " signal handlers" << std::endl;
+        << " signal handlers";
   }
 
   std::string command() const override { return "updates"; }
@@ -192,8 +189,8 @@ public:
     return poll_once()
         .catch_then([self = this->shared_from_this()](monad::Error e) {
           ++self->consecutive_failures_;
-              BOOST_LOG_SEV(self->lg, trivial::error)
-                  << "poll iteration error: " << e;
+          BOOST_LOG_SEV(self->lg, trivial::error)
+              << "poll iteration error: " << e;
           return monad::IO<void>::pure(); // continue
         })
         .then([self = this->shared_from_this(), iter]() {
@@ -226,9 +223,9 @@ public:
 
             if (self->consecutive_failures_ > 0) {
               self->output_hub_.logger().info()
-                  << "Retrying updates poll in " << delay_ms
-                  << " ms after " << self->consecutive_failures_
-                  << " consecutive failures" << std::endl;
+                  << "Retrying updates poll in " << delay_ms << " ms after "
+                  << self->consecutive_failures_ << " consecutive failures"
+                  << std::endl;
             }
 
             return monad::delay_for<void>(self->ioc_,
@@ -481,7 +478,7 @@ private:
           cached_access_token_ = *new_access_token;
           cached_access_token_mtime_.reset();
 
-    BOOST_LOG_SEV(lg, trivial::trace) 
+          BOOST_LOG_SEV(lg, trivial::trace)
               << "Device session refreshed; new access token expires in "
               << new_expires_in.value_or(0) << "s" << std::endl;
 
@@ -492,11 +489,46 @@ private:
   // templates
 
   template <typename ExchangePtr>
+  void maybe_update_interval_from_header(const ExchangePtr &ex) {
+    static constexpr std::string_view kPollIntervalHeader = "X-Poll-Interval";
+    auto header_it = ex->response->base().find(kPollIntervalHeader);
+    if (header_it == ex->response->base().end()) {
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "No " << kPollIntervalHeader << " header in response";
+      return;
+    }
+
+    const std::string header_value(header_it->value());
+    try {
+      int new_interval_seconds = std::stoi(header_value);
+      if (new_interval_seconds <= 0) {
+        return;
+      }
+      const int new_interval_ms = new_interval_seconds * 1000;
+      if (new_interval_ms != interval_ms_) {
+        const int previous_interval_ms = interval_ms_;
+        interval_ms_ = new_interval_ms;
+        BOOST_LOG_SEV(lg, trivial::info)
+            << "Server adjusted poll interval to " << interval_ms_
+            << " ms (was " << previous_interval_ms << " ms)" << std::endl;
+      } else {
+        BOOST_LOG_SEV(lg, trivial::trace)
+            << "Server poll interval unchanged at " << interval_ms_ << " ms";
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "Failed to parse X-Poll-Interval header value '" << header_value
+          << "': " << e.what() << std::endl;
+    }
+  }
+
+  template <typename ExchangePtr>
   monad::IO<void> handle_no_content(ExchangePtr ex) {
     namespace http = boost::beast::http;
 
     // Extract cursor from ETag header
     consecutive_failures_ = 0;
+    maybe_update_interval_from_header(ex);
     if (auto it = ex->response->find(http::field::etag);
         it != ex->response->end()) {
       std::string etag = std::string(it->value());
@@ -526,6 +558,7 @@ private:
 
     auto resp = std::move(parse_result).value();
     consecutive_failures_ = 0;
+    maybe_update_interval_from_header(ex);
 
     // Update cursor
     cursor_ = resp.data.cursor;
@@ -660,7 +693,8 @@ private:
       upper = lower;
     }
 
-    int exponent = std::min(consecutive_failures_ - 1, kFailureRetryMaxExponent);
+    int exponent =
+        std::min(consecutive_failures_ - 1, kFailureRetryMaxExponent);
     int candidate = kFailureRetryBaseMs << exponent;
     if (candidate > upper) {
       candidate = upper;
@@ -779,5 +813,6 @@ public:
   size_t install_updated_count() const { return install_updated_count_; }
   size_t cert_renewed_count() const { return cert_renewed_count_; }
   size_t cert_revoked_count() const { return cert_revoked_count_; }
+  friend struct UpdatesPollingHandlerTestFriend;
 };
 } // namespace certctrl

@@ -63,6 +63,24 @@ extern "C" const char *__asan_default_options() { return "detect_leaks=0"; }
 extern "C" const char *__lsan_default_options() { return "detect_leaks=0"; }
 #endif
 
+namespace certctrl {
+struct UpdatesPollingHandlerTestFriend {
+  template <typename ExchangePtr>
+  static void MaybeUpdateIntervalFromHeader(UpdatesPollingHandler &handler,
+                                            const ExchangePtr &ex) {
+    handler.maybe_update_interval_from_header(ex);
+  }
+
+  static int interval_ms(const UpdatesPollingHandler &handler) {
+    return handler.interval_ms_;
+  }
+
+  static void set_interval_ms(UpdatesPollingHandler &handler, int value) {
+    handler.interval_ms_ = value;
+  }
+};
+} // namespace certctrl
+
 namespace di = boost::di;
 namespace fs = std::filesystem;
 namespace json = boost::json;
@@ -126,6 +144,14 @@ void debug_log(std::string_view msg) {
   fmt::print(stderr, "[real-server {}] {}\n", ms, msg);
   fflush(stderr);
 }
+
+struct FakeExchange {
+  using ResponseType =
+      boost::beast::http::response<boost::beast::http::string_body>;
+  std::optional<ResponseType> response;
+
+  FakeExchange() { response.emplace(); }
+};
 
 struct RegisteredDeviceSession {
   int64_t device_id{};
@@ -271,6 +297,61 @@ private:
   certctrl::ICertctrlConfigProvider *config_provider_{nullptr};
   std::shared_ptr<certctrl::UpdatesPollingHandler> handler_;
 };
+
+TEST(UpdatesPollingHandlerUnitTest, AppliesServerIntervalHints) {
+  auto tmp_root = fs::temp_directory_path() / "updates-unit" /
+                  make_unique_suffix();
+  std::error_code ec;
+  fs::create_directories(tmp_root, ec);
+  ASSERT_FALSE(ec) << "failed to create temp dir: " << ec.message();
+  ScopeGuard cleanup([&]() {
+    std::error_code rm_ec;
+    fs::remove_all(tmp_root, rm_ec);
+  });
+
+  certctrl::CliParams params{};
+  params.subcmd = "updates";
+  params.config_dirs = {tmp_root};
+
+  auto vm = po::variables_map{};
+  std::vector<std::string> positional{"updates"};
+  std::vector<std::string> unrecognized{"updates"};
+
+  certctrl::CliCtx cli_ctx(std::move(vm), std::move(positional),
+                           std::move(unrecognized), std::move(params));
+
+  UpdatesHandlerHarness harness(tmp_root, tmp_root, "https://example.invalid",
+                                cli_ctx);
+  auto handler = harness.handler();
+  ASSERT_TRUE(handler);
+
+  certctrl::UpdatesPollingHandlerTestFriend::set_interval_ms(*handler, 5000);
+
+  auto exchange = std::make_shared<FakeExchange>();
+  exchange->response->set("X-Poll-Interval", "7");
+
+  certctrl::UpdatesPollingHandlerTestFriend::MaybeUpdateIntervalFromHeader(
+      *handler, exchange);
+
+  EXPECT_EQ(certctrl::UpdatesPollingHandlerTestFriend::interval_ms(*handler),
+            7000);
+
+  exchange->response->set("X-Poll-Interval", "NaN");
+  certctrl::UpdatesPollingHandlerTestFriend::MaybeUpdateIntervalFromHeader(
+      *handler, exchange);
+
+  EXPECT_EQ(certctrl::UpdatesPollingHandlerTestFriend::interval_ms(*handler),
+            7000)
+      << "interval should remain unchanged for invalid header values";
+
+  exchange->response->set("X-Poll-Interval", "-12");
+  certctrl::UpdatesPollingHandlerTestFriend::MaybeUpdateIntervalFromHeader(
+      *handler, exchange);
+
+  EXPECT_EQ(certctrl::UpdatesPollingHandlerTestFriend::interval_ms(*handler),
+            7000)
+      << "interval should ignore non-positive hints";
+}
 
 class UpdatesRealServerFixture : public ::testing::Test {
 protected:
