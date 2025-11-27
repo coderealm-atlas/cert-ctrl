@@ -12,12 +12,14 @@
 #include <boost/system/error_code.hpp>
 #include <boost/url.hpp>
 #include <chrono>
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <fmt/format.h>
 #include <fstream>
 #include <iterator>
 #include <jwt-cpp/jwt.h>
+#include <string_view>
 #ifndef _WIN32
 #include <sys/stat.h>
 #endif
@@ -81,6 +83,24 @@ std::string determine_device_ip(asio::io_context &ioc,
     }
     return std::string{kFallback};
   }
+}
+
+bool is_valid_device_public_id(std::string_view candidate) {
+  if (candidate.size() != 36) {
+    return false;
+  }
+  for (size_t i = 0; i < candidate.size(); ++i) {
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (candidate[i] != '-') {
+        return false;
+      }
+      continue;
+    }
+    if (!std::isxdigit(static_cast<unsigned char>(candidate[i]))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -542,13 +562,44 @@ VoidPureIO LoginHandler::register_device() {
   const std::string user_id = *self->poll_resp_->user_id;
 
   const auto &base_url = self->certctrl_config_provider_.get().base_url;
+  std::filesystem::path out_dir =
+      self->runtime_dir_.value_or(std::filesystem::path{});
 
   // Gather device info and fingerprint
   std::string user_agent = fmt::format("cert-ctrl/{}", MYAPP_VERSION);
   auto info = cjj365::device::gather_device_info(user_agent);
-  auto fp_hex = cjj365::device::generate_device_fingerprint_hex(info);
-  auto device_public_id =
-      cjj365::device::device_public_id_from_fingerprint(fp_hex);
+  auto derived_fp_hex = cjj365::device::generate_device_fingerprint_hex(info);
+  auto derived_device_public_id =
+      cjj365::device::device_public_id_from_fingerprint(derived_fp_hex);
+
+  bool persist_device_identity = false;
+  std::string device_public_id = derived_device_public_id;
+  if (!out_dir.empty()) {
+    const auto device_id_path = out_dir / "state" / "device_public_id.txt";
+    auto persisted_id = self->read_text_file_trimmed(device_id_path);
+    if (persisted_id && is_valid_device_public_id(*persisted_id)) {
+      device_public_id = *persisted_id;
+      if (*persisted_id != derived_device_public_id) {
+        self->output_hub_.logger().warning()
+            << "Derived device_public_id " << derived_device_public_id
+            << " differs from persisted value " << *persisted_id
+            << "; continuing with persisted identifier." << std::endl;
+      }
+    } else {
+      if (persisted_id && !persisted_id->empty()) {
+        self->output_hub_.logger().warning()
+            << "Ignoring malformed device_public_id stored at "
+            << device_id_path << "; regenerating a new identifier."
+            << std::endl;
+      }
+      persist_device_identity = true;
+      device_public_id = derived_device_public_id;
+    }
+  } else {
+    self->output_hub_.logger().warning()
+        << "Runtime directory unavailable; device identity will not be"
+        << " persisted and may drift." << std::endl;
+  }
 
   auto device_ip = determine_device_ip(self->ioc_, base_url);
 
@@ -560,10 +611,6 @@ VoidPureIO LoginHandler::register_device() {
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                           std::string{"libsodium init failed: "} + e.what()));
   }
-
-  // Determine output directory: cached runtime path (if available)
-  std::filesystem::path out_dir =
-      self->runtime_dir_.value_or(std::filesystem::path{});
 
   auto write_file_0600 = [](const std::filesystem::path &p,
                             const unsigned char *data,
@@ -619,6 +666,21 @@ VoidPureIO LoginHandler::register_device() {
       return std::string{"write_text_0600 exception: "} + e.what();
     }
   };
+
+  if (!out_dir.empty() && persist_device_identity) {
+    const auto state_dir = out_dir / "state";
+    if (auto err = write_text_0600(state_dir / "device_public_id.txt",
+                                   device_public_id)) {
+      self->output_hub_.logger().warning()
+          << "Failed to persist device_public_id: " << *err << std::endl;
+    }
+    if (auto err = write_text_0600(state_dir / "device_fingerprint_hex.txt",
+                                   derived_fp_hex)) {
+      self->output_hub_.logger().warning()
+          << "Failed to persist device fingerprint hex: " << *err
+          << std::endl;
+    }
+  }
 
   // Load existing keys if present; otherwise generate a new pair
   cjj365::cryptutil::BoxKeyPair box_kp{};

@@ -1,11 +1,13 @@
 #include "handlers/info_handler.hpp"
 
 #include <chrono>
+#include <cctype>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <vector>
 
 #include <fmt/format.h>
@@ -13,6 +15,10 @@
 
 #include "util/device_fingerprint.hpp"
 #include "version.h"
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace certctrl {
 namespace {
@@ -33,6 +39,51 @@ std::optional<std::string> read_trimmed(const fs::path &path) {
     return std::nullopt;
   }
   return contents.substr(first, last - first + 1);
+}
+
+bool is_valid_device_public_id(std::string_view candidate) {
+  if (candidate.size() != 36) {
+    return false;
+  }
+  for (size_t i = 0; i < candidate.size(); ++i) {
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (candidate[i] != '-') {
+        return false;
+      }
+      continue;
+    }
+    if (!std::isxdigit(static_cast<unsigned char>(candidate[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<std::string> write_text_0600(const fs::path &path,
+                                           std::string_view text) {
+  try {
+    std::error_code ec;
+    if (auto parent = path.parent_path(); !parent.empty()) {
+      fs::create_directories(parent, ec);
+      if (ec) {
+        return std::string{"create_directories failed: "} + ec.message();
+      }
+    }
+    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) {
+      return std::string{"open failed for "} + path.string();
+    }
+    ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!ofs) {
+      return std::string{"write failed for "} + path.string();
+    }
+#ifndef _WIN32
+    ::chmod(path.c_str(), 0600);
+#endif
+    return std::nullopt;
+  } catch (const std::exception &ex) {
+    return std::string{"write_text_0600 exception: "} + ex.what();
+  }
 }
 
 std::optional<std::string> decode_device_id(const std::string &token) {
@@ -148,6 +199,32 @@ monad::IO<void> InfoHandler::start() {
       cjj365::device::generate_device_fingerprint_hex(device_info);
   auto public_id =
       cjj365::device::device_public_id_from_fingerprint(fingerprint);
+  std::optional<std::string> stored_device_id;
+  fs::path device_id_path;
+  if (!runtime_dir.empty()) {
+    device_id_path = runtime_dir / "state" / "device_public_id.txt";
+    stored_device_id = read_trimmed(device_id_path);
+    const bool stored_valid =
+        stored_device_id && is_valid_device_public_id(*stored_device_id);
+    if (!stored_valid) {
+      if (stored_device_id) {
+        output_hub_.logger().warning()
+            << "Ignoring malformed device_public_id stored at "
+            << device_id_path << "; rewriting derived identifier."
+            << std::endl;
+      } else {
+        output_hub_.logger().info()
+            << "device_public_id.txt missing; writing derived identifier to "
+            << device_id_path << std::endl;
+      }
+      if (auto err = write_text_0600(device_id_path, public_id)) {
+        output_hub_.logger().warning()
+            << "Failed to persist device_public_id: " << *err << std::endl;
+      } else {
+        stored_device_id = public_id;
+      }
+    }
+  }
   auto default_name = fmt::format(
       "CLI Device {}",
       device_info.hostname.empty() ? std::string{"unknown"}
@@ -185,7 +262,21 @@ monad::IO<void> InfoHandler::start() {
   }
   {
     auto proxy = printer.white();
-    proxy << "  Derived device ID: " << public_id << std::endl;
+    proxy << "  Derived device ID: " << public_id;
+    if (stored_device_id && *stored_device_id != public_id) {
+      proxy << "  (differs from stored)";
+    }
+    proxy << std::endl;
+  }
+  if (!runtime_dir.empty()) {
+    auto proxy = printer.white();
+    proxy << "  Stored device ID: ";
+    if (stored_device_id) {
+      proxy << *stored_device_id;
+    } else {
+      proxy << "<missing>";
+    }
+    proxy << std::endl;
   }
   {
     auto proxy = printer.white();
