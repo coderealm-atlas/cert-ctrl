@@ -302,6 +302,37 @@ Auth:
 
 See: ai_docs/DEVICE_POLLING_UPDATES.md for complete protocol.
 
+### Device Notifications (DeviceNotifyHandler)
+Path:
+- POST /apiv1/devices/self/notify
+
+Auth:
+- Device Bearer token (same JWT used for `/devices/self/updates`).
+
+Behavior:
+- Accepts a small batch of notification events from the agent. Current event: `agent_version` with fields `agent`, `version`, and optional `device_public_id`.
+- The server records the latest version for the calling device when the event arrives. Unknown event types should be ignored for forward compatibility.
+
+Request body example:
+```json
+{
+  "schema": "certctrl.device.notify.v1",
+  "events": [
+    {
+      "type": "agent_version",
+      "agent": "cert-ctrl",
+      "version": "1.4.2",
+      "device_public_id": "5f3a08dd-3c9c-4ffa-b20a-74c7bb6cb2f9"
+    }
+  ]
+}
+```
+
+Responses:
+- 204 No Content on success.
+- 400 with error payload when the event array is missing/invalid.
+- 401/403 when the bearer token is absent or expired.
+
 ## Device Self Certificates (DeviceSelfCertsHandler)
 Path:
 - GET /apiv1/devices/self/certificates/:certificate_id/bundle[?pack=download]

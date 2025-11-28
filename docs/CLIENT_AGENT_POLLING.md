@@ -70,6 +70,28 @@ Use `cert-ctrl conf get <key>` / `cert-ctrl conf set <key> <value>` to inspect o
 
 ## Polling Loop (`cert-ctrl updates`)
 
+### Startup notification
+
+- Immediately before the first `/devices/self/updates` request each run, the agent sends `POST {base_url}/apiv1/devices/self/notify` with the bearer token it already loaded.
+- Payload shape:
+
+```json
+{
+  "schema": "certctrl.device.notify.v1",
+  "events": [
+    {
+      "type": "agent_version",
+      "agent": "cert-ctrl",
+      "version": "1.4.2",
+      "device_public_id": "a6f0e9cc-..."
+    }
+  ]
+}
+```
+
+- The request is retried on subsequent poll attempts until the server replies with 2xx, ensuring the backend eventually records the version after restarts or upgrades.
+- Failures only log a warning; polling continues even if the notify endpoint is unavailable.
+
 ### HTTP contract
 
 - **Method / URL**: `GET {base_url}/apiv1/devices/self/updates`
