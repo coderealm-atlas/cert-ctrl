@@ -48,6 +48,7 @@
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
 #include "resource_fetcher.hpp"
+#include "version.h"
 
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
@@ -82,6 +83,11 @@ struct UpdatesPollingHandlerTestFriend {
   static monad::IO<void> ForceRefresh(UpdatesPollingHandler &handler,
                                       std::string reason) {
     return handler.refresh_access_token(std::move(reason));
+  }
+
+  static boost::json::object BuildNotifyPayload(
+      const UpdatesPollingHandler &handler) {
+    return handler.build_startup_notify_payload();
   }
 };
 } // namespace certctrl
@@ -396,6 +402,56 @@ TEST(UpdatesPollingHandlerUnitTest, AppliesServerIntervalHints) {
   EXPECT_EQ(certctrl::UpdatesPollingHandlerTestFriend::interval_ms(*handler),
             7000)
       << "interval should ignore non-positive hints";
+}
+
+TEST(UpdatesPollingHandlerUnitTest,
+     StartupNotifyPayloadIncludesStoredDeviceId) {
+  auto tmp_root = fs::temp_directory_path() / "updates-notify" /
+                  make_unique_suffix();
+  std::error_code ec;
+  fs::create_directories(tmp_root / "state", ec);
+  ASSERT_FALSE(ec) << "failed to create temp state dir: " << ec.message();
+
+  const std::string stored_id = "12345678-1234-1234-1234-123456789abc";
+  {
+    std::ofstream ofs(tmp_root / "state" / "device_public_id.txt",
+                      std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(ofs.is_open());
+    ofs << stored_id;
+  }
+
+  ScopeGuard cleanup([&]() {
+    std::error_code rm_ec;
+    fs::remove_all(tmp_root, rm_ec);
+  });
+
+  certctrl::CliParams params{};
+  params.subcmd = "updates";
+  params.config_dirs = {tmp_root};
+
+  auto vm = po::variables_map{};
+  std::vector<std::string> positional{"updates"};
+  std::vector<std::string> unrecognized{"updates"};
+  certctrl::CliCtx cli_ctx(std::move(vm), std::move(positional),
+                           std::move(unrecognized), std::move(params));
+
+  UpdatesHandlerHarness harness(tmp_root, tmp_root, "https://example.invalid",
+                                cli_ctx);
+  auto handler = harness.handler();
+  ASSERT_TRUE(handler);
+
+  auto payload =
+      certctrl::UpdatesPollingHandlerTestFriend::BuildNotifyPayload(*handler);
+  ASSERT_TRUE(payload.if_contains("events"));
+  const auto &events = payload.at("events").as_array();
+  ASSERT_EQ(events.size(), 1u);
+  const auto &event = events.front().as_object();
+  EXPECT_EQ(event.at("type").as_string(), "agent_version");
+  EXPECT_EQ(event.at("version").as_string(), MYAPP_VERSION);
+  ASSERT_TRUE(event.if_contains("device_public_id"));
+  EXPECT_EQ(event.at("device_public_id").as_string(), stored_id);
+  ASSERT_TRUE(payload.if_contains("schema"));
+  EXPECT_EQ(payload.at("schema").as_string(), "certctrl.device.notify.v1");
 }
 
 TEST(UpdatesPollingHandlerUnitTest, UsesSessionRefresherForTokenRefresh) {

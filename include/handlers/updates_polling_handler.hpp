@@ -4,6 +4,7 @@
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/beast/http.hpp>
 #include <boost/json.hpp>
 #include <boost/log/sources/severity_logger.hpp>
 #include <boost/log/trivial.hpp>
@@ -14,6 +15,7 @@
 #include <filesystem>
 #include <fmt/format.h>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,6 +38,7 @@
 #include "io_monad.hpp"
 #include "my_error_codes.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
+#include "version.h"
 
 namespace po = boost::program_options;
 namespace asio = boost::asio;
@@ -93,6 +96,8 @@ class UpdatesPollingHandler
   std::optional<int> server_override_delay_ms_;
   std::optional<std::string> cached_access_token_;
   std::optional<std::filesystem::file_time_type> cached_access_token_mtime_;
+  std::string notify_endpoint_;
+  bool notify_sent_this_run_{false};
 
 public:
   UpdatesPollingHandler(
@@ -109,7 +114,9 @@ public:
         output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
         opt_desc_("updates polling options"),
         endpoint_base_(fmt::format("{}/apiv1/devices/self/updates",
-                 certctrl_config_provider_.get().base_url)),
+                                   certctrl_config_provider_.get().base_url)),
+        notify_endpoint_(fmt::format("{}/apiv1/devices/self/notify",
+                                     certctrl_config_provider_.get().base_url)),
         install_config_manager_(std::move(install_config_manager)),
         session_refresher_(std::move(session_refresher)) {
     exec_ = boost::asio::make_strand(ioc_);
@@ -287,7 +294,6 @@ private:
     }
     return cached_access_token_;
   }
-
 
   monad::IO<void> refresh_access_token(std::string reason) {
     if (!session_refresher_) {
@@ -528,10 +534,6 @@ private:
 
   monad::IO<void> poll_once(bool allow_refresh_retry = true) {
     using namespace monad;
-    namespace http = boost::beast::http;
-    using monad::GetStringTag;
-    using monad::http_io;
-    using monad::http_request_io;
 
     auto access_token_opt = load_access_token_from_state();
     if ((!access_token_opt || access_token_opt->empty()) &&
@@ -540,8 +542,9 @@ private:
           << "Access token missing; attempting refresh before polling."
           << std::endl;
       auto self = shared_from_this();
-      return refresh_access_token("updates polling bootstrap")
-        .then([self]() { return self->poll_once(false); });
+      return refresh_access_token("updates polling bootstrap").then([self]() {
+        return self->poll_once(false);
+      });
     }
 
     if (!access_token_opt || access_token_opt->empty()) {
@@ -571,53 +574,12 @@ private:
     }
     url += query;
 
-    last_request_url_ = url;
-    parse_error_.clear();
-    output_hub_.logger().trace()
-        << "Polling device updates at " << url << std::endl;
-    return http_io<GetStringTag>(url)
-        .map([access_token, this](auto ex) {
-          ex->request.set(http::field::authorization,
-                          std::string("Bearer ") + access_token);
-          if (!cursor_.empty()) {
-            ex->request.set(http::field::if_none_match,
-                            fmt::format("\"{}\"", cursor_));
-          }
-          return ex;
-        })
-        .then(http_request_io<GetStringTag>(http_client_))
-        .then([this, allow_refresh_retry](auto ex) -> monad::IO<void> {
-          if (!ex->response.has_value()) {
-            return monad::IO<void>::fail(monad::make_error(
-                my_errors::NETWORK::READ_ERROR, "No response received"));
-          }
-
-          int status = ex->response->result_int();
-          last_http_status_ = status;
-
-          if (status == 204) {
-            // No updates - extract cursor from ETag
-            return handle_no_content(ex);
-          } else if (status == 200) {
-            // Has updates - parse JSON and dispatch signals
-            return handle_ok_with_signals(ex);
-          } else if ((status == 401 || status == 403) && allow_refresh_retry) {
-            BOOST_LOG_SEV(lg, trivial::info)
-                << "Received HTTP " << status
-                << " while polling; attempting token refresh." << std::endl;
-            auto self = shared_from_this();
-            auto reason = fmt::format("updates polling HTTP {}", status);
-            return refresh_access_token(std::move(reason))
-                .then([self]() { return self->poll_once(false); })
-                .catch_then([self, ex, status](const monad::Error &err) {
-                  BOOST_LOG_SEV(self->lg, trivial::error)
-                      << "Token refresh failed: " << err.what << std::endl;
-                  return self->handle_error_status(ex, status);
-                });
-          } else {
-            // Error response
-            return handle_error_status(ex, status);
-          }
+    auto self = shared_from_this();
+    return maybe_send_startup_notification(access_token)
+        .then([self, url = std::move(url), access_token,
+               allow_refresh_retry]() mutable {
+          return self->execute_poll_request(
+              std::move(url), std::move(access_token), allow_refresh_retry);
         });
   }
 
@@ -632,5 +594,151 @@ public:
   size_t cert_renewed_count() const { return cert_renewed_count_; }
   size_t cert_revoked_count() const { return cert_revoked_count_; }
   friend struct UpdatesPollingHandlerTestFriend;
+
+private:
+  boost::json::object build_startup_notify_payload() const {
+    boost::json::object payload;
+    boost::json::array events;
+    boost::json::object event;
+    event["type"] = "agent_version";
+    event["version"] = MYAPP_VERSION;
+    event["agent"] = "cert-ctrl";
+    if (auto device_id = load_device_public_id_from_state()) {
+      event["device_public_id"] = *device_id;
+    }
+    events.push_back(event);
+    payload["events"] = std::move(events);
+    payload["schema"] = "certctrl.device.notify.v1";
+    return payload;
+  }
+
+  monad::IO<void> execute_poll_request(std::string url,
+                                       std::string access_token,
+                                       bool allow_refresh_retry) {
+    using monad::GetStringTag;
+    using monad::http_io;
+    using monad::http_request_io;
+    namespace http = boost::beast::http;
+
+    last_request_url_ = url;
+    parse_error_.clear();
+    output_hub_.logger().trace()
+        << "Polling device updates at " << url << std::endl;
+
+    auto self = shared_from_this();
+    return http_io<GetStringTag>(url)
+        .map([self, access_token = std::move(access_token)](auto ex) {
+          ex->request.set(http::field::authorization,
+                          std::string("Bearer ") + access_token);
+          if (!self->cursor_.empty()) {
+            ex->request.set(http::field::if_none_match,
+                            fmt::format("\"{}\"", self->cursor_));
+          }
+          return ex;
+        })
+        .then(http_request_io<GetStringTag>(http_client_))
+        .then([self, allow_refresh_retry](auto ex) -> monad::IO<void> {
+          if (!ex->response.has_value()) {
+            return monad::IO<void>::fail(monad::make_error(
+                my_errors::NETWORK::READ_ERROR, "No response received"));
+          }
+
+          int status = ex->response->result_int();
+          self->last_http_status_ = status;
+
+          if (status == 204) {
+            return self->handle_no_content(ex);
+          } else if (status == 200) {
+            return self->handle_ok_with_signals(ex);
+          } else if ((status == 401 || status == 403) && allow_refresh_retry) {
+            BOOST_LOG_SEV(self->lg, trivial::info)
+                << "Received HTTP " << status
+                << " while polling; attempting token refresh." << std::endl;
+            auto reason = fmt::format("updates polling HTTP {}", status);
+            return self->refresh_access_token(std::move(reason))
+                .then([self]() { return self->poll_once(false); })
+                .catch_then([self, ex, status](const monad::Error &err) {
+                  BOOST_LOG_SEV(self->lg, trivial::error)
+                      << "Token refresh failed: " << err.what << std::endl;
+                  return self->handle_error_status(ex, status);
+                });
+          }
+          return self->handle_error_status(ex, status);
+        });
+  }
+
+  monad::IO<void>
+  maybe_send_startup_notification(const std::string &access_token) {
+    using monad::http_io;
+    using monad::http_request_io;
+    using monad::PostJsonTag;
+    namespace http = boost::beast::http;
+
+    if (notify_sent_this_run_) {
+      return monad::IO<void>::pure();
+    }
+
+    auto payload_obj =
+        std::make_shared<boost::json::object>(build_startup_notify_payload());
+    auto self = shared_from_this();
+    return http_io<PostJsonTag>(notify_endpoint_)
+        .map([self, payload_obj, access_token](auto ex) {
+          ex->setRequestJsonBody(*payload_obj);
+          ex->request.set(http::field::authorization,
+                          std::string("Bearer ") + access_token);
+          self->output_hub_.logger().trace()
+              << "Sending startup notification to " << self->notify_endpoint_
+              << " with payload: " << *payload_obj << std::endl;
+          return ex;
+        })
+        .then(http_request_io<PostJsonTag>(http_client_))
+        .then([self](auto ex) -> monad::IO<void> {
+          if (!ex->is_2xx()) {
+            int status = ex->response ? ex->response->result_int() : 0;
+            self->output_hub_.logger().warning()
+                << "Device notify endpoint returned HTTP " << status
+                << "; will retry next iteration." << std::endl;
+            return monad::IO<void>::pure();
+          }
+          self->notify_sent_this_run_ = true;
+          self->output_hub_.logger().info()
+              << "Reported agent version " << MYAPP_VERSION
+              << " via /devices/self/notify" << std::endl;
+          return monad::IO<void>::pure();
+        })
+        .catch_then([self](monad::Error err) {
+          self->output_hub_.logger().warning()
+              << "Failed to notify server of agent version: " << err.what
+              << std::endl;
+          return monad::IO<void>::pure();
+        });
+  }
+
+  std::optional<std::string> load_device_public_id_from_state() const {
+    if (config_sources_.paths_.empty()) {
+      return std::nullopt;
+    }
+    const auto runtime_dir = config_sources_.paths_.back();
+    const auto id_path = runtime_dir / "state" / "device_public_id.txt";
+    return read_trimmed_file(id_path);
+  }
+
+  static std::optional<std::string>
+  read_trimmed_file(const std::filesystem::path &path) {
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs.is_open()) {
+      return std::nullopt;
+    }
+    std::string contents((std::istreambuf_iterator<char>(ifs)), {});
+    auto first = contents.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+      return std::nullopt;
+    }
+    auto last = contents.find_last_not_of(" \t\r\n");
+    if (last == std::string::npos || last < first) {
+      return std::nullopt;
+    }
+    return contents.substr(first, last - first + 1);
+  }
 };
 } // namespace certctrl
