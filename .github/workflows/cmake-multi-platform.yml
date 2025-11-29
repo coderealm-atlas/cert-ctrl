@@ -411,50 +411,6 @@ jobs:
             echo "BUILD_DIR=${{ github.workspace }}/build" >> $env:GITHUB_ENV
           }
 
-      - name: Configure CMake (Unix)
-        if: runner.os != 'Windows' && env.SKIP_CONFIGURE != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
-          
-          # Determine if we should use a preset or manual configuration
-          if [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "Linux" ]; then
-            # Use the release-compat preset on Linux only (preset defines its own build directory)
-            cmake_args=(
-              --preset=release-compat
-              '-G', 'Visual Studio 17 2022',
-              '-A', 'x64',
-              -D CMAKE_CXX_COMPILER=clang++
-            )
-            # Manual configuration for macOS compatibility builds (no static libgcc/libstdc++)
-            cmake_args=(
-              -G "Ninja"
-              -B "${{ github.workspace }}/build"
-              -S "${{ github.workspace }}"
-              -DCMAKE_C_COMPILER=clang
-              -DCMAKE_CXX_COMPILER=clang++
-              -DCMAKE_BUILD_TYPE=Release
-              -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
-              -DVCPKG_TARGET_TRIPLET=x64-osx
-              '-G', 'Visual Studio 17 2022',
-              '-A', 'x64',
-              -DCMAKE_C_FLAGS="-O2 -DNDEBUG"
-              -DDISABLE_LTO=ON
-          else
-            # Use manual configuration for other build types
-            cmake_args=(
-              -G "Ninja"
-              -B "${{ github.workspace }}/build"
-              -S "${{ github.workspace }}"
-              -DCMAKE_C_COMPILER=clang
-              cmake_args+=(
-                -DCMAKE_C_COMPILER_LAUNCHER=sccache
-                -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-              )
-            fi
-          fi
-          cmake "${cmake_args[@]}"
 
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows' && env.SKIP_CONFIGURE != 'true'
@@ -826,47 +782,3 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Configure CMake (Unix)
-        if: runner.os != 'Windows' && env.SKIP_CONFIGURE != 'true'
-        run: |
-          set -eu
-          build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
-
-          if [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "Linux" ]; then
-            cmake --preset=release-compat \
-              -D CMAKE_C_COMPILER=clang \
-              -D CMAKE_CXX_COMPILER=clang++
-            exit 0
-          fi
-
-          if [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "macOS" ]; then
-            set -- \
-              -G "Ninja" \
-              -B "${{ github.workspace }}/build" \
-              -S "${{ github.workspace }}" \
-              -DCMAKE_C_COMPILER=clang \
-              -DCMAKE_CXX_COMPILER=clang++ \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake" \
-              -DVCPKG_TARGET_TRIPLET=x64-osx \
-              -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG" \
-              -DCMAKE_C_FLAGS="-O2 -DNDEBUG" \
-              -DDISABLE_LTO=ON
-          else
-            set -- \
-              -G "Ninja" \
-              -B "${{ github.workspace }}/build" \
-              -S "${{ github.workspace }}" \
-              -DCMAKE_C_COMPILER=clang \
-              -DCMAKE_CXX_COMPILER=clang++ \
-              -DCMAKE_BUILD_TYPE="${build_type}" \
-              -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
-          fi
-
-          if [ "${{ env.IS_SELF_HOSTED }}" != "true" ] && [ "$build_type" != "Release-Compat" ]; then
-            set -- "$@" \
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          fi
-
-          cmake "$@"
