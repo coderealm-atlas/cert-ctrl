@@ -141,15 +141,13 @@ jobs:
       # Enable vcpkg's GitHub Actions cache provider for fast binary caching
       VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
       VCPKG_FEATURE_FLAGS: manifests,binarycaching,registries
-      # Ensure Ninja is used everywhere
-      CMAKE_GENERATOR: Ninja
-      VCPKG_USE_NINJA: 1
       REQUESTED_BUILD_TYPE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.build_type || 'Release' }}
       REQUESTED_SKIP_TESTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_tests || 'false' }}
       REQUESTED_UPLOAD_ARTIFACTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts || 'true' }}
       REQUESTED_CLEAN_BUILD: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.clean_build || 'false' }}
       IS_SELF_HOSTED: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.target_runner || 'github-all', 'self-host-') }}
       SKIP_CONFIGURE: 'false'
+      BUILD_DIR: build
       ARTIFACT_PLATFORM: ''
       ARTIFACT_ARCH: ''
       ARTIFACT_SLUG: unknown
@@ -424,11 +422,10 @@ jobs:
             # Use the release-compat preset on Linux only (preset defines its own build directory)
             cmake_args=(
               --preset=release-compat
-              -D CMAKE_C_COMPILER=clang
+              '-G', 'Visual Studio 17 2022',
+              '-A', 'x64',
               -D CMAKE_CXX_COMPILER=clang++
             )
-            cmake_args+=(-DFORCE_CLEAN_GIT_DESCRIBE=ON)
-          elif [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "macOS" ]; then
             # Manual configuration for macOS compatibility builds (no static libgcc/libstdc++)
             cmake_args=(
               -G "Ninja"
@@ -439,11 +436,10 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release
               -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
               -DVCPKG_TARGET_TRIPLET=x64-osx
-              -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG"
+              '-G', 'Visual Studio 17 2022',
+              '-A', 'x64',
               -DCMAKE_C_FLAGS="-O2 -DNDEBUG"
               -DDISABLE_LTO=ON
-            )
-            cmake_args+=(-DFORCE_CLEAN_GIT_DESCRIBE=ON)
           else
             # Use manual configuration for other build types
             cmake_args=(
@@ -451,15 +447,6 @@ jobs:
               -B "${{ github.workspace }}/build"
               -S "${{ github.workspace }}"
               -DCMAKE_C_COMPILER=clang
-              -DCMAKE_CXX_COMPILER=clang++
-              -DCMAKE_BUILD_TYPE=$build_type
-              -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
-            )
-            cmake_args+=(-DFORCE_CLEAN_GIT_DESCRIBE=ON)
-          fi
-          
-          if [ "${{ env.IS_SELF_HOSTED }}" != "true" ]; then
-            if [ "$build_type" != "Release-Compat" ]; then
               cmake_args+=(
                 -DCMAKE_C_COMPILER_LAUNCHER=sccache
                 -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
