@@ -118,6 +118,7 @@ if(USE_SYSTEM_OPENSSL)
         NAMES openssl/ssl.h
         PATHS ${_certctrl_openssl_hint_paths}
         PATH_SUFFIXES include include/openssl
+        NO_DEFAULT_PATH
     )
     if(NOT CERTCTRL_SYSTEM_OPENSSL_INCLUDE_DIR)
         message(FATAL_ERROR "USE_SYSTEM_OPENSSL=ON but OpenSSL headers were not found. Specify OPENSSL_ROOT_DIR or install the system OpenSSL development package.")
@@ -127,11 +128,13 @@ if(USE_SYSTEM_OPENSSL)
         NAMES ssl libssl
         PATHS ${_certctrl_openssl_hint_paths}
         PATH_SUFFIXES lib lib64 lib/x86_64-linux-gnu lib64/openssl
+        NO_DEFAULT_PATH
     )
     find_library(CERTCTRL_SYSTEM_OPENSSL_CRYPTO_LIBRARY
         NAMES crypto libcrypto
         PATHS ${_certctrl_openssl_hint_paths}
         PATH_SUFFIXES lib lib64 lib/x86_64-linux-gnu lib64/openssl
+        NO_DEFAULT_PATH
     )
 
     if(NOT CERTCTRL_SYSTEM_OPENSSL_SSL_LIBRARY OR NOT CERTCTRL_SYSTEM_OPENSSL_CRYPTO_LIBRARY)
