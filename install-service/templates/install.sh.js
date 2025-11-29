@@ -45,6 +45,46 @@ STATE_DIR_NAME="$(basename "$STATE_DIR")"
 RESTART_SERVICE_AFTER_INSTALL="false"
 SHA256_CMD=()
 
+OS_ID=""
+OS_VERSION_ID=""
+OS_NAME=""
+
+restore_selinux_context() {
+    local target_path="$1"
+
+    if [ -z "$target_path" ] || [ ! -e "$target_path" ]; then
+        return 0
+    fi
+
+    if ! command -v selinuxenabled >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! selinuxenabled >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if command -v restorecon >/dev/null 2>&1; then
+        if restorecon -F "$target_path" >/dev/null 2>&1; then
+            log_verbose "SELinux context refreshed for $target_path"
+        else
+            log_warning "restorecon failed for $target_path; systemd may not see the unit"
+        fi
+        return 0
+    fi
+
+    if command -v chcon >/dev/null 2>&1 && [ -f /usr/lib/systemd/system/sshd.service ]; then
+        if chcon --reference=/usr/lib/systemd/system/sshd.service "$target_path" >/dev/null 2>&1; then
+            log_verbose "Applied SELinux context from sshd.service to $target_path"
+        else
+            log_warning "Unable to set SELinux context for $target_path"
+        fi
+        return 0
+    fi
+
+    log_warning "SELinux detected but restorecon/chcon unavailable; certctrl.service may require manual relabel"
+}
+
 # Override with environment or parameters
 INSTALL_DIR="\${INSTALL_DIR:-{{INSTALL_DIR}}}"
 if [ -z "$INSTALL_DIR" ]; then
@@ -67,6 +107,99 @@ log_verbose() {
     if [ "$VERBOSE" = "true" ]; then
         echo -e "\${BLUE}[VERBOSE]\${NC} $1" >&2
     fi
+}
+
+detect_os_release() {
+    if [ -f /etc/os-release ]; then
+        OS_ID=$(grep -E '^ID=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"')
+        OS_VERSION_ID=$(grep -E '^VERSION_ID=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"')
+        OS_NAME=$(grep -E '^PRETTY_NAME=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"')
+    else
+        OS_ID="unknown"
+        OS_VERSION_ID=""
+        OS_NAME="Unknown Linux"
+    fi
+}
+
+is_suse_like() {
+    case "$OS_ID" in
+        sles|sled|suse|sles_sap|opensuse*|leap)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+needs_suse_openssl_compat() {
+    if ! is_suse_like; then
+        return 1
+    fi
+    if ! command -v ldconfig >/dev/null 2>&1; then
+        return 0
+    fi
+    if ldconfig -p | grep -q 'libssl.so.1.1'; then
+        return 0
+    fi
+    return 1
+}
+
+ensure_usr_bin_symlink() {
+    if ! is_suse_like; then
+        return 0
+    fi
+    if [ "$EUID" -ne 0 ]; then
+        log_verbose "Skipping /usr/bin symlink creation (not running as root)"
+        return 0
+    fi
+    local target="$INSTALL_DIR/cert-ctrl"
+    local symlink="/usr/bin/cert-ctrl"
+    if [ ! -x "$target" ]; then
+        return 0
+    fi
+    if [ -e "$symlink" ]; then
+        return 0
+    fi
+    if [ ! -w "/usr/bin" ]; then
+        log_warning "Cannot create /usr/bin symlink; directory is not writable"
+        return 0
+    fi
+    log_info "Adding /usr/bin/cert-ctrl symlink for SUSE sudo PATH"
+    ln -s "$target" "$symlink"
+}
+
+ensure_suse_openssl_dependencies() {
+    if ! is_suse_like; then
+        return 0
+    fi
+
+    if [ "$EUID" -ne 0 ]; then
+        log_warning "Detected SUSE-based distro but installer lacks root privileges to install OpenSSL compatibility packages."
+        log_info "Install manually if TLS errors persist: sudo zypper install -y libopenssl1_1 libopenssl1_1-hmac"
+        return 0
+    fi
+
+    if ! needs_suse_openssl_compat; then
+        log_verbose "OpenSSL 1.1 compatibility libraries already present"
+        return 0
+    fi
+
+    if command -v zypper >/dev/null 2>&1; then
+        log_info "Installing OpenSSL 1.1 compatibility libraries for SUSE..."
+        if zypper --non-interactive install -y libopenssl1_1 libopenssl1_1-hmac >/dev/null 2>&1; then
+            log_success "Installed libopenssl1_1 compatibility libraries"
+        else
+            log_warning "Failed to install libopenssl1_1 automatically. Run: sudo zypper install -y libopenssl1_1 libopenssl1_1-hmac"
+        fi
+    else
+        log_warning "zypper not found. Install libopenssl1_1 manually to resolve TLS issues on $OS_NAME."
+    fi
+}
+
+apply_distro_specific_fixes() {
+    ensure_usr_bin_symlink
+    ensure_suse_openssl_dependencies
 }
 
 get_installed_version() {
@@ -432,6 +565,37 @@ WantedBy=multi-user.target
 EOF
 }
 
+enable_service_with_retry() {
+    local attempt=1
+    local max_attempts=2
+    local last_output=""
+
+    while [ $attempt -le $max_attempts ]; do
+        if last_output=$(systemctl enable --now "$SERVICE_NAME" 2>&1); then
+            log_success "Service $SERVICE_NAME started successfully"
+            return 0
+        fi
+
+        local rc=$?
+
+        if echo "$last_output" | grep -qi "does not exist" && [ $attempt -lt $max_attempts ]; then
+            log_warning "systemctl enable reported missing unit (attempt $attempt). Forcing daemon-reload and retrying."
+            systemctl daemon-reload
+            sleep 1
+        else
+            log_warning "Service installation completed but failed to start"
+            log_info "systemctl enable output: $last_output"
+            log_info "Check logs with: journalctl -u $SERVICE_NAME"
+            log_info "Start manually with: systemctl start $SERVICE_NAME"
+            return $rc
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
 install_service_unit() {
 
     if [ "$INSTALL_SERVICE" != "true" ]; then
@@ -524,6 +688,8 @@ install_service_unit() {
         done < "$unit_path"
     } > "$tmp_unit"
     mv "$tmp_unit" "$unit_path"
+    chmod 0644 "$unit_path"
+    restore_selinux_context "$unit_path"
 
     # Ensure config directory exists and has proper permissions
     if [ ! -d "$CONFIG_DIR" ]; then
@@ -540,17 +706,15 @@ install_service_unit() {
     chmod 755 "$STATE_DIR"
 
     systemctl daemon-reload
+    if [ ! -f "$unit_path" ]; then
+        log_error "Expected systemd unit $unit_path is missing after installation"
+        exit 1
+    fi
     log_success "Systemd unit installed successfully"
 
     if [ "$ENABLE_SERVICE" = "true" ]; then
         log_info "Enabling and starting $SERVICE_NAME"
-        if systemctl enable --now "$SERVICE_NAME"; then
-            log_success "Service $SERVICE_NAME started successfully"
-        else
-            log_warning "Service installation completed but failed to start"
-            log_info "Check logs with: journalctl -u $SERVICE_NAME"
-            log_info "Start manually with: systemctl start $SERVICE_NAME"
-        fi
+        enable_service_with_retry
     else
         log_info "Service installed. Enable manually with: systemctl enable --now $SERVICE_NAME"
     fi
@@ -624,6 +788,7 @@ install_binary() {
 
     install_config_files "$extract_dir"
     install_service_unit
+    apply_distro_specific_fixes
 
     if [ "$RESTART_SERVICE_AFTER_INSTALL" = "true" ]; then
         if [ "$EUID" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
@@ -756,6 +921,12 @@ verify_installation() {
             log_error "Binary failed to run:"
             echo "$error_output"
         fi
+
+        if is_suse_like && echo "$error_output" | grep -qi "digital envelope routines"; then
+            log_warning "Detected OpenSSL compatibility issue on $OS_NAME"
+            log_info "Install compatibility libs and re-run: sudo zypper install -y libopenssl1_1 libopenssl1_1-hmac"
+            log_info "If the problem persists, rebuild cert-ctrl against the SUSE OpenSSL toolchain."
+        fi
         
         echo ""
         log_error "Installation incomplete due to runtime dependencies."
@@ -772,6 +943,8 @@ main() {
     log_verbose "Config directory: $CONFIG_DIR"
     log_verbose "Service install: $INSTALL_SERVICE (enable=$ENABLE_SERVICE)"
     
+    detect_os_release
+
     check_dependencies
     
     local platform_arch=$(detect_platform)
