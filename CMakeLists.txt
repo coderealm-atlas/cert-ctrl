@@ -57,6 +57,8 @@ endif()
 include(GNUInstallDirs)
 include(CheckCXXCompilerFlag)
 
+option(USE_SYSTEM_OPENSSL "Link against the system-provided OpenSSL shared libraries" OFF)
+
 message(STATUS "CMAKE_CXX_STANDARD_LIBRARIES=${CMAKE_CXX_STANDARD_LIBRARIES}")
 
 # Interface target to unify Boost.DI constructor parameter limit across all targets
@@ -89,6 +91,71 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT WIN32)
 endif()
 
 find_package(Threads REQUIRED)
+
+if(USE_SYSTEM_OPENSSL)
+    message(STATUS "OpenSSL linkage: using system-provided shared libraries")
+
+    set(_certctrl_openssl_hint_paths)
+    if(OPENSSL_ROOT_DIR)
+        list(APPEND _certctrl_openssl_hint_paths
+            "${OPENSSL_ROOT_DIR}"
+            "${OPENSSL_ROOT_DIR}/.."
+        )
+    endif()
+    list(APPEND _certctrl_openssl_hint_paths
+        /usr
+        /usr/local
+        /opt/openssl
+    )
+
+    find_path(CERTCTRL_SYSTEM_OPENSSL_INCLUDE_DIR
+        NAMES openssl/ssl.h
+        PATHS ${_certctrl_openssl_hint_paths}
+        PATH_SUFFIXES include include/openssl
+    )
+    if(NOT CERTCTRL_SYSTEM_OPENSSL_INCLUDE_DIR)
+        message(FATAL_ERROR "USE_SYSTEM_OPENSSL=ON but OpenSSL headers were not found. Specify OPENSSL_ROOT_DIR or install the system OpenSSL development package.")
+    endif()
+
+    find_library(CERTCTRL_SYSTEM_OPENSSL_SSL_LIBRARY
+        NAMES ssl libssl
+        PATHS ${_certctrl_openssl_hint_paths}
+        PATH_SUFFIXES lib lib64 lib/x86_64-linux-gnu lib64/openssl
+    )
+    find_library(CERTCTRL_SYSTEM_OPENSSL_CRYPTO_LIBRARY
+        NAMES crypto libcrypto
+        PATHS ${_certctrl_openssl_hint_paths}
+        PATH_SUFFIXES lib lib64 lib/x86_64-linux-gnu lib64/openssl
+    )
+
+    if(NOT CERTCTRL_SYSTEM_OPENSSL_SSL_LIBRARY OR NOT CERTCTRL_SYSTEM_OPENSSL_CRYPTO_LIBRARY)
+        message(FATAL_ERROR "USE_SYSTEM_OPENSSL=ON but system libssl/libcrypto were not found. Specify OPENSSL_ROOT_DIR or install the distro OpenSSL 3.x packages.")
+    endif()
+
+    add_library(OpenSSL::Crypto UNKNOWN IMPORTED)
+    set_target_properties(OpenSSL::Crypto PROPERTIES
+        IMPORTED_LOCATION "${CERTCTRL_SYSTEM_OPENSSL_CRYPTO_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${CERTCTRL_SYSTEM_OPENSSL_INCLUDE_DIR}"
+    )
+
+    add_library(OpenSSL::SSL UNKNOWN IMPORTED)
+    set_target_properties(OpenSSL::SSL PROPERTIES
+        IMPORTED_LOCATION "${CERTCTRL_SYSTEM_OPENSSL_SSL_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${CERTCTRL_SYSTEM_OPENSSL_INCLUDE_DIR}"
+        INTERFACE_LINK_LIBRARIES OpenSSL::Crypto
+    )
+
+    set(OpenSSL_FOUND TRUE CACHE BOOL "System OpenSSL located" FORCE)
+    set(OPENSSL_FOUND TRUE CACHE BOOL "System OpenSSL located" FORCE)
+    set(OPENSSL_INCLUDE_DIR "${CERTCTRL_SYSTEM_OPENSSL_INCLUDE_DIR}" CACHE PATH "System OpenSSL include directory" FORCE)
+    set(OPENSSL_LIBRARIES "${CERTCTRL_SYSTEM_OPENSSL_SSL_LIBRARY};${CERTCTRL_SYSTEM_OPENSSL_CRYPTO_LIBRARY}" CACHE STRING "System OpenSSL libraries" FORCE)
+else()
+    if(NOT DEFINED OPENSSL_USE_STATIC_LIBS)
+        set(OPENSSL_USE_STATIC_LIBS ON CACHE BOOL "Link OpenSSL statically" FORCE)
+    endif()
+    message(STATUS "OpenSSL linkage: using package manager/vcpkg configured OpenSSL (static preferred)")
+    find_package(OpenSSL REQUIRED)
+endif()
 
 add_library(certctrl_libatomic INTERFACE)
 set(CERTCTRL_USING_STATIC_LIBATOMIC FALSE)

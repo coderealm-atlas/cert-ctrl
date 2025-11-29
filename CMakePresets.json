@@ -70,6 +70,16 @@
       }
     },
     {
+      "name": "suse-debug-asan",
+      "inherits": "debug-asan",
+      "description": "Debug + ASAN build on SUSE using system OpenSSL",
+      "binaryDir": "${sourceDir}/build/suse-debug-asan",
+      "cacheVariables": {
+        "USE_SYSTEM_OPENSSL": "ON",
+        "BUILD_SHARED_LIBS": "ON"
+      }
+    },
+    {
       "name": "w64",
       "inherits": "default",
       "description": "Compile for Windows using Visual studio",
@@ -130,6 +140,10 @@
     {
       "name": "debug-asan",
       "configurePreset": "debug-asan"
+    },
+    {
+      "name": "suse-debug-asan",
+      "configurePreset": "suse-debug-asan"
     },
     {
       "name": "w64",
