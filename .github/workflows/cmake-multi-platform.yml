@@ -826,20 +826,47 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: List release assets
+      - name: Configure CMake (Unix)
+        if: runner.os != 'Windows' && env.SKIP_CONFIGURE != 'true'
         run: |
-          ls -al release-assets
+          set -eu
+          build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
 
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          name: cert-ctrl ${{ steps.release.outputs.title }}
-          files: release-assets/*
-          draft: false
-          # Our git-describe style tags include hyphenated build metadata, but we still
-          # want GitHub to treat them as full releases so the /releases/latest endpoint works.
-          prerelease: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "Linux" ]; then
+            cmake --preset=release-compat \
+              -D CMAKE_C_COMPILER=clang \
+              -D CMAKE_CXX_COMPILER=clang++
+            exit 0
+          fi
+
+          if [ "$build_type" = "Release-Compat" ] && [ "${{ runner.os }}" = "macOS" ]; then
+            set -- \
+              -G "Ninja" \
+              -B "${{ github.workspace }}/build" \
+              -S "${{ github.workspace }}" \
+              -DCMAKE_C_COMPILER=clang \
+              -DCMAKE_CXX_COMPILER=clang++ \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+              -DVCPKG_TARGET_TRIPLET=x64-osx \
+              -DCMAKE_CXX_FLAGS="-O2 -DNDEBUG" \
+              -DCMAKE_C_FLAGS="-O2 -DNDEBUG" \
+              -DDISABLE_LTO=ON
+          else
+            set -- \
+              -G "Ninja" \
+              -B "${{ github.workspace }}/build" \
+              -S "${{ github.workspace }}" \
+              -DCMAKE_C_COMPILER=clang \
+              -DCMAKE_CXX_COMPILER=clang++ \
+              -DCMAKE_BUILD_TYPE="${build_type}" \
+              -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          fi
+
+          if [ "${{ env.IS_SELF_HOSTED }}" != "true" ] && [ "$build_type" != "Release-Compat" ]; then
+            set -- "$@" \
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          fi
+
+          cmake "$@"
