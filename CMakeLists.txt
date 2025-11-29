@@ -99,6 +99,7 @@ find_package(Threads REQUIRED)
 
 if(USE_SYSTEM_OPENSSL)
     message(STATUS "OpenSSL linkage: using system-provided shared libraries")
+    set(OPENSSL_USE_STATIC_LIBS OFF CACHE BOOL "Prefer shared OpenSSL when using system packages" FORCE)
 
     set(_certctrl_openssl_hint_paths)
     if(OPENSSL_ROOT_DIR)
