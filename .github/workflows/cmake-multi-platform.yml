@@ -413,6 +413,7 @@ jobs:
 
       - name: Configure CMake (Unix)
         if: runner.os != 'Windows' && env.SKIP_CONFIGURE != 'true'
+        shell: bash
         run: |
           set -euo pipefail
           build_type="${{ github.event.inputs.build_type || matrix.build_type }}"
