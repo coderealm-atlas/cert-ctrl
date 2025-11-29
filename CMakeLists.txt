@@ -669,7 +669,6 @@ find_package(Boost REQUIRED COMPONENTS log)
 find_package(Boost REQUIRED COMPONENTS log_setup)
 find_package(minizip-ng CONFIG REQUIRED)
 find_package(unofficial-sodium CONFIG REQUIRED)
-find_package(OpenSSL REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 
@@ -729,6 +728,8 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE Boost::uuid
     PRIVATE Boost::asio
     PRIVATE Boost::url
+    PRIVATE OpenSSL::SSL
+    PRIVATE OpenSSL::Crypto
     PRIVATE protobuf::libprotoc
     PRIVATE protobuf::libprotobuf
     PRIVATE Boost::program_options
