@@ -58,6 +58,7 @@ include(GNUInstallDirs)
 include(CheckCXXCompilerFlag)
 
 option(USE_SYSTEM_OPENSSL "Link against the system-provided OpenSSL shared libraries" OFF)
+option(CERTCTRL_STATIC_RUNTIME "Link libgcc/libstdc++ statically for glibc compatibility" ON)
 
 message(STATUS "CMAKE_CXX_STANDARD_LIBRARIES=${CMAKE_CXX_STANDARD_LIBRARIES}")
 
@@ -69,14 +70,18 @@ target_compile_definitions(di_config INTERFACE BOOST_DI_CFG_CTOR_LIMIT_SIZE=16)
 
 # Add compatibility flags for broader glibc/libstdc++ support
 if(UNIX AND NOT APPLE AND NOT WIN32)
-    # Target older glibc and libstdc++ for better compatibility
-    add_link_options(-static-libgcc -static-libstdc++)  # Static link runtime libraries
-    
-    # Try to use older symbol versions when possible
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-stack-protector")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-stack-protector")
-    
-    message(STATUS "Applied Linux compatibility flags for broader glibc/libstdc++ support")
+    if(CERTCTRL_STATIC_RUNTIME)
+        # Target older glibc and libstdc++ for better compatibility
+        add_link_options(-static-libgcc -static-libstdc++)  # Static link runtime libraries
+
+        # Try to use older symbol versions when possible
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-stack-protector")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-stack-protector")
+
+        message(STATUS "Applied Linux compatibility flags for broader glibc/libstdc++ support (static runtime)")
+    else()
+        message(STATUS "CERTCTRL_STATIC_RUNTIME=OFF; linking libgcc/libstdc++ dynamically")
+    endif()
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT WIN32)

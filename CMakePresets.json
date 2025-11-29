@@ -76,7 +76,8 @@
       "binaryDir": "${sourceDir}/build/suse-debug-asan",
       "cacheVariables": {
         "USE_SYSTEM_OPENSSL": "ON",
-        "BUILD_SHARED_LIBS": "ON"
+        "BUILD_SHARED_LIBS": "ON",
+        "CERTCTRL_STATIC_RUNTIME": "OFF"
       }
     },
     {
@@ -121,6 +122,22 @@
       "environment": {
         "CMAKE_BUILD_PARALLEL_LEVEL": "$env{CORES}"
       }
+    },
+    {
+      "name": "alpine-release",
+      "inherits": "default",
+      "description": "Release build targeting Alpine/musl via Docker",
+      "binaryDir": "${sourceDir}/build/alpine-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-musl",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "USE_SYSTEM_OPENSSL": "ON",
+        "BUILD_SHARED_LIBS": "ON"
+      },
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$env{CORES}"
+      }
     }
   ],
   "buildPresets": [
@@ -152,6 +169,10 @@
     {
       "name": "release-compat",
       "configurePreset": "release-compat"
+    },
+    {
+      "name": "alpine-release",
+      "configurePreset": "alpine-release"
     }
   ]
 }

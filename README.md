@@ -40,6 +40,17 @@ cmake --build build
 
 Binaries are placed under `build/`. When building from a tagged commit the embedded version string matches the Git tag (see `RELEASE.md` for details).
 
+### Build for Alpine via Docker
+
+To produce an Alpine/musl binary without configuring a native Alpine host, use the Docker helper. It builds a lightweight toolchain image defined in `docker/alpine-builder.Dockerfile`, mounts the repository, and runs the `alpine-release` preset inside the container.
+
+```bash
+scripts/build-alpine-docker.sh           # defaults to the alpine-release preset
+scripts/build-alpine-docker.sh debug     # run a different preset if needed
+```
+
+The script accepts `IMAGE_NAME`, `CORES`, and `CMAKE_BUILD_PARALLEL_LEVEL` environment variables to control the builder image tag and build parallelism. Artifacts appear under `build/alpine-release` on the host.
+
 ### Run tests
 
 ```bash
