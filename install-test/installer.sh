@@ -63,6 +63,34 @@ log_verbose() {
     fi
 }
 
+restore_selinux_context() {
+    local target_path="$1"
+
+    if [ -z "$target_path" ] || [ ! -e "$target_path" ]; then
+        return 0
+    fi
+
+    if ! command -v selinuxenabled >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! selinuxenabled >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -F "$target_path" >/dev/null 2>&1 || log_warning "restorecon failed for $target_path"
+        return 0
+    fi
+
+    if command -v chcon >/dev/null 2>&1 && [ -f /usr/lib/systemd/system/sshd.service ]; then
+        chcon --reference=/usr/lib/systemd/system/sshd.service "$target_path" >/dev/null 2>&1 || log_warning "chcon failed for $target_path"
+        return 0
+    fi
+
+    log_warning "SELinux detected but restorecon/chcon unavailable; manual relabel may be required"
+}
+
 # Detect platform if not provided
 detect_platform() {
     if [ -n "$PLATFORM" ] && [ "$PLATFORM" != "unknown" ]; then
@@ -340,7 +368,7 @@ install_service_unit() {
             return 0
         fi
     fi
-    cp "$service_source" "/etc/systemd/system/$SERVICE_NAME"
+    install -m 0644 "$service_source" "/etc/systemd/system/$SERVICE_NAME"
 
     sed -i "s|@@BINARY_PATH@@|$INSTALL_DIR/cert-ctrl|g" "/etc/systemd/system/$SERVICE_NAME"
     sed -i "s|__CERT_CTRL_BIN__|$INSTALL_DIR/cert-ctrl|g" "/etc/systemd/system/$SERVICE_NAME"
@@ -348,6 +376,8 @@ install_service_unit() {
     sed -i "s|__CERT_CTRL_CONFIG__|$CONFIG_DIR|g" "/etc/systemd/system/$SERVICE_NAME"
     sed -i "s|@@SERVICE_USER@@|$SERVICE_ACCOUNT|g" "/etc/systemd/system/$SERVICE_NAME"
     sed -i "s|@@DESCRIPTION@@|$SERVICE_DESCRIPTION|g" "/etc/systemd/system/$SERVICE_NAME"
+
+    restore_selinux_context "/etc/systemd/system/$SERVICE_NAME"
 
     systemctl daemon-reload
 
