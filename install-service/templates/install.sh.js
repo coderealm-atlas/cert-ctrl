@@ -48,6 +48,26 @@ SHA256_CMD=()
 OS_ID=""
 OS_VERSION_ID=""
 OS_NAME=""
+SERVICE_MANAGER=""
+
+find_command_path() {
+    local cmd="$1"
+    local resolved
+    resolved=$(command -v "$cmd" 2>/dev/null || true)
+    if [ -n "$resolved" ]; then
+        echo "$resolved"
+        return 0
+    fi
+    if [ -x "/sbin/$cmd" ]; then
+        echo "/sbin/$cmd"
+        return 0
+    fi
+    if [ -x "/usr/sbin/$cmd" ]; then
+        echo "/usr/sbin/$cmd"
+        return 0
+    fi
+    return 1
+}
 
 restore_selinux_context() {
     local target_path="$1"
@@ -119,6 +139,36 @@ detect_os_release() {
         OS_VERSION_ID=""
         OS_NAME="Unknown Linux"
     fi
+}
+
+detect_service_manager() {
+    if [ "$OS_ID" = "alpine" ]; then
+        echo "openrc"
+        return 0
+    fi
+
+    local rc_update_path
+    if rc_update_path=$(find_command_path rc-update 2>/dev/null); then
+        if [ -n "$rc_update_path" ]; then
+            echo "openrc"
+            return 0
+        fi
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        echo "systemd"
+        return 0
+    fi
+
+    echo "none"
+}
+
+get_openrc_service_name() {
+    local name="$SERVICE_NAME"
+    if [[ "$name" == *.service ]]; then
+        name="\${name%.service}"
+    fi
+    echo "$name"
 }
 
 is_suse_like() {
@@ -320,7 +370,7 @@ should_use_openssl3_artifact() {
         return 1
     fi
 
-    local version_major="${OS_VERSION_ID%%.*}"
+    local version_major="\${OS_VERSION_ID%%.*}"
     if printf '%s' "$version_major" | grep -Eq '^[0-9]+$'; then
         if [ "$version_major" -ge 16 ]; then
             return 0
@@ -341,8 +391,8 @@ select_artifact_slug() {
         return 0
     fi
 
-    local platform="${platform_arch%%-*}"
-    local arch="${platform_arch#*-}"
+    local platform="\${platform_arch%%-*}"
+    local arch="\${platform_arch#*-}"
     if [ "$platform" = "$platform_arch" ]; then
         arch=""
     fi
@@ -382,7 +432,24 @@ set_checksum_tool() {
 check_dependencies() {
     local deps=("curl" "tar" "gzip")
     if [ "$INSTALL_SERVICE" = "true" ]; then
-        deps+=("systemctl")
+        case "$SERVICE_MANAGER" in
+            systemd)
+                deps+=("systemctl")
+                ;;
+            openrc)
+                if ! find_command_path rc-update >/dev/null 2>&1; then
+                    log_warning "rc-update not found; OpenRC service will require manual registration"
+                fi
+                if ! find_command_path rc-service >/dev/null 2>&1; then
+                    log_warning "rc-service not found; OpenRC service management will require manual commands"
+                fi
+                ;;
+            *)
+                log_warning "No supported service manager detected; skipping service installation"
+                INSTALL_SERVICE="false"
+                ENABLE_SERVICE="false"
+                ;;
+        esac
     fi
 
     for dep in "\${deps[@]}"; do
@@ -421,7 +488,7 @@ resolve_version() {
 # Download binary
 download_binary() {
     local artifact_slug="$1"
-    local display_label="${2:-$artifact_slug}"
+    local display_label="\${2:-$artifact_slug}"
     
     # Use proxy if available, otherwise direct GitHub
     local download_url
@@ -592,6 +659,22 @@ stop_service_if_running() {
     if [ "$EUID" -ne 0 ]; then
         return 0
     fi
+    if [ "$SERVICE_MANAGER" = "openrc" ]; then
+        local rc_service_bin=""
+        if rc_service_bin=$(find_command_path rc-service 2>/dev/null); then
+            local openrc_name
+            openrc_name=$(get_openrc_service_name)
+            if "$rc_service_bin" "$openrc_name" status >/dev/null 2>&1; then
+                log_info "Stopping $openrc_name before upgrading binary"
+                if "$rc_service_bin" "$openrc_name" stop >/dev/null 2>&1; then
+                    RESTART_SERVICE_AFTER_INSTALL="true"
+                else
+                    log_warning "Failed to stop $openrc_name; continuing with installation"
+                fi
+            fi
+        fi
+        return 0
+    fi
     if ! command -v systemctl >/dev/null 2>&1; then
         return 0
     fi
@@ -606,6 +689,21 @@ stop_service_if_running() {
             log_warning "Failed to stop $SERVICE_NAME; continuing with installation"
         fi
     fi
+}
+
+ensure_service_directories() {
+    if [ ! -d "$CONFIG_DIR" ]; then
+        log_info "Creating config directory $CONFIG_DIR"
+        mkdir -p "$CONFIG_DIR"
+    fi
+    if [ ! -d "$STATE_DIR" ]; then
+        log_info "Creating state directory $STATE_DIR"
+        mkdir -p "$STATE_DIR"
+    fi
+    chown -R "$SERVICE_ACCOUNT:$SERVICE_ACCOUNT" "$CONFIG_DIR" 2>/dev/null || true
+    chmod 755 "$CONFIG_DIR"
+    chown -R "$SERVICE_ACCOUNT:$SERVICE_ACCOUNT" "$STATE_DIR" 2>/dev/null || true
+    chmod 755 "$STATE_DIR"
 }
 
 create_systemd_unit() {
@@ -643,6 +741,30 @@ WantedBy=multi-user.target
 EOF
 }
 
+create_openrc_service() {
+    local openrc_name
+    openrc_name=$(get_openrc_service_name)
+    cat > "/etc/init.d/$openrc_name" << 'EOF'
+#!/sbin/openrc-run
+
+description="@@DESCRIPTION@@"
+command="@@BINARY_PATH@@"
+command_args="--config-dirs @@CONFIG_DIR@@ --keep-running"
+command_user="@@SERVICE_USER@@"
+command_background="yes"
+directory="@@CONFIG_DIR@@"
+pidfile="/run/@@OPENRC_NAME@@.pid"
+
+depend() {
+    need net
+}
+
+start_pre() {
+    checkpath --directory --mode 0755 /run
+}
+EOF
+}
+
 enable_service_with_retry() {
     local attempt=1
     local max_attempts=2
@@ -674,31 +796,11 @@ enable_service_with_retry() {
     return 1
 }
 
-install_service_unit() {
-
-    if [ "$INSTALL_SERVICE" != "true" ]; then
-        log_verbose "Service installation disabled"
-        return 0
-    fi
-
-    if [ "$DRY_RUN" = "true" ]; then
-        log_info "DRY RUN: Would install systemd unit $SERVICE_NAME"
-        return 0
-    fi
-
-    if [ "$EUID" -ne 0 ]; then
-        log_warning "Service installation requires root privileges (skipping service setup)"
-        log_info "To install service manually after installation:"
-        log_info "  sudo systemctl enable --now $SERVICE_NAME"
-        return 0
-    fi
-
+install_systemd_service_unit() {
     if ! command -v systemctl &> /dev/null; then
         log_warning "systemctl not available; skipping service installation"
         return 0
     fi
-
-    ensure_service_account
 
     local unit_path="/etc/systemd/system/$SERVICE_NAME"
     declare -a preserved_readwrite_paths=()
@@ -736,7 +838,6 @@ install_service_unit() {
 
     create_systemd_unit
 
-    # Substitute placeholders in the service file
     sed -i "s|@@BINARY_PATH@@|$INSTALL_DIR/cert-ctrl|g" "$unit_path"
     sed -i "s|@@CONFIG_DIR@@|$CONFIG_DIR|g" "$unit_path"
     sed -i "s|@@SERVICE_USER@@|$SERVICE_ACCOUNT|g" "$unit_path"
@@ -769,19 +870,7 @@ install_service_unit() {
     chmod 0644 "$unit_path"
     restore_selinux_context "$unit_path"
 
-    # Ensure config directory exists and has proper permissions
-    if [ ! -d "$CONFIG_DIR" ]; then
-        log_info "Creating config directory $CONFIG_DIR"
-        mkdir -p "$CONFIG_DIR"
-    fi
-    if [ ! -d "$STATE_DIR" ]; then
-        log_info "Creating state directory $STATE_DIR"
-        mkdir -p "$STATE_DIR"
-    fi
-    chown -R "$SERVICE_ACCOUNT:$SERVICE_ACCOUNT" "$CONFIG_DIR" 2>/dev/null || true
-    chmod 755 "$CONFIG_DIR"
-    chown -R "$SERVICE_ACCOUNT:$SERVICE_ACCOUNT" "$STATE_DIR" 2>/dev/null || true
-    chmod 755 "$STATE_DIR"
+    ensure_service_directories
 
     systemctl daemon-reload
     if [ ! -f "$unit_path" ]; then
@@ -798,6 +887,110 @@ install_service_unit() {
     fi
 }
 
+install_openrc_service_unit() {
+    local openrc_name
+    openrc_name=$(get_openrc_service_name)
+    local init_path="/etc/init.d/$openrc_name"
+
+    log_info "Installing OpenRC service at $init_path"
+    if [ -f "$init_path" ] && [ "$FORCE" = "false" ]; then
+        if [ "$NONINTERACTIVE" = "true" ]; then
+            log_info "Overwriting existing OpenRC script (non-interactive mode)"
+        else
+            log_warning "Service $openrc_name already exists."
+            log_info "To overwrite: Use ?force=1 in URL or FORCE=true with sudo -E"
+            log_info "Skipping service installation"
+            return 0
+        fi
+    fi
+
+    create_openrc_service
+
+    sed -i "s|@@BINARY_PATH@@|$INSTALL_DIR/cert-ctrl|g" "$init_path"
+    sed -i "s|@@CONFIG_DIR@@|$CONFIG_DIR|g" "$init_path"
+    sed -i "s|@@SERVICE_USER@@|$SERVICE_ACCOUNT|g" "$init_path"
+    sed -i "s|@@DESCRIPTION@@|$SERVICE_DESCRIPTION|g" "$init_path"
+    sed -i "s|@@OPENRC_NAME@@|$openrc_name|g" "$init_path"
+
+    chmod 0755 "$init_path"
+
+    ensure_service_directories
+
+    log_success "OpenRC service installed successfully"
+
+    if [ "$ENABLE_SERVICE" = "true" ]; then
+        local rc_update_bin rc_service_bin
+        if rc_update_bin=$(find_command_path rc-update 2>/dev/null); then
+            if ! "$rc_update_bin" add "$openrc_name" default >/dev/null 2>&1; then
+                log_warning "Failed to register $openrc_name with rc-update; run: rc-update add $openrc_name default"
+            else
+                log_info "Registered $openrc_name with rc-update (default runlevel)"
+            fi
+        else
+            log_warning "rc-update not found; add service manually: rc-update add $openrc_name default"
+        fi
+
+        if rc_service_bin=$(find_command_path rc-service 2>/dev/null); then
+            if "$rc_service_bin" "$openrc_name" restart >/dev/null 2>&1; then
+                log_success "$openrc_name service started"
+            else
+                log_warning "Failed to start $openrc_name automatically; run: rc-service $openrc_name start"
+            fi
+        else
+            log_warning "rc-service not found; start manually: rc-service $openrc_name start"
+        fi
+    else
+        log_info "Service installed. Enable manually with: rc-update add $openrc_name default && rc-service $openrc_name start"
+    fi
+}
+
+install_service_unit() {
+    if [ "$INSTALL_SERVICE" != "true" ]; then
+        log_verbose "Service installation disabled"
+        return 0
+    fi
+
+    if [ "$DRY_RUN" = "true" ]; then
+        if [ "$SERVICE_MANAGER" = "openrc" ]; then
+            log_info "DRY RUN: Would install OpenRC service $(get_openrc_service_name)"
+        elif [ "$SERVICE_MANAGER" = "systemd" ]; then
+            log_info "DRY RUN: Would install systemd unit $SERVICE_NAME"
+        else
+            log_info "DRY RUN: No supported service manager detected"
+        fi
+        return 0
+    fi
+
+    if [ "$EUID" -ne 0 ]; then
+        log_warning "Service installation requires root privileges (skipping service setup)"
+        if [ "$SERVICE_MANAGER" = "openrc" ]; then
+            local openrc_name
+            openrc_name=$(get_openrc_service_name)
+            log_info "To install service manually after installation:"
+            log_info "  sudo rc-update add $openrc_name default"
+            log_info "  sudo rc-service $openrc_name start"
+        else
+            log_info "To install service manually after installation:"
+            log_info "  sudo systemctl enable --now $SERVICE_NAME"
+        fi
+        return 0
+    fi
+
+    case "$SERVICE_MANAGER" in
+        systemd)
+            ensure_service_account
+            install_systemd_service_unit
+            ;;
+        openrc)
+            ensure_service_account
+            install_openrc_service_unit
+            ;;
+        *)
+            log_warning "No supported service manager detected; skipping service installation"
+            ;;
+    esac
+}
+
 # Install binary
 install_binary() {
     local temp_file="$1"
@@ -806,7 +999,13 @@ install_binary() {
     if [ "$DRY_RUN" = "true" ]; then
         log_info "DRY RUN: Would install to $INSTALL_DIR"
         if [ "$INSTALL_SERVICE" = "true" ]; then
-            log_info "DRY RUN: Would install systemd unit $SERVICE_NAME"
+            if [ "$SERVICE_MANAGER" = "openrc" ]; then
+                log_info "DRY RUN: Would install OpenRC service $(get_openrc_service_name)"
+            elif [ "$SERVICE_MANAGER" = "systemd" ]; then
+                log_info "DRY RUN: Would install systemd unit $SERVICE_NAME"
+            else
+                log_info "DRY RUN: Service installation skipped (no supported manager)"
+            fi
         fi
         return 0
     fi
@@ -869,14 +1068,29 @@ install_binary() {
     apply_distro_specific_fixes
 
     if [ "$RESTART_SERVICE_AFTER_INSTALL" = "true" ]; then
-        if [ "$EUID" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
-            log_warning "Service $SERVICE_NAME was stopped but could not be restarted automatically"
-        else
-            log_info "Restarting $SERVICE_NAME after upgrade"
-            if systemctl start "$SERVICE_NAME"; then
-                log_success "Service $SERVICE_NAME restarted"
+        if [ "$SERVICE_MANAGER" = "openrc" ]; then
+            local rc_service_bin=""
+            if rc_service_bin=$(find_command_path rc-service 2>/dev/null); then
+                local openrc_name
+                openrc_name=$(get_openrc_service_name)
+                if "$rc_service_bin" "$openrc_name" start >/dev/null 2>&1; then
+                    log_success "Service $openrc_name restarted"
+                else
+                    log_warning "Failed to restart $openrc_name; start manually with: rc-service $openrc_name start"
+                fi
             else
-                log_warning "Failed to restart $SERVICE_NAME; start manually with: systemctl start $SERVICE_NAME"
+                log_warning "Service was stopped but rc-service is unavailable; start manually once rc-service is installed"
+            fi
+        else
+            if [ "$EUID" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
+                log_warning "Service $SERVICE_NAME was stopped but could not be restarted automatically"
+            else
+                log_info "Restarting $SERVICE_NAME after upgrade"
+                if systemctl start "$SERVICE_NAME"; then
+                    log_success "Service $SERVICE_NAME restarted"
+                else
+                    log_warning "Failed to restart $SERVICE_NAME; start manually with: systemctl start $SERVICE_NAME"
+                fi
             fi
         fi
     fi
@@ -1023,6 +1237,12 @@ main() {
     
     detect_os_release
 
+    SERVICE_MANAGER=$(detect_service_manager)
+    if [ -z "$SERVICE_MANAGER" ]; then
+        SERVICE_MANAGER="none"
+    fi
+    log_verbose "Service manager: $SERVICE_MANAGER"
+
     check_dependencies
     
     local platform_arch=$(detect_platform)
@@ -1072,7 +1292,15 @@ main() {
     echo "Next steps:"
     echo "  - Run: cert-ctrl --help"
     if [ "$INSTALL_SERVICE" = "true" ]; then
-        if [ "$ENABLE_SERVICE" = "true" ]; then
+        if [ "$SERVICE_MANAGER" = "openrc" ]; then
+            local openrc_name
+            openrc_name=$(get_openrc_service_name)
+            if [ "$ENABLE_SERVICE" = "true" ]; then
+                echo "  - Check service status: rc-service $openrc_name status"
+            else
+                echo "  - Enable service when ready: sudo rc-update add $openrc_name default && sudo rc-service $openrc_name start"
+            fi
+        elif [ "$ENABLE_SERVICE" = "true" ]; then
             echo "  - Check service status: systemctl status $SERVICE_NAME"
         else
             echo "  - Enable service when ready: sudo systemctl enable --now $SERVICE_NAME"
