@@ -176,6 +176,11 @@ function extractDownloadUrls(assets) {
       return;
     }
     
+    if (name.includes('linux') && name.includes('x64') && name.includes('openssl3')) {
+      urls['linux-x64-openssl3'] = asset.browser_download_url;
+      return;
+    }
+
     if (name.includes('linux') && name.includes('x64')) {
       urls['linux-x64'] = asset.browser_download_url;
     } else if (name.includes('linux') && name.includes('arm64')) {
