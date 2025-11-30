@@ -844,7 +844,7 @@ jobs:
             build_script: scripts/build-ubuntu-docker.sh
             build_preset: release
             build_dir: build/release
-            install_prefix: install/selfhost-ubuntu-release
+            install_prefix: install/linux-x64
             artifact_name: selfhost-ubuntu-docker
             artifact_slug: linux-x64
             artifact_base: cert-ctrl-linux-x64
@@ -855,7 +855,7 @@ jobs:
             build_script: scripts/build-ubuntu-docker.sh
             build_preset: openssl3-dynamic
             build_dir: build/openssl3-dynamic
-            install_prefix: install/selfhost-ubuntu-openssl3
+            install_prefix: install/linux-x64-openssl3
             artifact_name: selfhost-ubuntu-openssl3
             artifact_slug: linux-x64-openssl3
             artifact_base: cert-ctrl-linux-x64-openssl3
@@ -866,10 +866,10 @@ jobs:
             build_script: scripts/build-alpine-docker.sh
             build_preset: ""
             build_dir: build/alpine-release
-            install_prefix: install/selfhost-alpine-release
+            install_prefix: install/linux-musl-x64
             artifact_name: selfhost-alpine-release
-            artifact_slug: alpine-x64
-            artifact_base: cert-ctrl-alpine-x64
+            artifact_slug: linux-musl-x64
+            artifact_base: cert-ctrl-linux-musl-x64
             archive_ext: tar.gz
     steps:
       - uses: actions/checkout@v4
