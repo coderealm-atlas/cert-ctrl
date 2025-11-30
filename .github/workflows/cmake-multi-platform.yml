@@ -86,23 +86,24 @@ jobs:
           SELF_HOST_LABELS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.self_host_labels || 'self-hosted Linux X64' }}
         run: |
           enable_openssl3=false
+          os_list='[]'
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             target="${{ github.event.inputs.target_runner || 'github-all' }}"
             case "$target" in
               self-host-linux)
-                echo 'os-list=[["self-hosted","Linux","X64"]]' >> "$GITHUB_OUTPUT"
+                os_list='[]'
                 enable_openssl3=false
                 ;;
               self-host-windows)
-                echo 'os-list=[["self-hosted","Windows","X64"]]' >> "$GITHUB_OUTPUT"
+                os_list='[["self-hosted","Windows","X64"]]'
                 enable_openssl3=false
                 ;;
               self-host-macos)
-                echo 'os-list=[["self-hosted","macOS","X64"]]' >> "$GITHUB_OUTPUT"
+                os_list='[["self-hosted","macOS","X64"]]'
                 enable_openssl3=false
                 ;;
               self-host-all)
-                echo 'os-list=[["self-hosted","Linux","X64"],["self-hosted","Windows","X64"],["self-hosted","macOS","X64"]]' >> "$GITHUB_OUTPUT"
+                os_list='[["self-hosted","Windows","X64"],["self-hosted","macOS","X64"]]'
                 enable_openssl3=false
                 ;;
               self-host-custom)
@@ -122,31 +123,32 @@ jobs:
                 if [ -z "$json_labels" ]; then
                   json_labels="\"self-hosted\""
                 fi
-                echo "os-list=[[${json_labels}]]" >> "$GITHUB_OUTPUT"
+                os_list="[[${json_labels}]]"
                 enable_openssl3=false
                 ;;
               github-ubuntu-latest)
-                echo 'os-list=["ubuntu-22.04"]' >> "$GITHUB_OUTPUT"
+                os_list='["ubuntu-22.04"]'
                 enable_openssl3=true
                 ;;
               github-windows-latest)
-                echo 'os-list=["windows-2022"]' >> "$GITHUB_OUTPUT"
+                os_list='["windows-2022"]'
                 enable_openssl3=false
                 ;;
               github-macos-latest)
-                echo 'os-list=["macos-12"]' >> "$GITHUB_OUTPUT"
+                os_list='["macos-12"]'
                 enable_openssl3=false
                 ;;
               github-all|*)
-                echo 'os-list=["ubuntu-22.04","windows-2022","macos-12"]' >> "$GITHUB_OUTPUT"
+                os_list='["ubuntu-22.04","windows-2022","macos-12"]'
                 enable_openssl3=true
                 ;;
             esac
           else
-            echo 'os-list=["ubuntu-22.04","windows-2022","macos-12"]' >> "$GITHUB_OUTPUT"
+            os_list='["ubuntu-22.04","windows-2022","macos-12"]'
             enable_openssl3=true
           fi
 
+          echo "os-list=$os_list" >> "$GITHUB_OUTPUT"
           echo "enable-openssl3=$enable_openssl3" >> "$GITHUB_OUTPUT"
 
           if [ "$enable_openssl3" = "true" ]; then
