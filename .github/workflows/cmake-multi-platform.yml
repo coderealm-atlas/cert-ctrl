@@ -843,22 +843,34 @@ jobs:
             build_target: ubuntu-docker
             build_script: scripts/build-ubuntu-docker.sh
             build_preset: release
-            artifact_path: build/release
+            build_dir: build/release
+            install_prefix: install/selfhost-ubuntu-release
             artifact_name: selfhost-ubuntu-docker
+            artifact_slug: linux-x64
+            artifact_base: cert-ctrl-linux-x64
+            archive_ext: tar.gz
           - name: ubuntu-openssl3
             runner: [self-hosted, Linux, X64]
             build_target: ubuntu-openssl3-docker
             build_script: scripts/build-ubuntu-docker.sh
             build_preset: openssl3-dynamic
-            artifact_path: build/openssl3-dynamic
+            build_dir: build/openssl3-dynamic
+            install_prefix: install/selfhost-ubuntu-openssl3
             artifact_name: selfhost-ubuntu-openssl3
+            artifact_slug: linux-x64-openssl3
+            artifact_base: cert-ctrl-linux-x64-openssl3
+            archive_ext: tar.gz
           - name: alpine-release
             runner: [self-hosted, Linux, X64, docker]
             build_target: alpine-docker
             build_script: scripts/build-alpine-docker.sh
             build_preset: ""
-            artifact_path: build/alpine-release
+            build_dir: build/alpine-release
+            install_prefix: install/selfhost-alpine-release
             artifact_name: selfhost-alpine-release
+            artifact_slug: alpine-x64
+            artifact_base: cert-ctrl-alpine-x64
+            archive_ext: tar.gz
     steps:
       - uses: actions/checkout@v4
         with:
@@ -881,11 +893,75 @@ jobs:
             bash "$script"
           fi
 
+      - name: Install build outputs (self-hosted)
+        run: |
+          set -euo pipefail
+          build_dir="${{ github.workspace }}/${{ matrix.build_dir }}"
+          install_prefix="${{ github.workspace }}/${{ matrix.install_prefix }}"
+          cmake --install "$build_dir" --config Release --prefix "$install_prefix"
+
+      - name: Normalize executable name (self-hosted)
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="${{ github.workspace }}/${{ matrix.install_prefix }}/bin"
+          if [ ! -d "$INSTALL_DIR" ]; then
+            exit 0
+          fi
+          if [ -f "$INSTALL_DIR/cert-ctrl" ]; then
+            exit 0
+          fi
+          if [ -f "$INSTALL_DIR/cert_ctrl" ]; then
+            mv "$INSTALL_DIR/cert_ctrl" "$INSTALL_DIR/cert-ctrl"
+          elif [ -f "$INSTALL_DIR/certctrl" ]; then
+            mv "$INSTALL_DIR/certctrl" "$INSTALL_DIR/cert-ctrl"
+          fi
+
+      - name: Package installer payload (self-hosted)
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="${{ github.workspace }}/${{ matrix.install_prefix }}"
+          PAYLOAD_DIR="${{ github.workspace }}/package/${{ matrix.name }}"
+          DEST_DIR="${{ github.workspace }}/dist"
+          ARCHIVE_BASE="${{ matrix.artifact_base }}"
+          ARCHIVE_EXT="${{ matrix.archive_ext }}"
+          rm -rf "$PAYLOAD_DIR"
+          mkdir -p "$PAYLOAD_DIR"
+          if [ ! -d "$INSTALL_DIR/bin" ]; then
+            echo "ERROR: Expected executable directory '$INSTALL_DIR/bin' missing" >&2
+            exit 1
+          fi
+          if [ ! -f "$INSTALL_DIR/bin/cert-ctrl" ] && [ ! -f "$INSTALL_DIR/bin/cert-ctrl.exe" ]; then
+            echo "ERROR: cert-ctrl executable not found in '$INSTALL_DIR/bin'" >&2
+            exit 1
+          fi
+          mkdir -p "$PAYLOAD_DIR/bin"
+          cp -a "$INSTALL_DIR/bin"/. "$PAYLOAD_DIR/bin"/
+          mkdir -p "$DEST_DIR"
+          ARCHIVE_NAME="$ARCHIVE_BASE.$ARCHIVE_EXT"
+          tar -C "$PAYLOAD_DIR" -czf "$DEST_DIR/$ARCHIVE_NAME" .
+
+      - name: Generate checksum (self-hosted)
+        run: |
+          set -euo pipefail
+          DEST_DIR="${{ github.workspace }}/dist"
+          ARCHIVE_BASE="${{ matrix.artifact_base }}"
+          ARCHIVE_EXT="${{ matrix.archive_ext }}"
+          ARCHIVE_NAME="$ARCHIVE_BASE.$ARCHIVE_EXT"
+          cd "$DEST_DIR"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha_cmd=(sha256sum)
+          else
+            sha_cmd=(shasum -a 256)
+          fi
+          "${sha_cmd[@]}" "$ARCHIVE_NAME" | tee "$ARCHIVE_NAME.sha256"
+
       - name: Upload self-hosted artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
+          path: |
+            ${{ github.workspace }}/dist/${{ matrix.artifact_base }}.${{ matrix.archive_ext }}
+            ${{ github.workspace }}/dist/${{ matrix.artifact_base }}.${{ matrix.archive_ext }}.sha256
           if-no-files-found: error
 
   publish-release:
