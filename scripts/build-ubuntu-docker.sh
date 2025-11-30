@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 IMAGE_NAME="${IMAGE_NAME:-cert-ctrl/ubuntu-builder}"
 PRESET="${1:-release}"
+BUILD_DIR_REL="${BUILD_DIR_REL:-build/${PRESET}}"
+INSTALL_PREFIX_REL="${INSTALL_PREFIX_REL:-install/selfhost-${PRESET}}"
+BUILD_DIR="/work/${BUILD_DIR_REL}"
+INSTALL_PREFIX="/work/${INSTALL_PREFIX_REL}"
+
 VCPKG_COMMIT="${VCPKG_COMMIT:-b322364f06308bdd24823f9d8f03fe0cc86fd46f}"
 
 CACHE_ROOT="${VCPKG_CACHE_ROOT:-${HOME}/.cache/cert-ctrl}"
@@ -94,6 +99,8 @@ fi
 rm -rf /work/build
 cmake --preset "${PRESET}" -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
 cmake --build --preset "${PRESET}"
+rm -rf "${INSTALL_PREFIX}"
+cmake --install "${BUILD_DIR}" --config Release --prefix "${INSTALL_PREFIX}"
 EOF
 )
 
