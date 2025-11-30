@@ -32,6 +32,24 @@
       }
     },
     {
+      "name": "openssl3-dynamic",
+      "inherits": "default",
+      "description": "Release build that links dynamically against the host OpenSSL 3 toolchain",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/openssl3-dynamic",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp17",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "USE_SYSTEM_OPENSSL": "ON",
+        "BUILD_SHARED_LIBS": "ON",
+        "CERTCTRL_STATIC_RUNTIME": "OFF"
+      },
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$env{CORES}"
+      }
+    },
+    {
       "name": "debug",
       "inherits": "default",
       "description": "Debug build t630",
@@ -149,6 +167,10 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "openssl3-dynamic",
+      "configurePreset": "openssl3-dynamic"
     },
     {
       "name": "debug",

@@ -285,6 +285,43 @@ detect_platform() {
     echo "\${platform}-\${arch}"
 }
 
+should_use_openssl3_artifact() {
+    if ! is_suse_like; then
+        return 1
+    fi
+
+    if [ -z "$OS_VERSION_ID" ]; then
+        return 1
+    fi
+
+    local version_major="${OS_VERSION_ID%%.*}"
+    if printf '%s' "$version_major" | grep -Eq '^[0-9]+$'; then
+        if [ "$version_major" -ge 16 ]; then
+            return 0
+        fi
+    fi
+
+    if printf '%s' "$OS_VERSION_ID" | grep -Eq '^20[2-9][0-9]'; then
+        return 0
+    fi
+
+    return 1
+}
+
+select_artifact_slug() {
+    local platform_arch="$1"
+    if [ -z "$platform_arch" ]; then
+        echo ""
+        return 0
+    fi
+
+    if should_use_openssl3_artifact; then
+        echo "${platform_arch}-openssl3"
+    else
+        echo "$platform_arch"
+    fi
+}
+
 # Check dependencies
 set_checksum_tool() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -343,14 +380,15 @@ resolve_version() {
 
 # Download binary
 download_binary() {
-    local platform_arch="$1"
+    local artifact_slug="$1"
+    local display_label="${2:-$artifact_slug}"
     
     # Use proxy if available, otherwise direct GitHub
     local download_url
     if [ "$MIRROR_URL" = "$BASE_URL/releases/proxy" ]; then
-        download_url="$MIRROR_URL/$VERSION/cert-ctrl-$platform_arch.tar.gz"
+        download_url="$MIRROR_URL/$VERSION/cert-ctrl-$artifact_slug.tar.gz"
     else
-        download_url="$MIRROR_URL/{{GITHUB_REPO_OWNER}}/{{GITHUB_REPO_NAME}}/releases/download/$VERSION/cert-ctrl-$platform_arch.tar.gz"
+        download_url="$MIRROR_URL/{{GITHUB_REPO_OWNER}}/{{GITHUB_REPO_NAME}}/releases/download/$VERSION/cert-ctrl-$artifact_slug.tar.gz"
     fi
 
     LAST_DOWNLOAD_URL="$download_url"
@@ -363,7 +401,7 @@ download_binary() {
 
     local temp_file=$(mktemp)
     
-    log_info "Downloading cert-ctrl $VERSION for $platform_arch..."
+    log_info "Downloading cert-ctrl $VERSION for $display_label..."
     log_verbose "Download URL: $download_url"
     
     if ! curl -fsSL "$download_url" -o "$temp_file"; then
@@ -376,7 +414,7 @@ download_binary() {
 }
 
 download_checksum() {
-    local platform_arch="$1"
+    local artifact_slug="$1"
 
     if [ "$DRY_RUN" = "true" ]; then
         LAST_CHECKSUM_URL=""
@@ -385,9 +423,9 @@ download_checksum() {
 
     local checksum_url
     if [ "$MIRROR_URL" = "$BASE_URL/releases/proxy" ]; then
-        checksum_url="$MIRROR_URL/$VERSION/cert-ctrl-$platform_arch.tar.gz.sha256"
+        checksum_url="$MIRROR_URL/$VERSION/cert-ctrl-$artifact_slug.tar.gz.sha256"
     else
-        checksum_url="$MIRROR_URL/{{GITHUB_REPO_OWNER}}/{{GITHUB_REPO_NAME}}/releases/download/$VERSION/cert-ctrl-$platform_arch.tar.gz.sha256"
+        checksum_url="$MIRROR_URL/{{GITHUB_REPO_OWNER}}/{{GITHUB_REPO_NAME}}/releases/download/$VERSION/cert-ctrl-$artifact_slug.tar.gz.sha256"
     fi
 
     LAST_CHECKSUM_URL="$checksum_url"
@@ -948,7 +986,11 @@ main() {
     check_dependencies
     
     local platform_arch=$(detect_platform)
+    local artifact_slug=$(select_artifact_slug "$platform_arch")
     log_verbose "Platform: $platform_arch"
+    if [ "$artifact_slug" != "$platform_arch" ]; then
+        log_verbose "Using artifact variant: $artifact_slug"
+    fi
     
     resolve_version
     
@@ -959,7 +1001,7 @@ main() {
 
     maybe_skip_install
     
-    local temp_file=$(download_binary "$platform_arch")
+    local temp_file=$(download_binary "$artifact_slug" "$platform_arch")
 
     if [ "$DRY_RUN" = "true" ]; then
         log_info "DRY RUN: No changes were made"
@@ -971,7 +1013,7 @@ main() {
         exit 1
     fi
 
-    local checksum_file=$(download_checksum "$platform_arch")
+    local checksum_file=$(download_checksum "$artifact_slug")
     verify_checksum "$temp_file" "$checksum_file"
     
     install_binary "$temp_file" "$platform_arch"
