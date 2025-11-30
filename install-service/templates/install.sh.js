@@ -145,6 +145,28 @@ needs_suse_openssl_compat() {
     return 1
 }
 
+is_musl_based() {
+    if [ "$OS_ID" = "alpine" ]; then
+        return 0
+    fi
+
+    if [ -n "$OS_NAME" ] && printf '%s' "$OS_NAME" | grep -qi 'musl'; then
+        return 0
+    fi
+
+    if command -v ldd >/dev/null 2>&1; then
+        if ldd --version 2>&1 | grep -qi 'musl'; then
+            return 0
+        fi
+    fi
+
+    if compgen -G "/lib/ld-musl-*.so*" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    return 1
+}
+
 ensure_usr_bin_symlink() {
     if ! is_suse_like; then
         return 0
@@ -286,6 +308,10 @@ detect_platform() {
 }
 
 should_use_openssl3_artifact() {
+    if is_musl_based; then
+        return 1
+    fi
+
     if ! is_suse_like; then
         return 1
     fi
@@ -315,11 +341,25 @@ select_artifact_slug() {
         return 0
     fi
 
-    if should_use_openssl3_artifact; then
-        echo "${platform_arch}-openssl3"
-    else
-        echo "$platform_arch"
+    local platform="${platform_arch%%-*}"
+    local arch="${platform_arch#*-}"
+    if [ "$platform" = "$platform_arch" ]; then
+        arch=""
     fi
+
+    if [ "$platform" = "linux" ]; then
+        if [ "$arch" = "x64" ] && is_musl_based; then
+            echo "linux-musl-$arch"
+            return 0
+        fi
+
+        if [ "$arch" = "x64" ] && should_use_openssl3_artifact; then
+            echo "linux-$arch-openssl3"
+            return 0
+        fi
+    fi
+
+    echo "$platform_arch"
 }
 
 # Check dependencies

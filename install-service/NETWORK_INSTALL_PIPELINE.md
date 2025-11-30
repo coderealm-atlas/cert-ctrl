@@ -15,6 +15,19 @@ This document describes how we will automate packaging, publishing, and serving 
    - `iwr -useb https://install.lets-script.com/install.ps1 | iex`
 6. Keep the Cloudflare Worker stateless by caching GitHub assets and manifest data aggressively while still being able to purge/refresh on new releases.
 
+### Canonical artifact naming
+
+| Target | Archive |
+| --- | --- |
+| Linux (glibc, x64) | `cert-ctrl-linux-x64.tar.gz` |
+| Linux (glibc, x64, OpenSSL 3) | `cert-ctrl-linux-x64-openssl3.tar.gz` |
+| Linux (musl, x64) | `cert-ctrl-linux-musl-x64.tar.gz` |
+| macOS (x64) | `cert-ctrl-macos-x64.tar.gz` |
+| macOS (arm64) | `cert-ctrl-macos-arm64.tar.gz` |
+| Windows (x64) | `cert-ctrl-windows-x64.zip` |
+
+Every archive ships with a matching `.sha256` file using the same basename.
+
 ---
 
 ## 2. Release Workflow Overview
@@ -48,14 +61,15 @@ A new GitHub Action (or an extension of `cmake-multi-platform.yml`) will run whe
        "released_at": "2025-10-11T10:00:00Z",
        "channels": {
          "stable": {
-           "linux-x86_64": {
-             "url": "https://github.com/coderealm-atlas/cert-ctrl/releases/download/v1.2.3/cert-ctrl-linux-x86_64.tar.gz",
+           "linux-x64": {
+             "url": "https://github.com/coderealm-atlas/cert-ctrl/releases/download/v1.2.3/cert-ctrl-linux-x64.tar.gz",
              "checksum": "sha256:...",
              "signature": "minisign:..."
            },
-           "linux-musl-x86_64": { ... },
-           "macos-universal": { ... },
-           "windows-x86_64": { ... }
+           "linux-musl-x64": { ... },
+           "macos-x64": { ... },
+           "macos-arm64": { ... },
+           "windows-x64": { ... }
          }
        }
      }

@@ -175,7 +175,12 @@ function extractDownloadUrls(assets) {
     if (name.endsWith('.sha256') || name.endsWith('.sig')) {
       return;
     }
-    
+
+    if (name.includes('linux') && name.includes('musl') && name.includes('x64')) {
+      urls['linux-musl-x64'] = asset.browser_download_url;
+      return;
+    }
+
     if (name.includes('linux') && name.includes('x64') && name.includes('openssl3')) {
       urls['linux-x64-openssl3'] = asset.browser_download_url;
       return;
@@ -183,13 +188,25 @@ function extractDownloadUrls(assets) {
 
     if (name.includes('linux') && name.includes('x64')) {
       urls['linux-x64'] = asset.browser_download_url;
-    } else if (name.includes('linux') && name.includes('arm64')) {
+      return;
+    }
+
+    if (name.includes('linux') && name.includes('arm64')) {
       urls['linux-arm64'] = asset.browser_download_url;
-    } else if (name.includes('windows') && name.includes('x64')) {
+      return;
+    }
+
+    if (name.includes('windows') && name.includes('x64')) {
       urls['windows-x64'] = asset.browser_download_url;
-    } else if (name.includes('macos') && name.includes('x64')) {
+      return;
+    }
+
+    if (name.includes('macos') && name.includes('x64')) {
       urls['macos-x64'] = asset.browser_download_url;
-    } else if (name.includes('macos') && name.includes('arm64')) {
+      return;
+    }
+
+    if (name.includes('macos') && name.includes('arm64')) {
       urls['macos-arm64'] = asset.browser_download_url;
     }
   });
@@ -204,6 +221,10 @@ function buildInstallCommands() {
     windows: 'irm "https://install.lets-script.com/install.ps1?force=1" | iex'
   };
 }
+
+export const __testables__ = {
+  extractDownloadUrls
+};
 
 function compareVersions(version1 = '', version2 = '') {
   const normalize = (raw) => {
