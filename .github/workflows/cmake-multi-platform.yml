@@ -883,6 +883,8 @@ jobs:
       - name: Build self-hosted target
         env:
           DOCKER_BUILDKIT: '0'
+          BUILD_DIR_REL: ${{ matrix.build_dir }}
+          INSTALL_PREFIX_REL: ${{ matrix.install_prefix }}
         run: |
           set -euo pipefail
           script="./${{ matrix.build_script }}"
@@ -892,13 +894,6 @@ jobs:
           else
             bash "$script"
           fi
-
-      - name: Install build outputs (self-hosted)
-        run: |
-          set -euo pipefail
-          build_dir="${{ github.workspace }}/${{ matrix.build_dir }}"
-          install_prefix="${{ github.workspace }}/${{ matrix.install_prefix }}"
-          cmake --install "$build_dir" --config Release --prefix "$install_prefix"
 
       - name: Normalize executable name (self-hosted)
         run: |

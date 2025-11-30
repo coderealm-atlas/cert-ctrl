@@ -5,6 +5,10 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 IMAGE_NAME="${IMAGE_NAME:-cert-ctrl/alpine-builder}"
 PRESET="${1:-alpine-release}"
+BUILD_DIR_REL="${BUILD_DIR_REL:-build/${PRESET}}"
+INSTALL_PREFIX_REL="${INSTALL_PREFIX_REL:-install/selfhost-${PRESET}}"
+BUILD_DIR="/work/${BUILD_DIR_REL}"
+INSTALL_PREFIX="/work/${INSTALL_PREFIX_REL}"
 # Default to a known-good vcpkg release unless caller overrides.
 VCPKG_COMMIT="${VCPKG_COMMIT:-b322364f06308bdd24823f9d8f03fe0cc86fd46f}"
 
@@ -97,6 +101,8 @@ if [ ! -x "\${TMP_VCPKG}/vcpkg" ]; then
 fi
 cmake --preset "${PRESET}" --fresh -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
 cmake --build --preset "${PRESET}"
+rm -rf "${INSTALL_PREFIX}"
+cmake --install "${BUILD_DIR}" --config Release --prefix "${INSTALL_PREFIX}"
 EOF
 )
 
