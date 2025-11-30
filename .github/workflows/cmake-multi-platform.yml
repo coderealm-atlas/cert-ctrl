@@ -411,6 +411,16 @@ jobs:
           # Install Ninja and required autotools for libsodium
           brew install ninja autoconf automake libtool pkg-config libomp
 
+      - name: Ensure Ninja on macOS (self-hosted)
+        if: runner.os == 'macOS' && env.IS_SELF_HOSTED == 'true'
+        run: |
+          if ! command -v ninja >/dev/null 2>&1; then
+            brew update
+            brew install ninja autoconf automake libtool pkg-config libomp
+          else
+            echo "Ninja already available; skipping brew install"
+          fi
+
       - name: Ensure Ninja on Ubuntu
         if: runner.os == 'Linux' && env.IS_SELF_HOSTED != 'true'
         run: |
@@ -832,6 +842,12 @@ jobs:
 
   self-host-linux:
     name: Self-hosted Linux builds
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      startsWith(github.event.inputs.target_runner || '', 'self-host-') && (
+        github.event.inputs.target_runner == 'self-host-linux' ||
+        github.event.inputs.target_runner == 'self-host-all'
+      )
     needs: set-matrix
     runs-on: ${{ matrix.runner }}
     strategy:
