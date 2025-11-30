@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.16)
 
 cmake_policy(SET CMP0104 NEW)
 cmake_policy(SET CMP0146 OLD)
-cmake_policy(SET CMP0167 NEW)
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
 cmake_policy(SET CMP0111 NEW)  # Handle imported targets missing location property
 
 set(CMAKE_CXX_STANDARD 17)
@@ -565,7 +567,9 @@ else()
             set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto -DNDEBUG")
             set(CMAKE_C_FLAGS_RELEASE "-O3 -flto -DNDEBUG")
         endif()
-        set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-fuse-ld=lld")
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -fuse-ld=lld")
+        endif()
     elseif(MSVC)
         # Enhanced MSVC optimization flags
         set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Ob2 /DNDEBUG")

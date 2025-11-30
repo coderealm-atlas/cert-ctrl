@@ -12,10 +12,16 @@ RUN apk add --no-cache \
     unzip \
     tar \
     coreutils \
+    libc6-compat \
+    rsync \
     linux-headers \
     python3 \
     pkgconfig \
     perl \
+    autoconf \
+    automake \
+    libtool \
+    lld \
     ccache \
     ca-certificates \
     openssl-dev

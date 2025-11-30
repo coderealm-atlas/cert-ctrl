@@ -3,12 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
-IMAGE_NAME="${IMAGE_NAME:-cert-ctrl/alpine-builder}"
-PRESET="${1:-alpine-release}"
-# Default to a known-good vcpkg release unless caller overrides.
+IMAGE_NAME="${IMAGE_NAME:-cert-ctrl/ubuntu-builder}"
+PRESET="${1:-release}"
 VCPKG_COMMIT="${VCPKG_COMMIT:-b322364f06308bdd24823f9d8f03fe0cc86fd46f}"
 
-# Persist vcpkg downloads and binaries on the host so Docker builds can reuse them.
 CACHE_ROOT="${VCPKG_CACHE_ROOT:-${HOME}/.cache/cert-ctrl}"
 HOST_VCPKG_DOWNLOADS="${VCPKG_DOWNLOADS_DIR:-${CACHE_ROOT}/vcpkg-downloads}"
 HOST_VCPKG_BINARY_CACHE="${VCPKG_BINARY_CACHE_DIR:-${CACHE_ROOT}/vcpkg-binary}"
@@ -70,12 +68,10 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
-# Build (or update) the lightweight Alpine toolchain image
-DOCKERFILE="${REPO_ROOT}/docker/alpine-builder.Dockerfile"
-echo "[alpine-build] Building image ${IMAGE_NAME} using ${DOCKERFILE}" >&2
+DOCKERFILE="${REPO_ROOT}/docker/ubuntu-builder.Dockerfile"
+echo "[ubuntu-build] Building image ${IMAGE_NAME} using ${DOCKERFILE}" >&2
 docker build -t "${IMAGE_NAME}" -f "${DOCKERFILE}" "${REPO_ROOT}"
 
-# Derive a sane parallelism default for both host and container
 if command -v nproc >/dev/null 2>&1; then
   HOST_CORES="$(nproc)"
 else
@@ -88,23 +84,24 @@ CORES_VALUE="${CORES:-${HOST_CORES}}"
 RUN_CMD=$(cat <<EOF
 set -euo pipefail
 mkdir -p "\${HOME}" "\${XDG_CACHE_HOME:-\${HOME}/.cache}"
-TMP_VCPKG="/tmp/vcpkg-musl"
+TMP_VCPKG="/tmp/vcpkg-gnu"
 rm -rf "\${TMP_VCPKG}"
 mkdir -p "\${TMP_VCPKG}"
 git -C /work/external/vcpkg archive "\${VCPKG_COMMIT}" | tar -x -C "\${TMP_VCPKG}"
 if [ ! -x "\${TMP_VCPKG}/vcpkg" ]; then
   (cd "\${TMP_VCPKG}" && ./bootstrap-vcpkg.sh -disableMetrics)
 fi
-cmake --preset "${PRESET}" --fresh -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
+rm -rf /work/build
+cmake --preset "${PRESET}" -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
 cmake --build --preset "${PRESET}"
 EOF
 )
 
-echo "[alpine-build] Running ${RUN_CMD} inside container" >&2
+echo "[ubuntu-build] Running ${RUN_CMD} inside container" >&2
 if [[ ${USE_HOST_NETWORK} -eq 1 ]]; then
-  echo "[alpine-build] Using Docker host network so localhost proxies resolve correctly" >&2
+  echo "[ubuntu-build] Using Docker host network so localhost proxies resolve correctly" >&2
 elif [[ ${#PROXY_REWRITTEN[@]} -gt 0 ]]; then
-  echo "[alpine-build] Adjusted proxy vars for container: ${PROXY_REWRITTEN[*]} -> ${HOST_GATEWAY_ALIAS}" >&2
+  echo "[ubuntu-build] Adjusted proxy vars for container: ${PROXY_REWRITTEN[*]} -> ${HOST_GATEWAY_ALIAS}" >&2
 fi
 
 DOCKER_ARGS=(
