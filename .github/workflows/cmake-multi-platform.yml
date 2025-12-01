@@ -187,6 +187,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Log workflow inputs
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "workflow_dispatch inputs:"
+          echo "  build_type=${{ github.event.inputs.build_type || 'Release' }}"
+          echo "  upload_artifacts=${{ github.event.inputs.upload_artifacts || 'true' }}"
+          echo "  do_release=${{ github.event.inputs.do_release || 'false' }}"
+          echo "  release_test_mode=${{ github.event.inputs.release_test_mode || 'false' }}"
+          echo "  target_runner=${{ github.event.inputs.target_runner || 'github-all' }}"
+          echo "  skip_tests=${{ github.event.inputs.skip_tests || 'true' }}"
+          echo "  clean_build=${{ github.event.inputs.clean_build || 'false' }}"
+
       - name: Log repository state
         shell: bash
         run: |
@@ -1117,7 +1131,10 @@ jobs:
             github.event.inputs.release_test_mode != 'true'
           ) &&
           needs.build.result == 'success' &&
-          needs.self-host-linux.result == 'success'
+          (
+            needs.self-host-linux.result == 'success' ||
+            needs.self-host-linux.result == 'skipped'
+          )
         )
       )
     runs-on: ubuntu-latest
