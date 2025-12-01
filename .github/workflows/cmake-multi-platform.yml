@@ -1039,16 +1039,26 @@ jobs:
             tag="${GITHUB_REF#refs/tags/}"
             title="$tag"
           else
-            # Previous workflow versions allowed any v* tag, including the auto-generated
-            # hyphenated tags that come from the CMake build. Revert to that behavior so
-            # manual runs continue to surface fresh releases.
-            tag=$(git describe --tags --abbrev=0 --match "v*" 2>/dev/null || true)
-            if [ -z "$tag" ]; then
+            # Match historical behavior: use the newest reachable v* tag (which may
+            # include git-describe metadata like -81-g<sha>) so every commit gets a
+            # distinct release tag even when we haven't created a fresh annotated tag.
+            if describe=$(git describe --tags --long --dirty --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=8 2>/dev/null); then
+              describe=${describe%-dirty}
+              tag="$describe"
+              title="$describe"
+            else
               short_sha=$(git rev-parse --short HEAD)
               tag="build-${GITHUB_RUN_ID}-${short_sha}"
+              title="$tag"
             fi
-            title="$tag"
           fi
+
+          sanitize_value() {
+            python3 -c "import re, sys; value=sys.argv[1]; value=re.sub(r'-0-g[0-9a-f]+(?=-|$)', '', value); value=value.rstrip('-'); sys.stdout.write(value)" "$1"
+          }
+
+          tag=$(sanitize_value "$tag")
+          title=$(sanitize_value "$title")
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "title=$title" >> "$GITHUB_OUTPUT"
