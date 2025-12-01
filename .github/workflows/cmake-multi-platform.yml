@@ -1084,7 +1084,7 @@ jobs:
             exit 1
           fi
 
-          if git rev-parse "$RELEASE_TAG^{commit}" >/dev/null 2>&1; then
+          if git show-ref --tags --verify --quiet "refs/tags/$RELEASE_TAG"; then
             notes_args=(--notes-from-tag)
           else
             notes_args=(--notes "Automated release from workflow run ${GITHUB_RUN_ID}")
