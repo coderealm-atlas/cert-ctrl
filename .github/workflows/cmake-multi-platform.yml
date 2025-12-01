@@ -187,6 +187,16 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Log repository state
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HEAD commit:" $(git show -1 --pretty=format:'%h %s (%ci)')
+          echo "HEAD ref:" $(git rev-parse HEAD)
+          echo "Git describe (workflow):" $(git describe --tags --long --dirty --match "v[0-9]*[.][0-9]*[.][0-9]*" --exclude "*-*" --abbrev=8 2>/dev/null || echo '<none>')
+          echo "Tags reachable from HEAD:"
+          git tag --points-at HEAD || true
+
       - name: Determine release tag
         id: release
         shell: bash
@@ -200,7 +210,7 @@ jobs:
             tag="${GITHUB_REF#refs/tags/}"
             title="$tag"
           else
-            if describe=$(git describe --tags --long --dirty --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=8 2>/dev/null); then
+            if describe=$(git describe --tags --long --dirty --match "v[0-9]*[.][0-9]*[.][0-9]*" --exclude "*-*" --abbrev=8 2>/dev/null); then
               describe=${describe%-dirty}
               tag="$describe"
               title="$describe"
