@@ -1016,15 +1016,30 @@ jobs:
       - release-test-artifacts
     if: >-
       (
-        github.event_name == 'workflow_dispatch' &&
-        github.event.inputs.upload_artifacts == 'true' &&
-        github.event.inputs.do_release == 'true'
-      ) || (
-        github.event_name == 'push' &&
-        startsWith(github.ref, 'refs/tags/v')
-      ) || (
-        github.event_name == 'workflow_dispatch' &&
-        github.event.inputs.release_test_mode == 'true'
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.upload_artifacts == 'true' &&
+          github.event.inputs.do_release == 'true'
+        ) || (
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/v')
+        ) || (
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.release_test_mode == 'true'
+        )
+      ) && (
+        (
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.release_test_mode == 'true' &&
+          needs.release-test-artifacts.result == 'success'
+        ) || (
+          (
+            github.event_name != 'workflow_dispatch' ||
+            github.event.inputs.release_test_mode != 'true'
+          ) &&
+          needs.build.result == 'success' &&
+          needs.self-host-linux.result == 'success'
+        )
       )
     runs-on: ubuntu-latest
     steps:
