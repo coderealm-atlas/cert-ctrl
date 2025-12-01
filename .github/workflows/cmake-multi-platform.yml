@@ -1077,10 +1077,14 @@ jobs:
           if-no-files-found: error
 
   release-test-artifacts:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_test_mode == 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Skip placeholder generation
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.release_test_mode != 'true' }}
+        run: echo "release_test_mode disabled; placeholder artifacts not required."
+
       - name: Create placeholder asset
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_test_mode == 'true' }}
         run: |
           set -euo pipefail
           mkdir -p release-test/bin
@@ -1091,6 +1095,7 @@ jobs:
           sha256sum cert-ctrl-test.tar.gz > cert-ctrl-test.tar.gz.sha256
 
       - name: Upload placeholder artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_test_mode == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: release-test-artifacts
