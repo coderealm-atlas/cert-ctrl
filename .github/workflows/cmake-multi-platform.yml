@@ -1034,3 +1034,38 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_TITLE: ${{ steps.release.outputs.title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t asset_files < <(find release-assets -type f -print | sort)
+          if [ ${#asset_files[@]} -eq 0 ]; then
+            echo "No artifacts were downloaded; cannot publish release" >&2
+            exit 1
+          fi
+
+          if git rev-parse "$RELEASE_TAG^{commit}" >/dev/null 2>&1; then
+            notes_args=(--notes-from-tag)
+          else
+            notes_args=(--notes "Automated release from workflow run ${GITHUB_RUN_ID}")
+          fi
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; uploading assets"
+            gh release upload "$RELEASE_TAG" "${asset_files[@]}" --clobber
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TITLE" >/dev/null
+          else
+            echo "Creating release $RELEASE_TAG"
+            gh release create "$RELEASE_TAG" "${asset_files[@]}" --title "$RELEASE_TITLE" "${notes_args[@]}"
+          fi
+
+          {
+            echo "## Release $RELEASE_TAG"
+            printf '* %s\n' "${asset_files[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
