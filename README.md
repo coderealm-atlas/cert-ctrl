@@ -16,7 +16,7 @@
 
 - CMake ≥ 3.16 (3.19+ recommended for presets)
 - Ninja or another CMake generator
-- A C++20 compiler (Clang or MSVC supported out of the box)
+- A C++17 compiler (Clang or MSVC supported out of the box)
 - [vcpkg](https://github.com/microsoft/vcpkg) is included as a submodule; ensure dependencies are fetched before configuring
   ```bash
   git submodule update --init --recursive

@@ -118,6 +118,10 @@ BIN_DEST="${BIN_DEST_DIR}/${BIN_NAME}-freebsd"
 
 mkdir -p "${BIN_DEST_DIR}"
 if [[ -x "${BIN_SRC}" ]]; then
+  if command -v strip >/dev/null 2>&1; then
+    echo "[freebsd-build] Stripping symbols from ${BIN_SRC}"
+    strip "${BIN_SRC}" || echo "[freebsd-build] Warning: strip failed; continuing with unstripped binary" >&2
+  fi
   cp -f "${BIN_SRC}" "${BIN_DEST}"
   echo "[freebsd-build] Copied ${BIN_SRC} -> ${BIN_DEST}"
 else
