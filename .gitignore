@@ -45,3 +45,4 @@ CMakeUserPresets.json
 tests/test-env
 .clangd
 tmp/ 
+install/
