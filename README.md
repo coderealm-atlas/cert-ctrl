@@ -12,6 +12,8 @@
 
 ## Getting started
 
+Download working executable from: [https://cjj365.cc][externalLink]
+
 ### Prerequisites
 
 - CMake ≥ 3.16 (3.19+ recommended for presets)
@@ -166,3 +168,6 @@ Follow the annotated process in `docs/RELEASE_WORKFLOW.md` when cutting a new ve
 4. Submit a PR describing the change and any deployment notes.
 
 Please surface new docs or automation improvements in the README or the release workflow guide to keep the operational knowledge current.
+
+
+[externalLink]: https://cjj365.cc
