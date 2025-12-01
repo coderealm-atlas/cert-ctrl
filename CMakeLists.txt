@@ -656,7 +656,7 @@ list(APPEND APP_SOURCES
 # Always use a stable target name; vary only the output file name per config
 set(CERT_CTRL_APP_NAME cert_ctrl)
 
-find_package(Protobuf CONFIG REQUIRED)
+find_package(Protobuf REQUIRED)
 set(PROTO_FILES
     proto/messages/dicmeta.proto
     proto/messages/models.proto
