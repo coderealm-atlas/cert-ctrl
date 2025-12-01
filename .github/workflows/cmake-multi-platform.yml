@@ -59,6 +59,13 @@ on:
               - 'false'
               - 'true'
             default: 'false'
+      release_test_mode:
+        description: Skip build/self-host jobs and run the publish stage with lightweight placeholder artifacts to validate release changes quickly
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+        default: 'false'
   # push:
   #   tags:
   #     - 'v*'
@@ -158,6 +165,7 @@ jobs:
           fi
 
   build:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.release_test_mode != 'true' }}
     needs: set-matrix
     runs-on: ${{ matrix.os }}
     env:
@@ -844,9 +852,12 @@ jobs:
     name: Self-hosted Linux builds
     if: >-
       github.event_name != 'workflow_dispatch' ||
-      startsWith(github.event.inputs.target_runner || '', 'self-host-') && (
-        github.event.inputs.target_runner == 'self-host-linux' ||
-        github.event.inputs.target_runner == 'self-host-all'
+      (
+        github.event.inputs.release_test_mode != 'true' &&
+        startsWith(github.event.inputs.target_runner || '', 'self-host-') && (
+          github.event.inputs.target_runner == 'self-host-linux' ||
+          github.event.inputs.target_runner == 'self-host-all'
+        )
       )
     needs: set-matrix
     runs-on: ${{ matrix.runner }}
@@ -975,10 +986,34 @@ jobs:
             ${{ github.workspace }}/dist/${{ matrix.artifact_base }}.${{ matrix.archive_ext }}.sha256
           if-no-files-found: error
 
+  release-test-artifacts:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_test_mode == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create placeholder asset
+        run: |
+          set -euo pipefail
+          mkdir -p release-test/bin
+          printf 'Release test artifact for run %s on %s\n' "${GITHUB_RUN_ID}" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > release-test/README.txt
+          printf 'echo test\n' > release-test/bin/cert-ctrl
+          chmod +x release-test/bin/cert-ctrl
+          tar -C release-test -czf cert-ctrl-test.tar.gz .
+          sha256sum cert-ctrl-test.tar.gz > cert-ctrl-test.tar.gz.sha256
+
+      - name: Upload placeholder artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-test-artifacts
+          path: |
+            cert-ctrl-test.tar.gz
+            cert-ctrl-test.tar.gz.sha256
+          if-no-files-found: error
+
   publish-release:
     needs:
       - build
       - self-host-linux
+      - release-test-artifacts
     if: >-
       (
         github.event_name == 'workflow_dispatch' &&
@@ -987,6 +1022,9 @@ jobs:
       ) || (
         github.event_name == 'push' &&
         startsWith(github.ref, 'refs/tags/v')
+      ) || (
+        github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.release_test_mode == 'true'
       )
     runs-on: ubuntu-latest
     steps:
@@ -1078,10 +1116,21 @@ jobs:
         run: |
           set -euo pipefail
 
+          release_test_mode="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_test_mode == 'true' }}"
+          dispatch_do_release="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.do_release == 'true' }}"
+
           mapfile -t asset_files < <(find release-assets -type f -print | sort)
           if [ ${#asset_files[@]} -eq 0 ]; then
             echo "No artifacts were downloaded; cannot publish release" >&2
             exit 1
+          fi
+
+          if [ "$release_test_mode" = "true" ] && [ "$dispatch_do_release" != "true" ]; then
+            echo "release_test_mode enabled without do_release; performing dry run"
+            printf 'Assets prepared for upload:\n'
+            printf '  - %s\n' "${asset_files[@]}"
+            printf 'Release tag: %s\nTitle: %s\n' "$RELEASE_TAG" "$RELEASE_TITLE"
+            exit 0
           fi
 
           if git show-ref --tags --verify --quiet "refs/tags/$RELEASE_TAG"; then
