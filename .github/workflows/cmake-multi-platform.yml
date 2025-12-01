@@ -164,6 +164,72 @@ jobs:
             echo 'variant-list=["default"]' >> "$GITHUB_OUTPUT"
           fi
 
+  release-metadata:
+    name: Release metadata
+    if: >-
+      (
+        github.event_name == 'workflow_dispatch' &&
+        (
+          github.event.inputs.do_release == 'true' ||
+          github.event.inputs.release_test_mode == 'true'
+        )
+      ) || (
+        github.event_name == 'push' &&
+        startsWith(github.ref, 'refs/tags/v')
+      )
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      title: ${{ steps.release.outputs.title }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag=""
+          title=""
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            title="$tag"
+          else
+            if describe=$(git describe --tags --long --dirty --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=8 2>/dev/null); then
+              describe=${describe%-dirty}
+              tag="$describe"
+              title="$describe"
+            else
+              short_sha=$(git rev-parse --short HEAD)
+              tag="build-${GITHUB_RUN_ID}-${short_sha}"
+              title="$tag"
+            fi
+          fi
+
+          sanitize_value() {
+            python3 -c "import re, sys; value=sys.argv[1]; value=re.sub(r'-0-g[0-9a-f]+(?=-|$)', '', value); value=value.rstrip('-'); sys.stdout.write(value)" "$1"
+          }
+
+          tag=$(sanitize_value "$tag")
+          title=$(sanitize_value "$title")
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize release metadata
+        shell: bash
+        run: |
+          {
+            echo "## Release metadata"
+            echo "* Tag: ${{ steps.release.outputs.tag }}"
+            echo "* Title: ${{ steps.release.outputs.title }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.release_test_mode != 'true' }}
     needs: set-matrix
@@ -1011,6 +1077,7 @@ jobs:
 
   publish-release:
     needs:
+      - release-metadata
       - build
       - self-host-linux
       - release-test-artifacts
@@ -1027,7 +1094,9 @@ jobs:
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.release_test_mode == 'true'
         )
-      ) && (
+      ) &&
+      needs.release-metadata.result == 'success' &&
+      (
         (
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.release_test_mode == 'true' &&
@@ -1079,43 +1148,6 @@ jobs:
           "${sha_cmd[@]}" "$ARCHIVE_NAME" | tee "${ARCHIVE_NAME}.sha256"
           popd >/dev/null
 
-      - name: Determine release tag
-        id: release
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tag=""
-          title=""
-
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            tag="${GITHUB_REF#refs/tags/}"
-            title="$tag"
-          else
-            # Match historical behavior: use the newest reachable v* tag (which may
-            # include git-describe metadata like -81-g<sha>) so every commit gets a
-            # distinct release tag even when we haven't created a fresh annotated tag.
-            if describe=$(git describe --tags --long --dirty --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=8 2>/dev/null); then
-              describe=${describe%-dirty}
-              tag="$describe"
-              title="$describe"
-            else
-              short_sha=$(git rev-parse --short HEAD)
-              tag="build-${GITHUB_RUN_ID}-${short_sha}"
-              title="$tag"
-            fi
-          fi
-
-          sanitize_value() {
-            python3 -c "import re, sys; value=sys.argv[1]; value=re.sub(r'-0-g[0-9a-f]+(?=-|$)', '', value); value=value.rstrip('-'); sys.stdout.write(value)" "$1"
-          }
-
-          tag=$(sanitize_value "$tag")
-          title=$(sanitize_value "$title")
-
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "title=$title" >> "$GITHUB_OUTPUT"
-
       - name: Download installer artifacts
         uses: actions/download-artifact@v4
         with:
@@ -1125,8 +1157,8 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          RELEASE_TITLE: ${{ steps.release.outputs.title }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          RELEASE_TITLE: ${{ needs.release-metadata.outputs.title }}
         shell: bash
         run: |
           set -euo pipefail
