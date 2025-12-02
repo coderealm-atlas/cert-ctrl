@@ -1,4 +1,9 @@
-import { detectPlatform, detectArchitecture } from '../utils/platform.js';
+import {
+  detectPlatform,
+  detectArchitecture,
+  normalizePlatformHint,
+  normalizeArchitectureHint
+} from '../utils/platform.js';
 import { getInstallTemplate } from '../utils/templates.js';
 import { corsHeaders } from '../utils/cors.js';
 
@@ -19,11 +24,27 @@ export async function installHandler(request, env) {
     scriptType = 'bash';
   }
     
-    // Extract platform information
-    const platform = scriptType === 'macos'
-      ? 'macos'
+    const platformOverride = normalizePlatformHint(
+      url.searchParams.get('platform') ||
+      url.searchParams.get('os') ||
+      request.headers.get('X-Install-Platform') ||
+      request.headers.get('X-Platform')
+    );
+
+    const architectureOverride = normalizeArchitectureHint(
+      url.searchParams.get('arch') ||
+      url.searchParams.get('architecture') ||
+      request.headers.get('X-Install-Arch') ||
+      request.headers.get('X-Architecture')
+    );
+
+    const platformDetection = scriptType === 'macos'
+      ? { platform: 'macos', confidence: 'high' }
       : detectPlatform(userAgent, scriptType);
-    const architecture = detectArchitecture(userAgent);
+
+    const platform = platformOverride || platformDetection.platform;
+    const platformConfidence = platformOverride ? 'override' : platformDetection.confidence;
+    const architecture = architectureOverride || detectArchitecture(userAgent);
     
     // Get query parameters
     const params = {
@@ -40,6 +61,7 @@ export async function installHandler(request, env) {
     // Generate customized installation script
     const script = await getInstallTemplate(scriptType, {
       platform,
+      platformConfidence,
       architecture,
       country,
       mirror,
@@ -55,8 +77,10 @@ export async function installHandler(request, env) {
     return new Response(script, {
       headers: {
         'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=300', // 5 minutes
+        'Cache-Control': 'private, max-age=0, no-cache, no-store',
+        'Vary': 'User-Agent, CF-IPCountry',
         'X-Platform': platform,
+        'X-Platform-Confidence': platformConfidence,
         'X-Architecture': architecture,
         'X-Mirror': mirror.name,
         ...corsHeaders

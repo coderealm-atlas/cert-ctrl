@@ -2,6 +2,7 @@ function detectPlatform(userAgent = '') {
   const ua = userAgent.toLowerCase();
   if (ua.includes('windows')) return 'windows';
   if (ua.includes('mac os') || ua.includes('macintosh')) return 'mac';
+  if (ua.includes('freebsd')) return 'freebsd';
   if (ua.includes('linux')) return 'linux';
   if (ua.includes('android')) return 'android';
   if (ua.includes('iphone') || ua.includes('ipad') || ua.includes('ios')) return 'ios';
