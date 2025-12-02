@@ -4,11 +4,13 @@ account_id = "4f3c7b8bd8c76a7cf8072775c945762b"
 compatibility_date = "2024-10-05"
 compatibility_flags = ["nodejs_compat"]
 
-# Custom domain configuration
+# Route configuration (applies to default environment)
 routes = [
-  "install.lets-script.com/*"
+	"install.lets-script.com/*"
 ]
 
+# Environment variables
+# Custom domain configuration
 # Environment variables
 [env.production]
 

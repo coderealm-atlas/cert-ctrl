@@ -5,6 +5,7 @@ import { macosTemplate } from '../../templates/install-macos.sh.js';
 export async function getInstallTemplate(scriptType, options) {
   const {
     platform,
+    platformConfidence = 'high',
     architecture,
     country,
     mirror,
@@ -32,6 +33,7 @@ export async function getInstallTemplate(scriptType, options) {
   const templateVars = {
     PLATFORM: platform,
     ARCHITECTURE: architecture,
+    PLATFORM_CONFIDENCE: platformConfidence,
     COUNTRY: country,
     MIRROR_URL: mirror.url,
     MIRROR_NAME: mirror.name,
@@ -65,6 +67,9 @@ function interpolateTemplate(template, vars) {
     const placeholder = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
     result = result.replace(placeholder, value);
   }
+
+  // Unescape shell variable references that were protected as \${VAR}
+  result = result.replace(/\\\$\{/g, '${');
   
   return result;
 }

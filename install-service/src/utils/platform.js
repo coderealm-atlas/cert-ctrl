@@ -1,29 +1,119 @@
-export function detectPlatform(userAgent, scriptType) {
+const FREEBSD_MARKERS = ['freebsd', 'dragonfly', 'midnightbsd', 'trueos', 'libfetch'];
+
+function hasFreeBSDHints(ua) {
+  return FREEBSD_MARKERS.some(marker => ua.includes(marker));
+}
+
+export function detectPlatform(userAgent = '', scriptType = 'bash') {
   const ua = userAgent.toLowerCase();
-  
-  // If PowerShell script requested, it's Windows
+
   if (scriptType === 'powershell') {
-    return 'windows';
+    return {
+      platform: 'windows',
+      confidence: 'high'
+    };
+  }
+
+  if (scriptType === 'macos') {
+    return {
+      platform: 'macos',
+      confidence: 'high'
+    };
   }
   
-  // Detect from User-Agent
   if (ua.includes('windows') || ua.includes('win32') || ua.includes('win64')) {
-    return 'windows';
+    return {
+      platform: 'windows',
+      confidence: 'high'
+    };
   }
   
   if (ua.includes('macintosh') || ua.includes('darwin') || ua.includes('mac os')) {
-    return 'macos';
+    return {
+      platform: 'macos',
+      confidence: 'high'
+    };
   }
   
-  if (ua.includes('linux')) {
-    return 'linux';
+  if (hasFreeBSDHints(ua)) {
+    return {
+      platform: 'freebsd',
+      confidence: 'high'
+    };
   }
-  
-  // Default fallback based on script type
-  return scriptType === 'powershell' ? 'windows' : 'linux';
+
+  if (ua.includes('linux') || ua.includes('gnu/linux') || ua.includes('x11')) {
+    return {
+      platform: 'linux',
+      confidence: 'high'
+    };
+  }
+
+  return {
+    platform: 'linux',
+    confidence: 'low'
+  };
 }
 
-export function detectArchitecture(userAgent) {
+export function normalizePlatformHint(value) {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (['linux', 'gnu/linux', 'unix'].includes(normalized)) {
+    return 'linux';
+  }
+
+  if (['freebsd', 'bsd', 'dragonfly', 'trueos', 'midnightbsd'].includes(normalized)) {
+    return 'freebsd';
+  }
+
+  if (['mac', 'macos', 'mac os', 'osx', 'darwin'].includes(normalized)) {
+    return 'macos';
+  }
+
+  if (['win', 'win32', 'win64', 'windows'].includes(normalized)) {
+    return 'windows';
+  }
+
+  return null;
+}
+
+export function normalizeArchitectureHint(value) {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (['x86_64', 'amd64', 'x64'].includes(normalized)) {
+    return 'x64';
+  }
+
+  if (['aarch64', 'arm64'].includes(normalized)) {
+    return 'arm64';
+  }
+
+  if (['armv7', 'armhf', 'arm'].includes(normalized)) {
+    return 'arm';
+  }
+
+  if (['x86', 'i386', 'i686'].includes(normalized)) {
+    return 'x86';
+  }
+
+  return null;
+}
+
+export function detectArchitecture(userAgent = '') {
   const ua = userAgent.toLowerCase();
   
   // ARM detection
@@ -44,7 +134,6 @@ export function detectArchitecture(userAgent) {
     return 'x86';
   }
   
-  // Default to x64 for most modern systems
   return 'x64';
 }
 

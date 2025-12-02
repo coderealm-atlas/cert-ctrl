@@ -93,6 +93,22 @@ curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --version v1.
 curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --verbose
 ```
 
+### Force Platform Detection
+
+Some CLI tools (notably `curl` builds that omit OS information) prevent the worker from inferring your platform. Append query parameters or headers to override detection:
+
+```bash
+# FreeBSD example
+curl -fsSL "https://install.lets-script.com/install.sh?platform=freebsd&arch=x64" | sudo bash
+
+# Using headers instead of query params
+curl -fsSL https://install.lets-script.com/install.sh \
+  -H "X-Install-Platform: freebsd" \
+  -H "X-Install-Arch: x64" | sudo bash
+```
+
+Accepted platform hints: `linux`, `freebsd`, `macos`, `windows`. Accepted architecture hints: `x64`, `x86`, `arm`, `arm64` (case-insensitive, common aliases like `amd64` or `aarch64` also work).
+
 ### Version Checking
 
 ```bash

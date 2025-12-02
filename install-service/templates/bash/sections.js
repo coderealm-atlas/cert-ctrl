@@ -11,6 +11,7 @@ set -euo pipefail
 
 # Configuration from service
 PLATFORM="{{PLATFORM}}"
+PLATFORM_CONFIDENCE="{{PLATFORM_CONFIDENCE}}"
 ARCHITECTURE="{{ARCHITECTURE}}"
 MIRROR_URL="{{MIRROR_URL}}"
 BASE_URL="{{BASE_URL}}"
@@ -133,9 +134,19 @@ log_verbose() {
 
 detect_os_release() {
     if [ -f /etc/os-release ]; then
-        OS_ID=$(grep -E '^ID=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"')
-        OS_VERSION_ID=$(grep -E '^VERSION_ID=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"')
-        OS_NAME=$(grep -E '^PRETTY_NAME=' /etc/os-release | head -n1 | cut -d'=' -f2 | tr -d '"')
+        local requested_version="\${VERSION-}"
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        OS_ID="\${ID:-}"
+        OS_VERSION_ID="\${VERSION_ID:-\${BUILD_ID:-}}"
+        OS_NAME="\${PRETTY_NAME:-\${NAME:-Unknown Linux}}"
+        if [ -z "$OS_ID" ]; then
+            OS_ID="unknown"
+        fi
+        if [ -z "$OS_NAME" ]; then
+            OS_NAME="Unknown Linux"
+        fi
+        VERSION="$requested_version"
         return 0
     fi
 
@@ -152,6 +163,7 @@ detect_os_release() {
             fi
             return 0
         fi
+    fi
     OS_ID="unknown"
     OS_VERSION_ID=""
     OS_NAME="Unknown Linux"
@@ -244,6 +256,20 @@ is_musl_based() {
     fi
 
     return 1
+}
+
+require_root_privileges() {
+    if [ "$EUID" -eq 0 ] || [ "$DRY_RUN" = "true" ]; then
+        return 0
+    fi
+
+    log_error "cert-ctrl installation requires root privileges."
+    echo
+    log_info "Run sudo up-front so you can enter your password before the script starts:"
+    echo "  sudo -v && curl -fsSL \"$BASE_URL/install.sh\" | sudo bash"
+    echo
+    log_info "Alternatively download first, then run sudo bash install.sh"
+    exit 1
 }
 
 ensure_usr_bin_symlink() {
@@ -362,29 +388,73 @@ maybe_skip_install() {
 
 # Detect platform if not provided
 detect_platform() {
-    if [ -n "$PLATFORM" ] && [ "$PLATFORM" != "unknown" ]; then
-        echo "$PLATFORM-$ARCHITECTURE"
-        return
+    local service_platform="$PLATFORM"
+    local service_arch="$ARCHITECTURE"
+    local service_confidence="$PLATFORM_CONFIDENCE"
+    local force_service="false"
+
+    if [ -z "$service_confidence" ]; then
+        service_confidence="high"
     fi
-    
-    local platform=""
-    local arch=""
-    
+
+    if [ "$service_confidence" = "override" ]; then
+        force_service="true"
+    fi
+
+    local host_platform=""
+    local host_arch=""
+
     case "$(uname -s)" in
-        Linux*)     platform="linux" ;;
-        Darwin*)    platform="macos" ;;
-        FreeBSD*)   platform="freebsd" ;;
-        *)          log_error "Unsupported platform: $(uname -s)"; exit 1 ;;
+        Linux*)     host_platform="linux" ;;
+        Darwin*)    host_platform="macos" ;;
+        FreeBSD*)   host_platform="freebsd" ;;
+        *)          host_platform="unknown" ;;
     esac
-    
+
     case "$(uname -m)" in
-        x86_64|amd64)   arch="x64" ;;
-        aarch64|arm64)  arch="arm64" ;;
-        armv7l)         arch="arm" ;;
-        *)              arch="x64" ;; # Default
+        x86_64|amd64)   host_arch="x64" ;;
+        aarch64|arm64)  host_arch="arm64" ;;
+        armv7l)         host_arch="arm" ;;
+        *)              host_arch="x64" ;;
     esac
-    
-    echo "\${platform}-\${arch}"
+
+    local final_platform="$host_platform"
+    local final_arch="$host_arch"
+
+    if [ -n "$service_platform" ] && [ "$service_platform" != "unknown" ]; then
+        if [ "$force_service" = "true" ]; then
+            final_platform="$service_platform"
+            if [ "$host_platform" != "unknown" ] && [ "$service_platform" != "$host_platform" ]; then
+                log_info "Using caller supplied platform $service_platform despite host detection $host_platform-$host_arch"
+            fi
+        elif [ "$host_platform" = "unknown" ] || [ "$service_platform" = "$host_platform" ]; then
+            final_platform="$service_platform"
+        else
+            if [ "$service_confidence" = "high" ]; then
+                log_warning "Detected platform $host_platform-$host_arch but service suggested $service_platform-$service_arch; using local platform"
+            else
+                log_verbose "Ignoring low-confidence service hint $service_platform-$service_arch in favor of $host_platform-$host_arch"
+            fi
+            final_platform="$host_platform"
+        fi
+    else
+        final_platform="$host_platform"
+    fi
+
+    if [ -n "$service_arch" ] && [ "$service_arch" != "unknown" ]; then
+        final_arch="$service_arch"
+    fi
+
+    if [ -z "$final_platform" ] || [ "$final_platform" = "unknown" ]; then
+        log_error "Unsupported platform: $(uname -s)"
+        exit 1
+    fi
+
+    if [ -z "$final_arch" ]; then
+        final_arch="$host_arch"
+    fi
+
+    echo "\${final_platform}-\${final_arch}"
 }
 
 should_use_openssl3_artifact() {
@@ -412,6 +482,48 @@ should_use_openssl3_artifact() {
     fi
 
     return 1
+}
+
+portable_sed_inplace() {
+    local expr="$1"
+    local target="$2"
+
+    if sed --version >/dev/null 2>&1; then
+        sed -i "$expr" "$target"
+    else
+        sed -i '' "$expr" "$target"
+    fi
+}
+
+run_with_timeout() {
+    local timeout="$1"
+    shift
+
+    if [ -z "$timeout" ] || [ "$timeout" -le 0 ]; then
+        "$@"
+        return $?
+    fi
+
+    ( "$@" ) &
+    local cmd_pid=$!
+    local elapsed=0
+
+    while kill -0 "$cmd_pid" >/dev/null 2>&1; do
+        if [ "$elapsed" -ge "$timeout" ]; then
+            kill "$cmd_pid" >/dev/null 2>&1 || true
+            if ! wait "$cmd_pid" >/dev/null 2>&1; then
+                return 124
+            fi
+            return 124
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if ! wait "$cmd_pid"; then
+        return $?
+    fi
+    return 0
 }
 
 select_artifact_slug() {
@@ -463,7 +575,7 @@ check_dependencies() {
     if [ "$INSTALL_SERVICE" = "true" ]; then
         case "$SERVICE_MANAGER" in
             freebsd-rcd)
-                deps+=("service" "sysrc")
+                deps+=("service" "sysrc" "daemon")
                 ;;
             systemd)
                 deps+=("systemctl")
@@ -505,10 +617,11 @@ resolve_version() {
         if command -v jq &> /dev/null; then
             VERSION=$(curl -fsSL "$latest_url" | jq -r '.version')
         else
-            VERSION=$(curl -fsSL "$latest_url" | grep '"version":' | sed -E 's/.*"version": "([^\"]+)".*/\\1/')
+            VERSION=$(curl -fsSL "$latest_url" | awk -F'"' '/"version":/ {print $4; exit}')
         fi
         
         if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            log_warning "Unable to parse version from $latest_url; install jq or inspect the API response"
             log_error "Failed to resolve latest version"
             exit 1
         fi
@@ -737,6 +850,44 @@ stop_service_if_running() {
             log_warning "Failed to stop $SERVICE_NAME; continuing with installation"
         fi
     fi
+}
+
+safe_replace_binary() {
+    local source_file="$1"
+    local target_file="$2"
+
+    if [ -z "$source_file" ] || [ -z "$target_file" ]; then
+        log_error "Internal error: safe_replace_binary missing arguments"
+        return 1
+    fi
+
+    local target_dir
+    target_dir=$(dirname "$target_file")
+    if [ ! -d "$target_dir" ]; then
+        if ! mkdir -p "$target_dir"; then
+            log_error "Failed to create $target_dir"
+            return 1
+        fi
+    fi
+
+    local temp_file="$target_dir/.cert-ctrl.$$.tmp"
+
+    if ! cp "$source_file" "$temp_file"; then
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    if ! chmod 0755 "$temp_file"; then
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    if mv "$temp_file" "$target_file"; then
+        return 0
+    fi
+
+    rm -f "$temp_file"
+    return 1
 }
 
 ensure_service_directories() {
@@ -1005,13 +1156,15 @@ create_freebsd_rc_service() {
 name="@@RC_NAME@@"
 rcvar="\${name}_enable"
 
-command="@@BINARY_PATH@@"
-command_args="--config-dirs @@CONFIG_DIR@@ --keep-running"
+command="/usr/sbin/daemon"
+procname="@@BINARY_PATH@@"
+command_args="-p /var/run/\${name}.pid @@BINARY_PATH@@ --config-dirs @@CONFIG_DIR@@ --keep-running"
 pidfile="/var/run/\${name}.pid"
 command_background="YES"
 
 load_rc_config $name
-: \${\${name}_enable:="NO"}
+: \${@@RC_NAME@@_enable:="NO"}
+: \${@@RC_NAME@@_limits:=""}
 
 run_rc_command "$1"
 EOF
@@ -1037,9 +1190,9 @@ install_freebsd_service_unit() {
     mkdir -p "/usr/local/etc/rc.d"
     create_freebsd_rc_service
 
-    sed -i "s|@@BINARY_PATH@@|$INSTALL_DIR/cert-ctrl|g" "$init_path"
-    sed -i "s|@@CONFIG_DIR@@|$CONFIG_DIR|g" "$init_path"
-    sed -i "s|@@RC_NAME@@|$rc_name|g" "$init_path"
+    portable_sed_inplace "s|@@BINARY_PATH@@|$INSTALL_DIR/cert-ctrl|g" "$init_path"
+    portable_sed_inplace "s|@@CONFIG_DIR@@|$CONFIG_DIR|g" "$init_path"
+    portable_sed_inplace "s|@@RC_NAME@@|$rc_name|g" "$init_path"
 
     chmod 0755 "$init_path"
 
@@ -1050,6 +1203,7 @@ install_freebsd_service_unit() {
     if [ "$ENABLE_SERVICE" = "true" ]; then
         local sysrc_bin service_bin
         if sysrc_bin=$(find_command_path sysrc 2>/dev/null); then
+            log_info "Enabling $rc_name via sysrc"
             if ! "$sysrc_bin" "\${rc_name}_enable=YES" >/dev/null 2>&1; then
                 log_warning "Failed to enable $rc_name via sysrc; set \${rc_name}_enable=YES manually"
             else
@@ -1060,10 +1214,16 @@ install_freebsd_service_unit() {
         fi
 
         if service_bin=$(find_command_path service 2>/dev/null); then
-            if "$service_bin" "$rc_name" restart >/dev/null 2>&1; then
+            log_info "Restarting $rc_name via service (timeout 20s)"
+            if run_with_timeout 20 "$service_bin" "$rc_name" restart >/dev/null 2>&1; then
                 log_success "$rc_name service started"
             else
-                log_warning "Failed to start $rc_name automatically; run: service $rc_name start"
+                local restart_status=$?
+                if [ "$restart_status" -eq 124 ]; then
+                    log_warning "Timed out while restarting $rc_name; run: service $rc_name restart"
+                else
+                    log_warning "Failed to start $rc_name automatically (exit $restart_status); run: service $rc_name start"
+                fi
             fi
         else
             log_warning "service command not found; start manually: service $rc_name start"
@@ -1202,9 +1362,24 @@ install_binary() {
     
     # Install
     stop_service_if_running
-    chmod +x "$binary_path"
-    cp "$binary_path" "$INSTALL_DIR/cert-ctrl"
-    log_success "Binary installed"
+    if safe_replace_binary "$binary_path" "$INSTALL_DIR/cert-ctrl"; then
+        log_success "Binary installed"
+    else
+        log_error "Failed to install binary into $INSTALL_DIR"
+        if [ "$SERVICE_MANAGER" = "freebsd-rcd" ]; then
+            local rc_name
+            rc_name=$(get_freebsd_service_name)
+            log_info "Ensure service is stopped: service $rc_name stop"
+        elif [ "$SERVICE_MANAGER" = "systemd" ]; then
+            log_info "Ensure service is stopped: systemctl stop $SERVICE_NAME"
+        elif [ "$SERVICE_MANAGER" = "openrc" ]; then
+            local openrc_name
+            openrc_name=$(get_openrc_service_name)
+            log_info "Ensure service is stopped: rc-service $openrc_name stop"
+        fi
+        rm -rf "$extract_dir"
+        exit 1
+    fi
 
     install_config_files "$extract_dir"
     install_service_unit
@@ -1390,6 +1565,8 @@ main() {
     log_verbose "Config directory: $CONFIG_DIR"
     log_verbose "Service install: $INSTALL_SERVICE (enable=$ENABLE_SERVICE)"
     
+    require_root_privileges
+
     detect_os_release
 
     SERVICE_MANAGER=$(detect_service_manager)
