@@ -389,7 +389,7 @@ VoidPureIO LoginHandler::start() {
         if (reused) {
           self->output_hub_.printer().green()
               << "Existing device session is still "
-                 "valid; skipping device authorization."
+                 "valid; skipping device authorization, add --force to override."
               << std::endl;
           return VoidPureIO::pure();
         }
