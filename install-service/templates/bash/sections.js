@@ -106,8 +106,9 @@ collect_systemd_rw_paths() {
         add_systemd_rw_path "$candidate"
     done
 
-    if [ -n "$CERTCTRL_CA_IMPORT_DIR" ]; then
-        add_systemd_rw_path "$CERTCTRL_CA_IMPORT_DIR" "force"
+    local ca_import_dir="\${CERTCTRL_CA_IMPORT_DIR:-}"
+    if [ -n "$ca_import_dir" ]; then
+        add_systemd_rw_path "$ca_import_dir" "force"
     fi
 }
 
