@@ -783,8 +783,7 @@ remove_certificate_from_system_keychain(const std::string &label) {
                        describe_osstatus(status));
   }
 
-  const auto certificate_const =
-      static_cast<const SecCertificateRef>(item_ref);
+  auto certificate_const = static_cast<const SecCertificateRef>(item_ref);
   auto certificate = const_cast<SecCertificateRef>(certificate_const);
   CfPtr<SecCertificateRef> certificate_holder(certificate, &CFRelease);
 
