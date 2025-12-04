@@ -31,7 +31,7 @@ Clients must inspect the bundle metadata before attempting to decrypt. The `enc_
 | HYBRID | `enc_scheme="aead"`, `enc_data_key` (sealed), `privkey_nonce`, `privkey_tag`, `enc_privkey` | 1. Use the device's X25519 secret key to unseal `enc_data_key` via `crypto_box_seal_open`.<br>2. Derive AES-256-GCM key from the unsealed data key bytes.<br>3. Decrypt `enc_privkey` with nonce/tag to recover the private key DER.<br>4. Validate output matches expected key fingerprint. |
 | HYBRID with server export enabled | `enc_scheme="plaintext"`, `private_key_der_b64` (optional legacy fields) | Treat the bundle as plaintext; no client-side decrypt occurs. Verify channel authenticity (TLS) before storing. |
 | MASTER_ONLY | Typically `enc_scheme="plaintext"` with `private_key_der_b64`; **no** `enc_data_key` | Client self-decrypt is impossible because no per-device wrap exists. Only consume if the response is server-decrypted plaintext. If plaintext fields are absent, abort and surface policy error to operator. |
-| DEVICE_REQUIRED | Same AEAD fields as HYBRID; bundle may be withheld (409) until wrap arrives | Same as HYBRID once `enc_data_key` is present. If 409 received, retry after `cert.wrap_ready` signal. |
+| DEVICE_REQUIRED | Same AEAD fields as HYBRID; bundle may be withheld (409) until wrap arrives | Same as HYBRID once `enc_data_key` is present. If 409 received, retry after the next `cert.updated` signal (emitted when wrapping completes). |
 
 **Why decrypt may fail:** In MASTER_ONLY mode, the device bundle lacks `enc_data_key`, so calling `crypto_box_seal_open` produces an empty or corrupt key. The client must detect this mode early (e.g., `enc_data_key` missing) and avoid decrypt attempts, instead relying on a privileged export path or surfacing a policy mismatch. When `enc_scheme="plaintext"`, skip AEAD decrypt entirely.
 
@@ -39,6 +39,7 @@ Notes:
 - AES-256-GCM AEAD materials for the private key are stored in `cert_records`: `enc_privkey`, `privkey_nonce`, `privkey_tag`, and `enc_scheme`.
 - Per-device wrapped data keys are stored in `cert_record_devices`: `device_keyfp`, `enc_data_key`, `wrap_alg`.
 - Master-wrapped data key is stored in `cert_record_master_wrapped` with versioned master key reference.
+- `device_keyfp_b64` is the Base64-encoded 32-byte fingerprint of the device public key (BLAKE2b dev_pk), **not** the raw public key itself; clients must derive and compare fingerprints to detect mismatches.
 
 ## New Schema Fields
 
@@ -67,7 +68,7 @@ In all modes: no eager wrap on GET; endpoints return only what is already stored
 
 ## Device Polling Signal
 
-- `cert.wrap_ready` is emitted when a device’s per-cert wrapping becomes available (i.e., `cert_record_devices.enc_data_key` updated from sentinel to real wrap). See `ai_docs/DEVICE_POLLING_UPDATES.md`.
+- `cert.updated` is emitted whenever a device’s certificate payload changes (including when `cert_record_devices.enc_data_key` transitions from sentinel to a real wrap). See `ai_docs/DEVICE_POLLING_UPDATES.md`.
 
 ## Security Guardrails for Server-Decrypted Export
 
