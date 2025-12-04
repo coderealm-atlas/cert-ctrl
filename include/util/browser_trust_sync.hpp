@@ -18,6 +18,8 @@ class BrowserTrustSync {
       const std::optional<std::string> &previous_alias,
       const std::filesystem::path &ca_pem_path);
 
+  std::optional<std::string> remove_ca_alias(const std::string &alias);
+
  private:
   customio::ConsoleOutput &output_;
   std::filesystem::path runtime_dir_;

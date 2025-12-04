@@ -128,7 +128,10 @@ Currently defined types:
     - `ca_id` (int64)
     - `serial` (string, CA serial number)
     - `ca_name` (string, display name)
-  - Action: Device should fetch the CA bundle via `GET /apiv1/devices/self/cas/:ca_id/bundle` to ensure trust stores are updated.
+  - Action: Device should immediately fetch the CA bundle via
+    `GET /apiv1/devices/self/cas/:ca_id/bundle`, stage it under
+    `resources/cas/<id>/current`, and run the built-in `import_ca` flow so that
+    OS/Browser trust stores are updated without waiting for `install.updated`.
 
 - ca.unassigned
   - Meaning: A previously assigned self-managed CA has been removed from this device.
@@ -136,7 +139,10 @@ Currently defined types:
     - `ca_id` (int64)
     - `serial` (string, CA serial number)
     - `ca_name` (string, display name)
-  - Action: Device should remove the CA from local trust stores if present. The device can confirm absence via `GET /apiv1/devices/self/cas/:ca_id/bundle`.
+  - Action: Device purges any cached bundle, removes `resources/cas/<id>` if present,
+    and runs the `import_ca` removal path so OS/browser trust stores drop the CA
+    immediately. The device can confirm absence via
+    `GET /apiv1/devices/self/cas/:ca_id/bundle` if needed.
 
 Note: The set is extensible; clients must ignore unknown `type` values gracefully.
 

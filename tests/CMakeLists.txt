@@ -343,6 +343,24 @@ certctrl_use_static_atomic(test_exec_action)
 
 gtest_discover_tests(test_exec_action DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
+add_executable(test_device_update_signals
+  test_device_update_signals.cpp
+)
+target_compile_features(test_device_update_signals PRIVATE cxx_std_17)
+target_include_directories(test_device_update_signals PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+)
+target_link_libraries(test_device_update_signals PRIVATE
+  GTest::gtest_main
+  Boost::json
+  certctrl_libatomic
+)
+
+certctrl_use_static_atomic(test_device_update_signals)
+
+gtest_discover_tests(test_device_update_signals DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+
 add_executable(test_import_ca_action
   test_import_ca_action.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp

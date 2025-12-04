@@ -29,6 +29,8 @@
 #include "handlers/install_config_manager.hpp"
 #include "handlers/session_refresher.hpp"
 #include "handlers/signal_dispatcher.hpp"
+#include "handlers/signal_handlers/ca_assigned_handler.hpp"
+#include "handlers/signal_handlers/ca_unassigned_handler.hpp"
 #include "handlers/signal_handlers/cert_renewed_handler.hpp"
 #include "handlers/signal_handlers/cert_revoked_handler.hpp"
 #include "handlers/signal_handlers/install_updated_handler.hpp"
@@ -168,6 +170,14 @@ public:
 
       signal_dispatcher_->register_handler(
           std::make_shared<signal_handlers::CertRevokedHandler>(
+              install_config_manager_, output_hub_));
+
+        signal_dispatcher_->register_handler(
+          std::make_shared<signal_handlers::CaAssignedHandler>(
+            install_config_manager_, output_hub_));
+
+          signal_dispatcher_->register_handler(
+            std::make_shared<signal_handlers::CaUnassignedHandler>(
               install_config_manager_, output_hub_));
     }
 
@@ -393,25 +403,24 @@ private:
     // Store response
     last_updates_ = std::move(resp);
 
-    // Dispatch signals synchronously
-    for (const auto &signal : last_updates_->data.signals) {
-      // Update counters
-      if (signal.type == "install.updated")
-        ++install_updated_count_;
-      else if (signal.type == "cert.renewed")
-        ++cert_renewed_count_;
-      else if (signal.type == "cert.revoked")
-        ++cert_revoked_count_;
+    auto self = shared_from_this();
+    auto dispatch_chain = monad::IO<void>::pure();
 
-      // Dispatch to handler (runs synchronously, errors caught internally)
-      signal_dispatcher_->dispatch(signal).run(
-          [](monad::Result<void, monad::Error>) {
-            // Errors already logged by dispatcher, just ignore result
-          });
+    for (const auto &signal : last_updates_->data.signals) {
+      if (signal.type == "install.updated") {
+        ++install_updated_count_;
+      } else if (signal.type == "cert.renewed") {
+        ++cert_renewed_count_;
+      } else if (signal.type == "cert.revoked") {
+        ++cert_revoked_count_;
+      }
+
+      auto signal_copy = signal;
+      dispatch_chain = dispatch_chain.then(
+          [self, signal_copy]() { return self->signal_dispatcher_->dispatch(signal_copy); });
     }
 
-    return monad::IO<void>::from_result(
-        monad::Result<void, monad::Error>::Ok());
+    return dispatch_chain;
   }
 
   template <typename ExchangePtr>
