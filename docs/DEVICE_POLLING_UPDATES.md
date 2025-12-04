@@ -58,11 +58,19 @@ Removed legacy: `device_id` query parameter (now derived exclusively from token 
             }
           },
           {
-            "type": "cert.renewed",
+            "type": "cert.updated",
             "ts_ms": 1736900124500,
             "ref": {
               "cert_id": 9981,
-              "serial": "04:ab:..."
+              "wrap_ready": true,
+              "wrap_alg": "x25519"
+            }
+          },
+          {
+            "type": "cert.unassigned",
+            "ts_ms": 1736900124800,
+            "ref": {
+              "cert_id": 5544
             }
           }
         ]
@@ -101,26 +109,19 @@ Currently defined types:
     - `installs_hash_b64` (string, base64 of BLOB; optional if NULL in DB)
   - Action: Client should fetch the current install config from `GET /apiv1/devices/self/install-config`.
 
-- cert.renewed
-  - Meaning: A certificate used by this device has been renewed/rotated.
+- cert.updated
+  - Meaning: The certificate payload for this device changed (new attachment, renewal, rewrap, policy flip, etc.). Emitted for both master-only certificates and those that deliver per-device wraps.
   - ref fields:
     - `cert_id` (int64)
-    - `serial` (string, optional)
-  - Action: Client may refetch material from `GET /apiv1/devices/self/certificates/:certificate_id/bundle` or wait until deployment instructions arrive via config.
+    - `wrap_ready` (bool, optional — present and `true` when a per-device wrap/encryption bundle is ready)
+    - `wrap_alg` (string, optional — e.g., `x25519` when `wrap_ready=true`)
+  - Action: Always call `GET /apiv1/devices/self/certificates/:certificate_id/deploy-materials`. Devices should inspect the payload to determine whether a per-device wrap is provided, plaintext export is required, or policy forbids download. If the endpoint responds with `409 WRAP_PENDING`, back off and retry; another `cert.updated` will be emitted once wrapping completes.
 
-- cert.revoked
-  - Meaning: A certificate used by this device has been revoked or removed.
+- cert.unassigned
+  - Meaning: The certificate is no longer assigned to this device (revocation, manual detach, or policy change).
   - ref fields:
     - `cert_id` (int64)
-  - Action: Remove local usage; rely on install config follow-ups. If needed, validate absence via `GET /apiv1/devices/self/certificates/:certificate_id/bundle`.
-
-- cert.wrap_ready
-  - Meaning: Per-device wrapped data key for a certificate is now available (the pending sentinel is cleared). This is emitted when `cert_record_devices.enc_data_key` transitions from the 48-byte zero sentinel to a real wrapped key for this device.
-  - ref fields:
-    - `cert_id` (int64)
-    - `device_keyfp_b64` (string, base64 of `cert_record_devices.device_keyfp`)
-    - `wrap_alg` (string, e.g., `x25519`)
-  - Action: Device should fetch the certificate bundle via `GET /apiv1/devices/self/certificates/:certificate_id/bundle`. If the server returns `409 WRAP_PENDING`, back off and retry later.
+  - Action: Remove local copies, stop deployments, and rely on install config sync for cleanup. Optional follow-up call to `GET /apiv1/devices/self/certificates/:certificate_id/deploy-materials` should return 404/410 once the backend finishes pruning state.
 
 - ca.assigned
   - Meaning: A self-managed CA has been assigned to this device.
@@ -128,10 +129,7 @@ Currently defined types:
     - `ca_id` (int64)
     - `serial` (string, CA serial number)
     - `ca_name` (string, display name)
-  - Action: Device should immediately fetch the CA bundle via
-    `GET /apiv1/devices/self/cas/:ca_id/bundle`, stage it under
-    `resources/cas/<id>/current`, and run the built-in `import_ca` flow so that
-    OS/Browser trust stores are updated without waiting for `install.updated`.
+  - Action: Device should fetch the CA bundle via `GET /apiv1/devices/self/cas/:ca_id/bundle` to ensure trust stores are updated.
 
 - ca.unassigned
   - Meaning: A previously assigned self-managed CA has been removed from this device.
@@ -139,10 +137,7 @@ Currently defined types:
     - `ca_id` (int64)
     - `serial` (string, CA serial number)
     - `ca_name` (string, display name)
-  - Action: Device purges any cached bundle, removes `resources/cas/<id>` if present,
-    and runs the `import_ca` removal path so OS/browser trust stores drop the CA
-    immediately. The device can confirm absence via
-    `GET /apiv1/devices/self/cas/:ca_id/bundle` if needed.
+  - Action: Device should remove the CA from local trust stores if present. The device can confirm absence via `GET /apiv1/devices/self/cas/:ca_id/bundle`.
 
 Note: The set is extensible; clients must ignore unknown `type` values gracefully.
 
@@ -174,30 +169,35 @@ Implementation notes:
 - For the outbox flow the enqueue call serializes a JSON payload shaped exactly as the signal and stores it alongside metadata (device id, event kind, attempt counters)
 - The dispatcher trims streams to MAXLEN ~1000 (approximate) once the entry lands in Redis so in-flight reconnects do not blow up memory
 
-## Integrating certificate wrap readiness (enc_data_key)
+## Integrating certificate updates
 
-Emit a `cert.wrap_ready` signal when a device’s per-cert wrapping becomes available. This typically occurs after background issuance/rotation completes and `cert_record_devices.enc_data_key` is updated from the pending sentinel (48 zero bytes) to a real wrapped key.
+Emit a `cert.updated` signal whenever a device’s certificate payload changes, regardless of key distribution mode:
 
-Where to emit:
-- After a successful update in certificate persistence paths (e.g., `AcmeStoreMysql::update_cert(...)`) when upserting `cert_record_devices` rows for each device
-- Only emit for rows whose `enc_data_key` transitioned from sentinel → non-sentinel for that device
+- New attachment (including master-only certs)
+- Renewal/reissue that refreshes AEAD material
+- Transition from pending sentinel → actual per-device wrap
+- Policy flips that enable/disable plaintext export
+
+Set the optional `wrap_ready` flag to `true` only when the row in `cert_record_devices` has a non-sentinel `enc_data_key`. Leave it absent/false for master-only flows so clients know to expect plaintext or policy-driven behavior after fetching the bundle.
 
 Reference payload shape:
 ```json
 {
-  "type": "cert.wrap_ready",
+  "type": "cert.updated",
   "ts_ms": <now_ms>,
   "ref": {
     "cert_id": <cert_record_devices.cert_record_id>,
-    "device_keyfp_b64": <base64(cert_record_devices.device_keyfp)>,
-    "wrap_alg": <cert_record_devices.wrap_alg>
+    "wrap_ready": true,
+    "wrap_alg": "x25519"
   }
 }
 ```
 
+When a certificate is detached from a device, emit `cert.unassigned` with the same `cert_id` reference immediately after deleting the `cert_record_devices` row. Many detach flows also trigger an `install.updated`; emitting both keeps agents consistent.
+
 Notes:
-- The signal is per-device and should be pushed to that device’s stream/log only.
-- If the same cert is wrapped for multiple devices, each device receives an independent `cert.wrap_ready` with its own fingerprint.
+- Signals remain per-device; multi-device certificates generate one row per device.
+- Duplicate suppression is left to the consumer; emitters should enqueue whenever state actually changes (e.g., compare against sentinel before toggling `wrap_ready`).
 
 ## Delivery backend (outbox dispatcher)
 
@@ -209,7 +209,7 @@ Pipeline overview:
 3. **Dispatcher** (`bbdb::sql::DeviceUpdateOutboxDispatcher`) claims small batches via `claim_batch(dispatcher_id, lease_ttl, batch_size)`. Claiming sets `claimed_by`, `claimed_at`, and `lock_expires_at` to prevent duplicate delivery while the worker processes the batch.
 4. For each row the dispatcher calls `DeviceUpdatePublisher::publish_envelope(device_id, payload_object)` which pushes an entry to `device:updates:<device_id>` with `MAXLEN ~` 1000 (approximate trimming). On success the row id is queued for `mark_delivered`; on failure the dispatcher collects retry metadata.
 5. **Failure handling**: transient failures increment `attempts`, set `next_attempt_at = now + retry_delay`, and release the row back to `PENDING`. Exponential backoff is bounded by dispatcher options (`base_retry_delay`, `max_retry_delay`, `max_attempts`). Permanent failures set status `FAILED` and keep the last error message for diagnostics.
-6. **Runner** (`bbserver::DeviceUpdateOutboxRunner`) lives inside `bbserver` and drives the dispatcher. It uses the shared `IIoContextManager` to schedule `run_once()` on an `asio::steady_timer`. After any successful delivery it immediately schedules another tick (`delay=0`) to drain the backlog; when no work was found it waits `interval_seconds` (default 5) before polling again.
+6. **Runner** (`bbserver::DeviceUpdateOutboxRunner`) lives inside `bbserver` and drives the dispatcher. It now owns its own `asio::io_context` + worker thread and schedules `run_once()` via an internal `asio::steady_timer`. After any successful delivery it immediately schedules another tick (`delay=0`) to drain the backlog; when no work was found it waits `interval_seconds` (default 5) before polling again.
 7. **Configuration** comes from `outbox::UpdateOutboxConfigProvider`. Options include poll interval, batch size, lease TTL, retry timings, and dispatcher id prefix. Tunables live in `apps/bbserver/config_dir/update_outbox_config.*`.
 
 Operational visibility:
@@ -232,12 +232,12 @@ Runbook hints:
 - Error handling: Use monadic error propagation and standard error JSON body.
 
 Production hint:
-- Sources that should enqueue signals include: device install config upserts/restores (`install.updated`) and certificate issuance/rotation/wrap completion (`cert.renewed`, `cert.wrap_ready`).
+- Sources that should enqueue signals include: device install config upserts/restores (`install.updated`) and any certificate attachment/renewal/wrap completion (`cert.updated`).
   - Self CA assignments/removals should enqueue `ca.assigned` / `ca.unassigned` respectively.
 
 ### Related device self routes (from the server route table)
 - Install config fetch: `GET /apiv1/devices/self/install-config`
-- Certificate bundle: `GET /apiv1/devices/self/certificates/:certificate_id/bundle`
+- Certificate deploy materials: `GET /apiv1/devices/self/certificates/:certificate_id/deploy-materials`
 - CA bundle: `GET /apiv1/devices/self/cas/:ca_id/bundle`
 
 ## Client guidance
@@ -249,7 +249,7 @@ Production hint:
 - On 409 (cursor expired), clear cursor and retry; optionally perform a state resync.
 - Handle unknown `type` values by ignoring them.
 - For `install.updated`: refetch install config; compare `version` or `installs_hash_b64` if needed.
-- For `cert.wrap_ready`: call the certificate bundle self endpoint to retrieve the AEAD materials. If a 409 WRAP_PENDING is still returned, treat it as a race; back off and retry.
+- For `cert.updated`: call the certificate bundle self endpoint to retrieve the deploy materials. Handle 409 WRAP_PENDING (wrap still pending) by backing off and waiting for the next update; treat 404/410 as confirmation that the cert was removed.
 
 ## Examples
 
@@ -279,20 +279,18 @@ Production hint:
             }
           },
           {
-            "type": "cert.renewed",
+          "type": "cert.updated",
             "ts_ms": 1736900124500,
             "ref": {
               "cert_id": 9981,
-              "serial": "04:ab:..."
+              "wrap_ready": true
             }
           },
           {
-            "type": "cert.wrap_ready",
+            "type": "cert.unassigned",
             "ts_ms": 1736900124800,
             "ref": {
-              "cert_id": 9981,
-              "device_keyfp_b64": "wJK...2g==",
-              "wrap_alg": "x25519"
+              "cert_id": 5544
             }
           }
         ]
@@ -311,9 +309,9 @@ Production hint:
 - `device_install_configs.id` -> `ref.config_id`
 - `device_install_configs.version` -> `ref.version`
 - `device_install_configs.installs_hash` -> `ref.installs_hash_b64` (base64-encoded; omit or set null if DB is NULL)
-- `cert_record_devices.cert_record_id` -> `ref.cert_id` (for `cert.wrap_ready`)
-- `cert_record_devices.device_keyfp` -> `ref.device_keyfp_b64` (base64; for `cert.wrap_ready`)
-- `cert_record_devices.wrap_alg` -> `ref.wrap_alg` (string; for `cert.wrap_ready`)
+- `cert_record_devices.cert_record_id` -> `ref.cert_id` (for `cert.updated` / `cert.unassigned`)
+- `cert_record_devices.device_keyfp` -> `ref.device_keyfp_b64` (optional; include when `wrap_ready=true`)
+- `cert_record_devices.wrap_alg` -> `ref.wrap_alg` (optional; include when `wrap_ready=true`)
 
 ## Open points (non-blocking)
 
@@ -327,5 +325,5 @@ Acceptance criteria
 - Endpoint returns 204 with ETag when idle
 - Endpoint returns 200 with `data.cursor` and `data.signals[]`
 - `install.updated` is emitted on install config changes and contains `config_id`, `version`, and `installs_hash_b64`
-- `cert.wrap_ready` is emitted when a per-device wrap becomes available and contains `cert_id`, `device_keyfp_b64`, and `wrap_alg`
+- `cert.updated` is emitted whenever certificate payload changes and contains `cert_id` plus optional wrap metadata
 - Clients can resume using the opaque cursor without data loss or duplication

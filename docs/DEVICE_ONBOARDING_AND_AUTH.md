@@ -139,7 +139,7 @@ JUnit-style example:
 > **Implementation reference:** `DeviceAuthHandler::handle_poll` returns only `status`, `registration_code`, and metadata (see `apps/bbserver/include/handler_device_auth.hpp`). The actual access/refresh tokens are minted inside `DevicesHandler::build_registration_payload` → `issue_tokens_for_device` after registration (`apps/bbserver/include/http_handlers/devices_handler.hpp`).
 
 #### Registration retries vs. long-term re-registration
-- The first successful POST that includes a valid `registration_code` claims the code and returns a `{ "device": ..., "session": ... }` payload. The `session` object contains a fresh `access_token`, `refresh_token`, token type, and `expires_in` (seconds).
+- The first successful POST that includes a valid `registration_code` claims the code and returns a `{ "device": ..., "session": ... }` payload. The `session` object contains a fresh `access_token`, `refresh_token`, token type, and `expires_in` (seconds sourced from `apps/bbserver/config_dir/jwt_config.json` → `access_token_ttl_seconds`, 3600s by default).
 - Immediate retries for the **same authorization window** (e.g. network hiccup during the first POST) should reuse the existing device row. You can resend the payload without a `registration_code` (optionally with the just-issued refresh token) and the backend will rotate the **refresh** token while keeping the device metadata intact. Access tokens may be reissued with the same value within that short window. The workflow script demonstrates this with a second POST via `device_register_retry`.
 - When a device has been offline long enough that its refresh token expires or is revoked, start a brand-new device authorization flow (`device_start` → approve → `device_poll`). The new `registration_code` binds to the already persisted `device_public_id`, so the server issues fresh tokens without creating another device record.
 - If a client mistakenly resubmits the original `registration_code` after the device row already exists, the backend tolerates the replay during that same window; beyond that timeframe a new authorization cycle is required.
@@ -151,9 +151,19 @@ JUnit-style example:
 | 1. Access + refresh token still valid and the user initiates login again | Prefer to keep using the existing session. If the client merely needs a longer-lived access token, exchange the current refresh token via the standard token refresh path instead of restarting `device_start`. Should the device nonetheless restart the device authorization grant, the registration step recognises the existing device row and rotates a **new** refresh/access pair while invalidating the old refresh token. | No new device record is created. Existing API calls continue to work until the device switches to the freshly issued tokens (the old access token expires naturally; the previous refresh token becomes unusable once the new one is minted). |
 | 2. Access + refresh token expired (or refresh token revoked) and the user initiates login again | Run the full device authorization loop: `device_start` → user approval → `device_poll` → `POST /apiv1/users/{user_id}/devices` with the new `registration_code`. Reuse the same `device_public_id` when posting metadata. | The server links the new authorization window to the existing device, issues a fresh token pair, and marks any lingering sessions from the stale refresh token as terminated. No duplicate device rows are created. |
 
-**Client-side validity check:** Each registration or refresh response includes the new access token (JWT) plus an `expires_in` value (currently one hour). Persist either the raw expiry timestamp (`issued_at + expires_in`) or decode the JWT and read the `exp` claim to know exactly when the token lapses—no extra network call is required.
+**Client-side validity check:** Each registration or refresh response includes the new access token (JWT) plus an `expires_in` value derived from `jwt_config.access_token_ttl_seconds` (defaults to one hour). Persist either the raw expiry timestamp (`issued_at + expires_in`) or decode the JWT and read the `exp` claim to know exactly when the token lapses—no extra network call is required.
 
 **When to call the server:** If the local check shows the access token is expiring (or an API call returns `TOKEN_EXPIRED`), send the stored refresh token to `POST /auth/refresh`. That endpoint rotates the refresh token, returns a fresh access token, and invalidates the previous refresh token. If the refresh token itself has expired or was revoked, the handler responds with `TOKEN_EXPIRED`/`INVALID_TOKEN`, signaling the client to restart the full device authorization flow.
+
+**Request payload:** `POST /auth/refresh` expects a JSON body containing the single field `refresh_token`.
+
+```json
+{
+  "refresh_token": "rt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.secret"
+}
+```
+
+The response returns `access_token`, the rotated `refresh_token`, `token_type` (always `Bearer`), and `expires_in` (seconds until the access token lapses, again controlled by `jwt_config.access_token_ttl_seconds`). Refresh tokens themselves expire according to `jwt_config.refresh_token_ttl_seconds` (30 days by default) regardless of whether they originate from the device workflow or the generic `/auth/refresh` endpoint.
 
 ### Supporting Endpoints
 - `GET /apiv1/users/{user_id}/devices` – list registered devices.
@@ -222,7 +232,7 @@ Detailed flow when the device-wrapped branch is taken:
 
 1. Insert `enc_data_key = std::vector<unsigned char>(48, 0x00)` for the device/certificate pair to mark the pending wrap.
 2. Queue a background job that collects all devices for the certificate and requests reissuance with a new data key wrapped for each device.
-3. After reissue, replace the sentinel with the real wrapped key and emit a `cert.wrap_ready` signal (see `DEVICE_POLLING_UPDATES.md`).
+3. After reissue, replace the sentinel with the real wrapped key and emit a `cert.updated` signal (see `DEVICE_POLLING_UPDATES.md`).
 4. Return `202 Accepted` to the client immediately so the foreground request stays fast.
 
 Pseudo-code:
