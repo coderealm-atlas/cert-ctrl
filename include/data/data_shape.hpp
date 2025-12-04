@@ -101,6 +101,16 @@ struct CertRevokedRef {
   int64_t cert_id{};
 };
 
+struct CaAssignedRef {
+  int64_t ca_id{};
+  std::optional<std::string> ca_name;
+};
+
+struct CaUnassignedRef {
+  int64_t ca_id{};
+  std::optional<std::string> ca_name;
+};
+
 // A generic signal; "ref" will be preserved as an object for forward
 // compatibility. A derived typed_ref variant is populated when type matches a
 // known enumerated signal.
@@ -108,8 +118,9 @@ struct DeviceUpdateSignal {
   std::string type;      // e.g. install.updated, cert.renewed
   int64_t ts_ms{};       // event time
   json::object ref;      // original lightweight reference object
-  std::variant<std::monostate, InstallUpdatedRef, CertRenewedRef, CertRevokedRef>
-      typed_ref;         // convenience decoded form (monostate if unknown)
+  std::variant<std::monostate, InstallUpdatedRef, CertRenewedRef,
+               CertRevokedRef, CaAssignedRef, CaUnassignedRef>
+      typed_ref; // convenience decoded form (monostate if unknown)
 
   friend DeviceUpdateSignal tag_invoke(
       const json::value_to_tag<DeviceUpdateSignal> &, const json::value &jv) {
@@ -164,6 +175,34 @@ struct DeviceUpdateSignal {
         CertRevokedRef r{};
         if (auto *cid = s.ref.if_contains("cert_id")) {
           r.cert_id = json::value_to<int64_t>(*cid);
+        }
+        s.typed_ref = r;
+      } else if (s.type == "ca.assigned") {
+        CaAssignedRef r{};
+        if (auto *ca = s.ref.if_contains("ca_id")) {
+          r.ca_id = json::value_to<int64_t>(*ca);
+        }
+        if (auto *name = s.ref.if_contains("ca_name")) {
+          if (name->is_string()) {
+            auto value = json::value_to<std::string>(*name);
+            if (!value.empty()) {
+              r.ca_name = std::move(value);
+            }
+          }
+        }
+        s.typed_ref = r;
+      } else if (s.type == "ca.unassigned") {
+        CaUnassignedRef r{};
+        if (auto *ca = s.ref.if_contains("ca_id")) {
+          r.ca_id = json::value_to<int64_t>(*ca);
+        }
+        if (auto *name = s.ref.if_contains("ca_name")) {
+          if (name->is_string()) {
+            auto value = json::value_to<std::string>(*name);
+            if (!value.empty()) {
+              r.ca_name = std::move(value);
+            }
+          }
         }
         s.typed_ref = r;
       } else {
@@ -224,6 +263,12 @@ inline bool is_cert_renewed(const DeviceUpdateSignal &s) {
 inline bool is_cert_revoked(const DeviceUpdateSignal &s) {
   return std::holds_alternative<CertRevokedRef>(s.typed_ref);
 }
+inline bool is_ca_assigned(const DeviceUpdateSignal &s) {
+  return std::holds_alternative<CaAssignedRef>(s.typed_ref);
+}
+inline bool is_ca_unassigned(const DeviceUpdateSignal &s) {
+  return std::holds_alternative<CaUnassignedRef>(s.typed_ref);
+}
 
 inline std::optional<InstallUpdatedRef>
 get_install_updated(const DeviceUpdateSignal &s) {
@@ -243,6 +288,18 @@ get_cert_revoked(const DeviceUpdateSignal &s) {
     return *p;
   return std::nullopt;
 }
+inline std::optional<CaAssignedRef>
+get_ca_assigned(const DeviceUpdateSignal &s) {
+  if (auto p = std::get_if<CaAssignedRef>(&s.typed_ref))
+    return *p;
+  return std::nullopt;
+}
+inline std::optional<CaUnassignedRef>
+get_ca_unassigned(const DeviceUpdateSignal &s) {
+  if (auto p = std::get_if<CaUnassignedRef>(&s.typed_ref))
+    return *p;
+  return std::nullopt;
+}
 
 } // namespace data
 
@@ -251,6 +308,8 @@ get_cert_revoked(const DeviceUpdateSignal &s) {
 namespace certctrl::data {
 using ::data::CertRenewedRef;
 using ::data::CertRevokedRef;
+using ::data::CaAssignedRef;
+using ::data::CaUnassignedRef;
 using ::data::DeviceUpdateSignal;
 using ::data::DeviceUpdatesData;
 using ::data::DeviceUpdatesResponse;

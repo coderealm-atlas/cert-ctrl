@@ -79,12 +79,17 @@ public:
   monad::IO<void>
   apply_copy_actions_for_signal(const ::data::DeviceUpdateSignal &signal);
 
+  monad::IO<void> handle_ca_assignment(
+      std::int64_t ca_id, std::optional<std::string> ca_name);
+    monad::IO<void> handle_ca_unassignment(
+      std::int64_t ca_id, std::optional<std::string> ca_name);
+
   std::shared_ptr<dto::DeviceInstallConfigDto> cached_config_snapshot();
 
   void clear_cache();
     void invalidate_all_caches();
     void invalidate_resource_cache(const std::string &ob_type,
-                                                                 std::int64_t ob_id);
+                     std::int64_t ob_id);
 
 private:
   monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>

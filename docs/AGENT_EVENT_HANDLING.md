@@ -13,8 +13,12 @@ mapped to `data::DeviceUpdateSignal` with one of the following concrete types:
 - `install.updated` &rarr; indicates that a new install-config version is ready.
 - `cert.renewed` &rarr; certificate materials were regenerated in place.
 - `cert.revoked` &rarr; certificate is no longer usable (cleanup path).
-- Future: CA / certificate assignment changes can be surfaced with additional
-  signal types; the handling strategy mirrors the certificate workflow.
+- `ca.assigned` &rarr; control plane granted this device a new CA trust anchor;
+  the agent immediately stages the CA bundle and imports it into the platform
+  trust stores without waiting for a broader install-config update.
+- `ca.unassigned` &rarr; a previously granted CA should be removed; the agent
+  deletes cached materials and removes the CA from system/browser trust stores
+  automatically.
 
 ## Runtime Caches
 
@@ -25,7 +29,6 @@ Two layers are cached under the runtime directory:
 - `resources/<cert|ca>/<id>/current` stores the latest materials fetched for an
   install item (PEM, DER, PKCS#12, metadata, etc.). Password material is tracked
   in-memory by `MaterializePasswordManager`.
-
 ## Automatic Invalidation
 
 `InstallConfigManager::apply_copy_actions_for_signal` is the central dispatcher
@@ -45,7 +48,15 @@ now:
   moment we do not attempt to delete destination files, but they will no longer
   be refreshed. Follow-up work will add explicit removal/quarantine logic when
   revoke semantics are finalised.
-
+- **ca.assigned** – the handler invalidates any cached CA bundle, downloads the
+  new CA payload directly from `/devices/self/cas/<id>/bundle`, writes it under
+  `resources/cas/<id>/current`, and runs the `import_ca` pipeline. This path
+  skips install-config exec items entirely so that CA trust updates can execute
+  automatically even when `auto_apply_config=false`.
+- **ca.unassigned** – cached CA resources are purged, the corresponding trust
+  anchors (`resources/cas/<id>` plus system/browser stores) are removed, and
+  platform-specific update commands are executed so hosts stop trusting the
+  revoked CA without waiting for manual intervention.
 These steps ensure that frequent certificate rotations invalidate cached
 materials even if the install-config version remains unchanged.
 

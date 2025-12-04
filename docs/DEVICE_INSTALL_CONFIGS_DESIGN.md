@@ -160,6 +160,27 @@ Import CA
 - Agent behavior: fetch the CA resource, ensure the PEM is accessible, perform the platform-specific trust-store import, and log the outcome distinctly from normal copy operations.
 - If `enabled` is `false`, the agent skips both the import and any optional copy work.
 
+### Platform-specific behavior
+
+- **Linux (Debian/Ubuntu, RHEL/Fedora, SUSE)** – the handler looks for the
+  distribution trust anchor directory under `/usr/local/share/ca-certificates`,
+  `/etc/pki/ca-trust/source/anchors`, or `/usr/share/pki/trust/anchors`, writes
+  the PEM there, and executes the matching update command (`update-ca-certificates`
+  or `update-ca-trust extract`). Operators can override both pieces via
+  `CERTCTRL_CA_IMPORT_DIR` and `CERTCTRL_CA_UPDATE_COMMAND` when running on
+  derivatives with different layouts.
+- **FreeBSD** – auto-detection is not implemented yet. To reuse the same flow,
+  set `CERTCTRL_CA_IMPORT_DIR` (for example `/usr/local/share/certs`) and
+  `CERTCTRL_CA_UPDATE_COMMAND` (for example `certctl rehash`) in the service
+  environment so the handler knows where to stage trust anchors and which
+  command to run after writes. Without the override `import_ca` items will skip
+  with a warning.
+- **macOS** – files are staged under `/Library/Caches/certctrl/trust-anchors`
+  and then imported into the system keychain via the Security framework
+  (`SecItemAdd` + trust settings). This uses the admin trust domain so the CA is
+  trusted by all users and system services. Removal paths use the same APIs to
+  delete the certificate and clear trust settings.
+
 ### Example (server → agent)
 
 ```json

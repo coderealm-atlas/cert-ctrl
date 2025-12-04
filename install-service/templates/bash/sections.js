@@ -48,6 +48,69 @@ STATE_DIR_NAME="$(basename "$STATE_DIR")"
 RESTART_SERVICE_AFTER_INSTALL="false"
 SHA256_CMD=()
 
+declare -a SYSTEMD_EXTRA_RW_PATHS=()
+
+add_systemd_rw_path() {
+    local candidate="$1"
+    local force="\${2:-false}"
+
+    if [ -z "$candidate" ]; then
+        return 0
+    fi
+
+    if [ "$force" != "force" ] && [ ! -e "$candidate" ]; then
+        return 0
+    fi
+
+    if [ "$candidate" = "$CONFIG_DIR" ] || [ "$candidate" = "$STATE_DIR" ]; then
+        return 0
+    fi
+
+    local existing
+    for existing in "\${SYSTEMD_EXTRA_RW_PATHS[@]}"; do
+        if [ "$existing" = "$candidate" ]; then
+            return 0
+        fi
+    done
+
+    SYSTEMD_EXTRA_RW_PATHS+=("$candidate")
+}
+
+collect_systemd_rw_paths() {
+    SYSTEMD_EXTRA_RW_PATHS=()
+
+    local -a linux_candidates=(
+        "/usr/local/share/ca-certificates"
+        "/etc/ssl/certs"
+        "/etc/ca-certificates"
+        "/etc/pki/ca-trust"
+        "/etc/pki/ca-trust/source/anchors"
+        "/etc/pki/ca-trust/extracted"
+        "/usr/share/pki/trust/anchors"
+        "/var/lib/ca-certificates"
+    )
+
+    local -a freebsd_candidates=(
+        "/usr/local/share/certs"
+        "/usr/local/etc/ssl/certs"
+        "/etc/ssl/certs"
+    )
+
+    local -a candidate_list=("\${linux_candidates[@]}")
+    if [ "$OS_ID" = "freebsd" ]; then
+        candidate_list=("\${freebsd_candidates[@]}")
+    fi
+
+    local candidate
+    for candidate in "\${candidate_list[@]}"; do
+        add_systemd_rw_path "$candidate"
+    done
+
+    if [ -n "$CERTCTRL_CA_IMPORT_DIR" ]; then
+        add_systemd_rw_path "$CERTCTRL_CA_IMPORT_DIR" "force"
+    fi
+}
+
 OS_ID=""
 OS_VERSION_ID=""
 OS_NAME=""
@@ -1043,9 +1106,38 @@ install_systemd_service_unit() {
     sed -i "s|@@STATE_DIR_NAME@@|$STATE_DIR_NAME|g" "$unit_path"
     sed -i "s|@@STATE_DIR@@|$STATE_DIR|g" "$unit_path"
 
+    collect_systemd_rw_paths
+
+    local -a combined_readwrite_paths=()
+    local extra_path
+
+    if [ \${#SYSTEMD_EXTRA_RW_PATHS[@]} -gt 0 ]; then
+        for extra_path in "\${SYSTEMD_EXTRA_RW_PATHS[@]}"; do
+            combined_readwrite_paths+=("$extra_path")
+        done
+        log_verbose "Granting write access to trust store paths: \${SYSTEMD_EXTRA_RW_PATHS[*]}"
+    fi
+
+    for extra_path in "\${preserved_readwrite_paths[@]}"; do
+        if [ "$extra_path" = "$CONFIG_DIR" ] || [ "$extra_path" = "$STATE_DIR" ]; then
+            continue
+        fi
+        local already_present="false"
+        local existing_path
+        for existing_path in "\${combined_readwrite_paths[@]}"; do
+            if [ "$existing_path" = "$extra_path" ]; then
+                already_present="true"
+                break
+            fi
+        done
+        if [ "$already_present" = "false" ]; then
+            combined_readwrite_paths+=("$extra_path")
+        fi
+    done
+
     local extra_readwrite_block=""
-    if [ \${#preserved_readwrite_paths[@]} -gt 0 ]; then
-        extra_readwrite_block=$(printf 'ReadWritePaths=%s\n' "\${preserved_readwrite_paths[@]}")
+    if [ \${#combined_readwrite_paths[@]} -gt 0 ]; then
+        extra_readwrite_block=$(printf 'ReadWritePaths=%s\n' "\${combined_readwrite_paths[@]}")
     fi
 
     local tmp_unit=$(mktemp)

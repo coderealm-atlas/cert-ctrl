@@ -1225,6 +1225,78 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
   return ReturnIO::pure();
 }
 
+monad::IO<void> InstallConfigManager::handle_ca_assignment(
+    std::int64_t ca_id, std::optional<std::string> ca_name) {
+  using ReturnIO = monad::IO<void>;
+
+  if (ca_id <= 0) {
+    return ReturnIO::pure();
+  }
+
+  if (!import_ca_action_handler_factory_) {
+    return ReturnIO::fail(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "ImportCaActionHandler factory not configured"));
+  }
+
+  auto import_handler = import_ca_action_handler_factory_();
+  if (!import_handler) {
+    return ReturnIO::fail(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                          "ImportCaActionHandler factory returned null"));
+  }
+
+  invalidate_resource_cache("ca", ca_id);
+
+  dto::InstallItem ca_item;
+  ca_item.id = fmt::format("ca-{}-auto", ca_id);
+  ca_item.type = "import_ca";
+  ca_item.enabled = true;
+  ca_item.ob_type = std::string("ca");
+  ca_item.ob_id = ca_id;
+  if (ca_name && !ca_name->empty()) {
+    ca_item.ob_name = *ca_name;
+  }
+  ca_item.tags = {"ca-install", "auto"};
+  ca_item.from = std::vector<std::string>{"ca.pem"};
+
+  dto::DeviceInstallConfigDto config;
+  config.installs.emplace_back(std::move(ca_item));
+
+  output_.logger().info()
+      << "Applying ca.assigned for CA " << ca_id << std::endl;
+
+  return import_handler->apply(config, std::string("ca"), ca_id);
+}
+
+monad::IO<void> InstallConfigManager::handle_ca_unassignment(
+    std::int64_t ca_id, std::optional<std::string> ca_name) {
+  using ReturnIO = monad::IO<void>;
+  if (ca_id <= 0) {
+    return ReturnIO::pure();
+  }
+
+  if (!import_ca_action_handler_factory_) {
+    return ReturnIO::fail(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "ImportCaActionHandler factory not configured"));
+  }
+
+  auto import_handler = import_ca_action_handler_factory_();
+  if (!import_handler) {
+    return ReturnIO::fail(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                          "ImportCaActionHandler factory returned null"));
+  }
+
+  invalidate_resource_cache("ca", ca_id);
+
+  output_.logger().info()
+      << "Applying ca.unassigned for CA " << ca_id << std::endl;
+
+  return import_handler->remove_ca(ca_id, ca_name);
+}
+
 std::optional<std::unordered_map<std::string, std::string>>
 InstallConfigManager::resolve_exec_env_for_item(const dto::InstallItem &item) {
   if (!item.ob_type || !item.ob_id) {

@@ -35,7 +35,7 @@ namespace {
 #if defined(__linux__)
 
 struct CommandResult {
-  int exit_code{ -1 };
+  int exit_code{-1};
   std::string stdout_data;
   std::string stderr_data;
 
@@ -145,14 +145,16 @@ std::optional<std::filesystem::path> find_certutil() {
       if (segment.empty()) {
         continue;
       }
-      std::filesystem::path candidate = std::filesystem::path(segment) / "certutil";
+      std::filesystem::path candidate =
+          std::filesystem::path(segment) / "certutil";
       if (is_executable(candidate)) {
         return candidate;
       }
     }
   }
 
-  std::array<const char *, 3> fallbacks{"/usr/bin/certutil", "/usr/local/bin/certutil", "/bin/certutil"};
+  std::array<const char *, 3> fallbacks{
+      "/usr/bin/certutil", "/usr/local/bin/certutil", "/bin/certutil"};
   for (const char *fb : fallbacks) {
     std::filesystem::path candidate(fb);
     if (is_executable(candidate)) {
@@ -172,7 +174,8 @@ struct NssProfile {
 
 bool has_nss_db(const std::filesystem::path &path) {
   std::error_code ec;
-  if (!std::filesystem::exists(path, ec) || !std::filesystem::is_directory(path, ec)) {
+  if (!std::filesystem::exists(path, ec) ||
+      !std::filesystem::is_directory(path, ec)) {
     return false;
   }
   if (std::filesystem::exists(path / "cert9.db", ec)) {
@@ -194,8 +197,10 @@ void chown_recursive(const std::filesystem::path &root, uid_t uid, gid_t gid) {
   }
   ::chown(root.c_str(), uid, gid);
 
-  std::filesystem::directory_options opts = std::filesystem::directory_options::skip_permission_denied;
-  for (const auto &entry : std::filesystem::recursive_directory_iterator(root, opts, ec)) {
+  std::filesystem::directory_options opts =
+      std::filesystem::directory_options::skip_permission_denied;
+  for (const auto &entry :
+       std::filesystem::recursive_directory_iterator(root, opts, ec)) {
     if (entry.is_symlink(ec)) {
       continue;
     }
@@ -203,7 +208,8 @@ void chown_recursive(const std::filesystem::path &root, uid_t uid, gid_t gid) {
   }
 }
 
-void ensure_directory_ownership(const std::filesystem::path &path, uid_t uid, gid_t gid) {
+void ensure_directory_ownership(const std::filesystem::path &path, uid_t uid,
+                                gid_t gid) {
   if (path.empty()) {
     return;
   }
@@ -237,14 +243,17 @@ std::vector<NssProfile> discover_profiles() {
       if (!std::filesystem::is_directory(candidate, ec_local)) {
         return;
       }
-      std::filesystem::path abs = std::filesystem::weakly_canonical(candidate, ec_local);
+      std::filesystem::path abs =
+          std::filesystem::weakly_canonical(candidate, ec_local);
       if (abs.empty()) {
         abs = candidate;
       }
       std::string key = abs.string();
       if (seen.insert(key).second) {
-        std::string owner = pwd->pw_name ? std::string(pwd->pw_name) : fmt::format("uid{}", pwd->pw_uid);
-        profiles.push_back({candidate, pwd->pw_uid, pwd->pw_gid, std::move(owner)});
+        std::string owner = pwd->pw_name ? std::string(pwd->pw_name)
+                                         : fmt::format("uid{}", pwd->pw_uid);
+        profiles.push_back(
+            {candidate, pwd->pw_uid, pwd->pw_gid, std::move(owner)});
       }
     };
 
@@ -257,10 +266,8 @@ std::vector<NssProfile> discover_profiles() {
     register_profile(nss_home);
 
     const std::vector<std::filesystem::path> config_roots = {
-        home / ".config" / "google-chrome",
-        home / ".config" / "chromium",
-        home / ".config" / "microsoft-edge",
-        home / ".config" / "brave"};
+        home / ".config" / "google-chrome", home / ".config" / "chromium",
+        home / ".config" / "microsoft-edge", home / ".config" / "brave"};
 
     for (const auto &config_root : config_roots) {
       std::error_code config_ec;
@@ -268,7 +275,8 @@ std::vector<NssProfile> discover_profiles() {
           !std::filesystem::is_directory(config_root, config_ec)) {
         continue;
       }
-      for (const auto &entry : std::filesystem::directory_iterator(config_root, config_ec)) {
+      for (const auto &entry :
+           std::filesystem::directory_iterator(config_root, config_ec)) {
         if (!entry.is_directory(config_ec)) {
           continue;
         }
@@ -281,7 +289,8 @@ std::vector<NssProfile> discover_profiles() {
     const std::vector<std::filesystem::path> snap_roots = {
         home / "snap" / "chromium" / "current" / ".pki" / "nssdb",
         home / "snap" / "chromium" / "common" / ".pki" / "nssdb",
-        home / "snap" / "google-chrome" / "current" / ".config" / "google-chrome"};
+        home / "snap" / "google-chrome" / "current" / ".config" /
+            "google-chrome"};
 
     for (const auto &snap_root : snap_roots) {
       std::error_code snap_ec;
@@ -289,7 +298,8 @@ std::vector<NssProfile> discover_profiles() {
         continue;
       }
       if (snap_root.filename() == "google-chrome") {
-        for (const auto &entry : std::filesystem::directory_iterator(snap_root, snap_ec)) {
+        for (const auto &entry :
+             std::filesystem::directory_iterator(snap_root, snap_ec)) {
           if (!entry.is_directory(snap_ec)) {
             continue;
           }
@@ -307,8 +317,9 @@ std::vector<NssProfile> discover_profiles() {
   return profiles;
 }
 
-std::optional<std::string> ensure_db_initialized(const std::filesystem::path &certutil_path,
-                                                 const NssProfile &profile) {
+std::optional<std::string>
+ensure_db_initialized(const std::filesystem::path &certutil_path,
+                      const NssProfile &profile) {
   std::error_code ec;
   if (!std::filesystem::exists(profile.db_path, ec)) {
     return fmt::format("Profile path '{}' missing", profile.db_path.string());
@@ -318,13 +329,12 @@ std::optional<std::string> ensure_db_initialized(const std::filesystem::path &ce
   }
 
   std::vector<std::string> args{certutil_path.string(), "-d",
-                                "sql:" + profile.db_path.string(),
-                                "-N", "--empty-password"};
+                                "sql:" + profile.db_path.string(), "-N",
+                                "--empty-password"};
   auto result = run_command(args);
   if (!result.success()) {
     return fmt::format(
-        "certutil -N failed for '{}': {}",
-        profile.db_path.string(),
+        "certutil -N failed for '{}': {}", profile.db_path.string(),
         result.stderr_data.empty() ? result.stdout_data : result.stderr_data);
   }
 
@@ -332,12 +342,15 @@ std::optional<std::string> ensure_db_initialized(const std::filesystem::path &ce
   return std::nullopt;
 }
 
-std::optional<std::string> remove_alias(const std::filesystem::path &certutil_path,
-                                        const NssProfile &profile,
-                                        const std::string &alias) {
-  std::vector<std::string> args{certutil_path.string(), "-d",
+std::optional<std::string>
+remove_alias(const std::filesystem::path &certutil_path,
+             const NssProfile &profile, const std::string &alias) {
+  std::vector<std::string> args{certutil_path.string(),
+                                "-d",
                                 "sql:" + profile.db_path.string(),
-                                "-D", "-n", alias};
+                                "-D",
+                                "-n",
+                                alias};
   auto result = run_command(args);
   if (!result.success()) {
     std::string combined = result.stderr_data;
@@ -349,9 +362,8 @@ std::optional<std::string> remove_alias(const std::filesystem::path &certutil_pa
     if (lowered.find("not found") != std::string::npos) {
       return std::nullopt;
     }
-    return fmt::format(
-        "Failed to remove alias '{}' from '{}': {}", alias,
-        profile.db_path.string(), combined);
+    return fmt::format("Failed to remove alias '{}' from '{}': {}", alias,
+                       profile.db_path.string(), combined);
   }
   chown_recursive(profile.db_path, profile.uid, profile.gid);
   return std::nullopt;
@@ -359,22 +371,31 @@ std::optional<std::string> remove_alias(const std::filesystem::path &certutil_pa
 
 bool alias_exists(const std::filesystem::path &certutil_path,
                   const NssProfile &profile, const std::string &alias) {
-  std::vector<std::string> args{certutil_path.string(), "-d",
+  std::vector<std::string> args{certutil_path.string(),
+                                "-d",
                                 "sql:" + profile.db_path.string(),
-                                "-L", "-n", alias};
+                                "-L",
+                                "-n",
+                                alias};
   auto result = run_command(args);
   return result.success();
 }
 
-std::optional<std::string> modify_trust(const std::filesystem::path &certutil_path,
-                                        const NssProfile &profile,
-                                        const std::string &alias) {
-  std::vector<std::string> args{certutil_path.string(), "-d",
+std::optional<std::string>
+modify_trust(const std::filesystem::path &certutil_path,
+             const NssProfile &profile, const std::string &alias) {
+  std::vector<std::string> args{certutil_path.string(),
+                                "-d",
                                 "sql:" + profile.db_path.string(),
-                                "-M", "-n", alias, "-t", "CT,C,C"};
+                                "-M",
+                                "-n",
+                                alias,
+                                "-t",
+                                "CT,C,C"};
   auto result = run_command(args);
   if (!result.success()) {
-    std::string combined = result.stderr_data.empty() ? result.stdout_data : result.stderr_data;
+    std::string combined =
+        result.stderr_data.empty() ? result.stdout_data : result.stderr_data;
     return fmt::format("Failed to update trust bits for alias '{}' in '{}': {}",
                        alias, profile.db_path.string(), combined);
   }
@@ -386,13 +407,20 @@ std::optional<std::string> add_alias(const std::filesystem::path &certutil_path,
                                      const NssProfile &profile,
                                      const std::string &alias,
                                      const std::filesystem::path &ca_pem_path) {
-  std::vector<std::string> args{certutil_path.string(), "-d",
+  std::vector<std::string> args{certutil_path.string(),
+                                "-d",
                                 "sql:" + profile.db_path.string(),
-                                "-A", "-n", alias, "-t", "CT,C,C",
-                                "-i", ca_pem_path.string()};
+                                "-A",
+                                "-n",
+                                alias,
+                                "-t",
+                                "CT,C,C",
+                                "-i",
+                                ca_pem_path.string()};
   auto result = run_command(args);
   if (!result.success()) {
-    std::string combined = result.stderr_data.empty() ? result.stdout_data : result.stderr_data;
+    std::string combined =
+        result.stderr_data.empty() ? result.stdout_data : result.stderr_data;
     return fmt::format("Failed to insert alias '{}' into '{}': {}", alias,
                        profile.db_path.string(), combined);
   }
@@ -400,31 +428,33 @@ std::optional<std::string> add_alias(const std::filesystem::path &certutil_path,
   return std::nullopt;
 }
 
-#endif  // defined(__linux__)
+#endif // defined(__linux__)
 
-}  // namespace
+} // namespace
 
 BrowserTrustSync::BrowserTrustSync(customio::ConsoleOutput &output,
                                    std::filesystem::path runtime_dir)
     : output_(output), runtime_dir_(std::move(runtime_dir)) {}
 
-std::optional<std::string> BrowserTrustSync::sync_ca(
-    const std::string &canonical_name,
-    const std::optional<std::string> &previous_alias,
-    const std::filesystem::path &ca_pem_path) {
+std::optional<std::string>
+BrowserTrustSync::sync_ca(const std::string &canonical_name,
+                          const std::optional<std::string> &previous_alias,
+                          const std::filesystem::path &ca_pem_path) {
 #if defined(__linux__)
   (void)runtime_dir_;
   if (canonical_name.empty()) {
     return std::nullopt;
   }
   if (!std::filesystem::exists(ca_pem_path)) {
-    return fmt::format("CA material '{}' missing for browser sync", ca_pem_path.string());
+    return fmt::format("CA material '{}' missing for browser sync",
+                       ca_pem_path.string());
   }
 
   auto certutil_path = find_certutil();
   if (!certutil_path) {
     output_.logger().warning()
-        << "certutil not found in PATH; skipping browser trust sync" << std::endl;
+        << "certutil not found in PATH; skipping browser trust sync"
+        << std::endl;
     return std::nullopt;
   }
 
@@ -437,7 +467,8 @@ std::optional<std::string> BrowserTrustSync::sync_ca(
 
   std::vector<std::string> errors;
   for (const auto &profile : profiles) {
-    output_.logger().info()
+
+    BOOST_LOG_SEV(app_logger(), trivial::info)
         << "Syncing CA '" << canonical_name << "' with NSS db '"
         << profile.db_path << "' (user=" << profile.owner << ")" << std::endl;
 
@@ -456,7 +487,8 @@ std::optional<std::string> BrowserTrustSync::sync_ca(
     }
 
     if (alias_exists(*certutil_path, profile, canonical_name)) {
-      if (auto mod_err = modify_trust(*certutil_path, profile, canonical_name)) {
+      if (auto mod_err =
+              modify_trust(*certutil_path, profile, canonical_name)) {
         errors.push_back(*mod_err);
         BOOST_LOG_SEV(app_logger(), trivial::warning)
             << "Browser trust update warning: " << *mod_err;
@@ -464,7 +496,8 @@ std::optional<std::string> BrowserTrustSync::sync_ca(
       continue;
     }
 
-    if (auto add_err = add_alias(*certutil_path, profile, canonical_name, ca_pem_path)) {
+    if (auto add_err =
+            add_alias(*certutil_path, profile, canonical_name, ca_pem_path)) {
       errors.push_back(*add_err);
       BOOST_LOG_SEV(app_logger(), trivial::warning)
           << "Browser trust add warning: " << *add_err;
@@ -493,4 +526,55 @@ std::optional<std::string> BrowserTrustSync::sync_ca(
 #endif
 }
 
-}  // namespace certctrl::util
+std::optional<std::string>
+BrowserTrustSync::remove_ca_alias(const std::string &alias) {
+#if defined(__linux__)
+  if (alias.empty()) {
+    return std::nullopt;
+  }
+
+  auto certutil_path = find_certutil();
+  if (!certutil_path) {
+    output_.logger().warning()
+        << "certutil not found in PATH; skipping browser trust removal"
+        << std::endl;
+    return std::nullopt;
+  }
+
+  auto profiles = discover_profiles();
+  if (profiles.empty()) {
+    output_.logger().warning()
+        << "No NSS profiles detected; skipping browser trust removal"
+        << std::endl;
+    return std::nullopt;
+  }
+
+  std::vector<std::string> errors;
+  for (const auto &profile : profiles) {
+    if (auto err = remove_alias(*certutil_path, profile, alias)) {
+      BOOST_LOG_SEV(app_logger(), trivial::warning)
+          << "Browser trust removal warning: " << *err;
+      errors.push_back(*err);
+    }
+  }
+
+  if (!errors.empty()) {
+    std::string joined;
+    for (std::size_t idx = 0; idx < errors.size(); ++idx) {
+      if (idx != 0) {
+        joined.append("; ");
+      }
+      joined.append(errors[idx]);
+    }
+    return joined;
+  }
+  return std::nullopt;
+#else
+  (void)alias;
+  output_.logger().debug()
+      << "Browser trust sync not supported on this platform" << std::endl;
+  return std::nullopt;
+#endif
+}
+
+} // namespace certctrl::util
