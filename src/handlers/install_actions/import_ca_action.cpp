@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <fmt/format.h>
 #include <fstream>
@@ -77,6 +78,13 @@ std::string sanitize_label(std::string_view raw_label,
     sanitized = fmt::format("ca-{}", fallback_id);
   }
   return sanitized;
+}
+
+std::string lowercase_ascii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
 }
 
 std::filesystem::perms desired_public_permissions() {
@@ -364,6 +372,96 @@ std::optional<std::string> import_certificate_to_windows_store(
 
 #endif // defined(_WIN32)
 
+#if defined(_WIN32)
+
+std::string wide_to_utf8(const wchar_t *input, std::size_t length) {
+  if (!input || length == 0) {
+    return {};
+  }
+  int required = WideCharToMultiByte(CP_UTF8, 0, input,
+                                     static_cast<int>(length), nullptr, 0,
+                                     nullptr, nullptr);
+  if (required <= 0) {
+    return {};
+  }
+  std::string output(static_cast<std::size_t>(required), '\0');
+  int written = WideCharToMultiByte(CP_UTF8, 0, input,
+                                    static_cast<int>(length), output.data(),
+                                    required, nullptr, nullptr);
+  if (written <= 0) {
+    return {};
+  }
+  return output;
+}
+
+std::optional<std::string>
+remove_certificate_from_windows_store(const std::string &friendly_name) {
+  if (friendly_name.empty()) {
+    return std::nullopt;
+  }
+
+  HCERTSTORE store = CertOpenStore(
+      CERT_STORE_PROV_SYSTEM, 0, static_cast<HCRYPTPROV_LEGACY>(0),
+      CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG, L"ROOT");
+  if (!store) {
+    return fmt::format("CertOpenStore(LocalMachine\\Root) failed: {}",
+                       format_windows_error(GetLastError()));
+  }
+
+  PCCERT_CONTEXT context = nullptr;
+  bool removed = false;
+  std::string target_lower = lowercase_ascii(friendly_name);
+
+  while ((context = CertEnumCertificatesInStore(store, context)) != nullptr) {
+    DWORD size = 0;
+    if (!CertGetCertificateContextProperty(context,
+                                           CERT_FRIENDLY_NAME_PROP_ID, nullptr,
+                                           &size) || size == 0) {
+      continue;
+    }
+
+    std::vector<wchar_t> buffer(size / sizeof(wchar_t) + 1, L'\0');
+    if (!CertGetCertificateContextProperty(context,
+                                           CERT_FRIENDLY_NAME_PROP_ID,
+                                           buffer.data(), &size)) {
+      continue;
+    }
+    buffer.back() = L'\0';
+    std::wstring wname(buffer.data());
+    auto utf8_name = lowercase_ascii(wide_to_utf8(wname.c_str(), wname.size()));
+    if (utf8_name.empty()) {
+      continue;
+    }
+    if (utf8_name == target_lower) {
+      PCCERT_CONTEXT dup = CertDuplicateCertificateContext(context);
+      if (!dup) {
+        CertCloseStore(store, 0);
+        return fmt::format("CertDuplicateCertificateContext failed: {}",
+                           format_windows_error(GetLastError()));
+      }
+      if (!CertDeleteCertificateFromStore(dup)) {
+        CertCloseStore(store, 0);
+        return fmt::format("CertDeleteCertificateFromStore failed: {}",
+                           format_windows_error(GetLastError()));
+      }
+      removed = true;
+      break;
+    }
+  }
+
+  if (context) {
+    CertFreeCertificateContext(context);
+  }
+  CertCloseStore(store, 0);
+
+  if (!removed) {
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+#endif // defined(_WIN32)
+
 #if defined(__APPLE__)
 
 template <typename T>
@@ -627,6 +725,80 @@ import_certificate_to_system_keychain(const std::filesystem::path &pem_path,
   if (status != errSecSuccess) {
     return fmt::format("SecTrustSettingsSetTrustSettings failed: {}",
                        describe_osstatus(status));
+  }
+
+  return std::nullopt;
+}
+
+#endif // defined(__APPLE__)
+
+#if defined(__APPLE__)
+
+std::optional<std::string>
+remove_certificate_from_system_keychain(const std::string &label) {
+  if (label.empty()) {
+    return std::nullopt;
+  }
+
+  CfPtr<CFStringRef> label_ref(
+      CFStringCreateWithCString(nullptr, label.c_str(), kCFStringEncodingUTF8),
+      &CFRelease);
+  if (!label_ref) {
+    return fmt::format("failed to allocate label '{}'", label);
+  }
+
+  SecKeychainRef keychain_raw = nullptr;
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  OSStatus status =
+      SecKeychainCopyDomainDefault(kSecPreferencesDomainSystem, &keychain_raw);
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+  if (status != errSecSuccess) {
+    return fmt::format("SecKeychainCopyDomainDefault failed: {}",
+                       describe_osstatus(status));
+  }
+
+  CfPtr<SecKeychainRef> keychain(keychain_raw, &CFRelease);
+
+  CfPtr<CFMutableDictionaryRef> query(
+      CFDictionaryCreateMutable(nullptr, 0, &kCFTypeDictionaryKeyCallBacks,
+                                &kCFTypeDictionaryValueCallBacks),
+      &CFRelease);
+  CFDictionarySetValue(query.get(), kSecClass, kSecClassCertificate);
+  CFDictionarySetValue(query.get(), kSecAttrLabel, label_ref.get());
+  CFDictionarySetValue(query.get(), kSecUseKeychain, keychain.get());
+  CFDictionarySetValue(query.get(), kSecReturnRef, kCFBooleanTrue);
+
+  CFTypeRef item_ref = nullptr;
+  status = SecItemCopyMatching(query.get(), &item_ref);
+  if (status == errSecItemNotFound) {
+    return std::nullopt;
+  }
+  if (status != errSecSuccess || !item_ref) {
+    return fmt::format("SecItemCopyMatching failed: {}",
+                       describe_osstatus(status));
+  }
+
+  auto certificate = static_cast<SecCertificateRef>(item_ref);
+  CfPtr<SecCertificateRef> certificate_holder(certificate, &CFRelease);
+
+  SecTrustSettingsRemoveTrustSettings(certificate,
+                                      kSecTrustSettingsDomainAdmin);
+
+  CfPtr<CFMutableDictionaryRef> delete_query(
+      CFDictionaryCreateMutable(nullptr, 0, &kCFTypeDictionaryKeyCallBacks,
+                                &kCFTypeDictionaryValueCallBacks),
+      &CFRelease);
+  CFDictionarySetValue(delete_query.get(), kSecClass, kSecClassCertificate);
+  CFDictionarySetValue(delete_query.get(), kSecValueRef, certificate);
+
+  status = SecItemDelete(delete_query.get());
+  if (status != errSecSuccess && status != errSecItemNotFound) {
+    return fmt::format("SecItemDelete failed: {}", describe_osstatus(status));
   }
 
   return std::nullopt;
@@ -1130,6 +1302,98 @@ ImportCaActionHandler::apply(const dto::DeviceInstallConfigDto &config,
         << " params=" << boost::json::serialize(err.params);
     return ReturnIO::fail(std::move(err));
   });
+}
+
+monad::IO<void> ImportCaActionHandler::remove_ca(
+    std::int64_t ca_id, std::optional<std::string> ca_name) {
+  using ReturnIO = monad::IO<void>;
+  if (ca_id <= 0) {
+    return ReturnIO::pure();
+  }
+
+  auto trust_store = detect_system_trust_store();
+  if (!trust_store) {
+    output_.logger().warning()
+        << "CA removal requested but no trust store detected" << std::endl;
+    return ReturnIO::pure();
+  }
+
+  auto state_dir = import_state_directory(runtime_dir_);
+  auto state_file = state_dir / fmt::format("ca-{}.name", ca_id);
+  auto stored_canonical = load_canonical_state(state_file);
+
+  std::string canonical_name = fmt::format("certctrl-ca-{}", ca_id);
+  if (stored_canonical && !stored_canonical->empty()) {
+    canonical_name = *stored_canonical;
+  } else {
+    auto sanitized = sanitize_label(ca_name.value_or(std::string{}), ca_id);
+    if (!sanitized.empty() && sanitized != canonical_name) {
+      canonical_name = fmt::format("{}-{}", canonical_name, sanitized);
+    }
+  }
+
+  const auto destination =
+      trust_store->directory / fmt::format("{}.crt", canonical_name);
+
+  if (std::filesystem::exists(destination)) {
+    std::error_code ec;
+    std::filesystem::remove(destination, ec);
+    if (ec) {
+      return ReturnIO::fail(monad::make_error(
+          my_errors::GENERAL::FILE_READ_WRITE,
+          fmt::format("failed to remove CA file '{}': {}",
+                      destination.string(), ec.message())));
+    }
+  }
+
+#if defined(__APPLE__)
+  if (trust_store->use_native_mac_import) {
+    if (auto err = remove_certificate_from_system_keychain(canonical_name)) {
+      return ReturnIO::fail(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT, *err));
+    }
+  }
+#endif
+
+#if defined(_WIN32)
+  if (trust_store->use_native_windows_import) {
+    if (auto err = remove_certificate_from_windows_store(canonical_name)) {
+      return ReturnIO::fail(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT, *err));
+    }
+  }
+#endif
+
+#ifndef _WIN32
+  if (!trust_store->update_command.empty()) {
+    int rc = std::system(trust_store->update_command.c_str());
+    if (rc != 0) {
+      return ReturnIO::fail(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          fmt::format("command '{}' exited with status {}",
+                      trust_store->update_command, rc)));
+    }
+  }
+#endif
+
+  certctrl::util::BrowserTrustSync browser_sync(output_, runtime_dir_);
+  if (auto err = browser_sync.remove_ca_alias(canonical_name)) {
+    return ReturnIO::fail(monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT, *err));
+  }
+
+  std::error_code ec;
+  std::filesystem::remove(state_file, ec);
+  if (ec && ec != std::errc::no_such_file_or_directory) {
+    return ReturnIO::fail(monad::make_error(
+        my_errors::GENERAL::FILE_READ_WRITE,
+        fmt::format("failed to remove state file '{}': {}",
+                    state_file.string(), ec.message())));
+  }
+
+  output_.logger().info()
+      << "Removed CA '" << canonical_name << "' from trust store" << std::endl;
+  return ReturnIO::pure();
 }
 
 } // namespace certctrl::install_actions

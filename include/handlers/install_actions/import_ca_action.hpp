@@ -31,6 +31,9 @@ public:
                         const std::optional<std::string> &target_ob_type,
                         std::optional<std::int64_t> target_ob_id);
 
+  monad::IO<void> remove_ca(std::int64_t ca_id,
+                            std::optional<std::string> ca_name);
+
 private:
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;
