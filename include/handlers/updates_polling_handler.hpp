@@ -31,8 +31,8 @@
 #include "handlers/signal_dispatcher.hpp"
 #include "handlers/signal_handlers/ca_assigned_handler.hpp"
 #include "handlers/signal_handlers/ca_unassigned_handler.hpp"
-#include "handlers/signal_handlers/cert_renewed_handler.hpp"
-#include "handlers/signal_handlers/cert_revoked_handler.hpp"
+#include "handlers/signal_handlers/cert_updated_handler.hpp"
+#include "handlers/signal_handlers/cert_unassigned_handler.hpp"
 #include "handlers/signal_handlers/install_updated_handler.hpp"
 #include "http_client_manager.hpp"
 #include "http_client_monad.hpp"
@@ -89,8 +89,8 @@ class UpdatesPollingHandler
   static constexpr int kFailureRetryMaxExponent = 5;
   // signal counters (cumulative this run)
   size_t install_updated_count_{0};
-  size_t cert_renewed_count_{0};
-  size_t cert_revoked_count_{0};
+  size_t cert_updated_count_{0};
+  size_t cert_unassigned_count_{0};
   // signal dispatcher
   std::unique_ptr<SignalDispatcher> signal_dispatcher_;
   std::shared_ptr<InstallConfigManager> install_config_manager_;
@@ -164,13 +164,13 @@ public:
           std::make_shared<signal_handlers::InstallUpdatedHandler>(
               install_config_manager_, output_hub_));
 
-      signal_dispatcher_->register_handler(
-          std::make_shared<signal_handlers::CertRenewedHandler>(
-              install_config_manager_, output_hub_));
+        signal_dispatcher_->register_handler(
+          std::make_shared<signal_handlers::CertUpdatedHandler>(
+            install_config_manager_, output_hub_));
 
-      signal_dispatcher_->register_handler(
-          std::make_shared<signal_handlers::CertRevokedHandler>(
-              install_config_manager_, output_hub_));
+        signal_dispatcher_->register_handler(
+          std::make_shared<signal_handlers::CertUnassignedHandler>(
+            install_config_manager_, output_hub_));
 
         signal_dispatcher_->register_handler(
           std::make_shared<signal_handlers::CaAssignedHandler>(
@@ -409,10 +409,10 @@ private:
     for (const auto &signal : last_updates_->data.signals) {
       if (signal.type == "install.updated") {
         ++install_updated_count_;
-      } else if (signal.type == "cert.renewed") {
-        ++cert_renewed_count_;
-      } else if (signal.type == "cert.revoked") {
-        ++cert_revoked_count_;
+      } else if (signal.type == "cert.updated") {
+        ++cert_updated_count_;
+      } else if (signal.type == "cert.unassigned") {
+        ++cert_unassigned_count_;
       }
 
       auto signal_copy = signal;
@@ -600,8 +600,8 @@ public:
   const std::string &last_cursor() const { return cursor_; }
   const std::string &parse_error() const { return parse_error_; }
   size_t install_updated_count() const { return install_updated_count_; }
-  size_t cert_renewed_count() const { return cert_renewed_count_; }
-  size_t cert_revoked_count() const { return cert_revoked_count_; }
+  size_t cert_updated_count() const { return cert_updated_count_; }
+  size_t cert_unassigned_count() const { return cert_unassigned_count_; }
   friend struct UpdatesPollingHandlerTestFriend;
 
 private:

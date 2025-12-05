@@ -21,8 +21,8 @@
 #include <iostream>
 #include <random>
 #include <sstream>
-#include <system_error>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <vector>
 
@@ -43,6 +43,57 @@ namespace certctrl {
 namespace {
 
 constexpr const char kPfxPasswordEnvVar[] = "CERTCTRL_PFX_PASSWORD";
+
+struct CertActionScanResult {
+  bool has_matching_items{false};
+  bool has_copy_targets{false};
+  bool has_exec_targets{false};
+
+  bool actionable() const { return has_copy_targets || has_exec_targets; }
+};
+
+bool has_non_empty_entry(
+    const std::optional<std::vector<std::string>> &values) {
+  if (!values) {
+    return false;
+  }
+  return std::any_of(values->begin(), values->end(),
+                     [](const std::string &value) { return !value.empty(); });
+}
+
+CertActionScanResult
+scan_cert_actionability(const dto::DeviceInstallConfigDto &config,
+                        std::int64_t cert_id) {
+  CertActionScanResult result;
+  for (const auto &item : config.installs) {
+    if (!item.enabled) {
+      continue;
+    }
+    if (!item.ob_type || *item.ob_type != "cert") {
+      continue;
+    }
+    if (!item.ob_id || *item.ob_id != cert_id) {
+      continue;
+    }
+
+    result.has_matching_items = true;
+
+    if (item.type == "copy" && has_non_empty_entry(item.to)) {
+      result.has_copy_targets = true;
+    }
+
+    const bool has_cmd =
+        (item.cmd && !item.cmd->empty()) || has_non_empty_entry(item.cmd_argv);
+    if (has_cmd) {
+      result.has_exec_targets = true;
+    }
+
+    if (result.actionable()) {
+      break;
+    }
+  }
+  return result;
+}
 
 std::string generate_temp_suffix() {
   auto now = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -504,8 +555,8 @@ InstallConfigManager::InstallConfigManager(
         exec_env_resolver_factory,
     install_actions::IDeviceInstallConfigFetcher &config_fetcher,
     install_actions::IAccessTokenLoader &access_token_loader,
-  install_actions::IMaterializePasswordManager &password_manager,
-  std::shared_ptr<ISessionRefresher> session_refresher)
+    install_actions::IMaterializePasswordManager &password_manager,
+    std::shared_ptr<ISessionRefresher> session_refresher)
     : runtime_dir_(config_provider.get().runtime_dir),
       config_provider_(config_provider), output_(output),
       http_client_(http_client),
@@ -527,8 +578,8 @@ InstallConfigManager::InstallConfigManager(
                                    std::filesystem::perm_options::replace);
 #endif
     } catch (const std::exception &e) {
-      output_.logger().warning()
-          << "Failed to prepare runtime state dir: " << e.what() << std::endl;
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "Failed to prepare runtime state dir: " << e.what();
     }
   }
 
@@ -541,9 +592,7 @@ InstallConfigManager::InstallConfigManager(
 
 InstallConfigManager::~InstallConfigManager() {}
 
-void InstallConfigManager::clear_cache() {
-  invalidate_all_caches();
-}
+void InstallConfigManager::clear_cache() { invalidate_all_caches(); }
 
 void InstallConfigManager::invalidate_all_caches() {
   cached_config_.reset();
@@ -578,15 +627,13 @@ void InstallConfigManager::remove_cached_resource_scope(
   std::error_code ec;
   auto removed = std::filesystem::remove_all(root, ec);
   if (ec) {
-    output_.logger().warning()
-        << "Failed to remove cached resource scope '" << root
-        << "': " << ec.message() << std::endl;
+    BOOST_LOG_SEV(lg, trivial::error) << "Failed to remove cached resource scope '"
+                               << root << "': " << ec.message();
     return;
   }
   if (removed > 0) {
-    output_.logger().info() << "Removed cached resource scope '" << root
-                            << "' (" << removed << " entries)."
-                            << std::endl;
+    BOOST_LOG_SEV(lg, trivial::info) << "Removed cached resource scope '" << root
+                            << "' (" << removed << " entries).";
   }
 }
 
@@ -598,9 +645,8 @@ void InstallConfigManager::remove_file_quiet(
   std::error_code ec;
   std::filesystem::remove(file_path, ec);
   if (ec && ec != std::errc::no_such_file_or_directory) {
-    output_.logger().warning()
-        << "Failed to remove cached file '" << file_path
-        << "': " << ec.message() << std::endl;
+    BOOST_LOG_SEV(lg, trivial::error) << "Failed to remove cached file '" << file_path
+                               << "': " << ec.message();
   }
 }
 
@@ -615,54 +661,6 @@ InstallConfigManager::cached_config_snapshot() {
   }
   return cached_config_;
 }
-
-// void InstallConfigManager::configure_resource_materializer(
-//     const install_actions::IResourceMaterializer::Ptr &materializer) {
-//   if (!materializer) {
-//     return;
-//   }
-
-//   auto concrete =
-//       std::dynamic_pointer_cast<install_actions::InstallResourceMaterializer>(
-//           materializer);
-//   if (!concrete) {
-//     return;
-//   }
-
-//   install_actions::InstallResourceMaterializer::RuntimeConfig runtime_cfg{
-//       runtime_dir_,
-//       [this]() { return load_access_token(); },
-//       resource_fetch_override_,
-//       [this](const std::string &type, std::int64_t id) {
-//         return password_manager_.lookup(type, id);
-//       },
-//       [this](const std::string &type, std::int64_t id,
-//              const std::string &password) {
-//         password_manager_.remember(type, id, password);
-//       },
-//       [this](const std::string &type, std::int64_t id) {
-//         password_manager_.forget(type, id);
-//       }};
-
-//   concrete->customize(std::move(runtime_cfg));
-// }
-
-// install_actions::IResourceMaterializer::Ptr
-// InstallConfigManager::make_resource_materializer() {
-//   install_actions::IResourceMaterializer::Ptr materializer;
-//   if (resource_materializer_factory_) {
-//     materializer = resource_materializer_factory_();
-//   }
-
-//   if (!materializer) {
-//     materializer =
-//         std::make_shared<install_actions::InstallResourceMaterializer>(
-//             config_provider_, output_, http_client_);
-//   }
-
-//   configure_resource_materializer(materializer);
-//   return materializer;
-// }
 
 monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
 InstallConfigManager::ensure_cached_config() {
@@ -778,7 +776,8 @@ InstallConfigManager::refresh_from_remote_with_retry(
 
         std::string reason = "install-config fetch auth failure";
         if (err.response_status > 0) {
-          reason = fmt::format("install-config fetch HTTP {}", err.response_status);
+          reason =
+              fmt::format("install-config fetch HTTP {}", err.response_status);
         } else if (token_missing && token_unavailable_error) {
           reason = "install-config fetch missing access token";
         }
@@ -791,141 +790,6 @@ InstallConfigManager::refresh_from_remote_with_retry(
             });
       });
 }
-
-// auto perform_fetch = [this, expected_version,
-//                       expected_hash]() -> IO<dto::DeviceInstallConfigDto> {
-//   // if (fetch_override_) {
-//   //   return fetch_override_(expected_version, expected_hash);
-//   // }
-
-//   auto token_opt = load_access_token();
-//   if (!token_opt || token_opt->empty()) {
-//     return IO<dto::DeviceInstallConfigDto>::fail(
-//         make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-//                    "Device access token unavailable"));
-//   }
-
-//   const auto &cfg = config_provider_.get();
-//   std::string url =
-//       fmt::format("{}/apiv1/devices/self/install-config", cfg.base_url);
-
-//   return http_io<monad::GetStringTag>(url)
-//       .map([token = *token_opt](auto ex) {
-//         namespace http = boost::beast::http;
-//         ex->request.set(http::field::authorization,
-//                         std::string("Bearer ") + token);
-//         return ex;
-//       })
-//       .then(http_request_io<monad::GetStringTag>(http_client_))
-//       .then([](auto ex) -> IO<dto::DeviceInstallConfigDto> {
-//         if (!ex->response.has_value()) {
-//           return IO<dto::DeviceInstallConfigDto>::fail(
-//               make_error(my_errors::NETWORK::READ_ERROR,
-//                          "No response for install-config"));
-//         }
-
-//         int status = ex->response->result_int();
-//         if (status != 200) {
-//           auto err = make_error(
-//               my_errors::NETWORK::READ_ERROR,
-//               fmt::format("install-config fetch HTTP status {}", status));
-//           err.response_status = status;
-//           err.params["response_body_preview"] = ex->response->body();
-//           return IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
-//         }
-
-//         auto result =
-//             ex->template
-//             parseJsonDataResponse<dto::DeviceInstallConfigDto>();
-//         if (result.is_err()) {
-//           return IO<dto::DeviceInstallConfigDto>::fail(result.error());
-//         }
-//         return IO<dto::DeviceInstallConfigDto>::pure(result.value());
-//       });
-// };
-
-// constexpr int kMaxAttempts = 4;
-// constexpr std::chrono::milliseconds kBaseRetryDelay{200};
-
-// auto retry_count = std::make_shared<int>(0);
-// auto next_delay =
-//     std::make_shared<std::chrono::milliseconds>(kBaseRetryDelay);
-
-// auto validated_fetch =
-//     perform_fetch().then([this, expected_version,
-//                           expected_hash](dto::DeviceInstallConfigDto
-//                           config)
-//                              -> monad::IO<dto::DeviceInstallConfigDto> {
-//       if (expected_version && config.version < *expected_version) {
-//         output_.logger().warning()
-//             << "Fetched install-config version " << config.version
-//             << " is older than expected " << *expected_version <<
-//             std::endl;
-
-//         auto err = make_error(
-//             my_errors::GENERAL::UNEXPECTED_RESULT,
-//             fmt::format("install-config fetch returned stale version {} "
-//                         "(expected >= {})",
-//                         config.version, *expected_version));
-//         err.params["expected_version"] = std::to_string(*expected_version);
-//         err.params["observed_version"] = std::to_string(config.version);
-//         err.params["retry_reason"] = "stale_version";
-//         return
-//         monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
-//       }
-
-//       if (expected_version && config.version > *expected_version) {
-//         output_.logger().info() << "Fetched install-config version "
-//                                 << config.version << " (ahead of expected "
-//                                 << *expected_version << ")" << std::endl;
-//       }
-
-//       if (expected_hash && !config.installs_hash.empty() &&
-//           config.installs_hash != *expected_hash) {
-//         output_.logger().warning()
-//             << "Fetched install-config hash mismatch" << std::endl;
-//       }
-
-//       return
-//       monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(config));
-//     });
-
-// auto should_retry = [this, retry_count, next_delay,
-//                      kMaxAttempts](const monad::Error &err) -> bool {
-//   auto *reason = err.params.if_contains("retry_reason");
-//   if (!reason || !reason->is_string() ||
-//       reason->as_string() != "stale_version") {
-//     return false;
-//   }
-
-//   const int current_attempt = *retry_count;
-//   const bool can_retry = (current_attempt + 1) < kMaxAttempts;
-//   if (can_retry) {
-//     auto delay = *next_delay;
-//     output_.logger().info()
-//         << "Retrying install-config fetch (attempt " << (current_attempt +
-//         2)
-//         << "/" << kMaxAttempts << ") after " << delay.count() << "ms"
-//         << std::endl;
-//     *next_delay = *next_delay * 2;
-//   } else {
-//     output_.logger().warning()
-//         << "install-config fetch exhausted retries for stale version"
-//         << std::endl;
-//   }
-
-//   ++(*retry_count);
-//   return can_retry;
-// };
-
-// return std::move(validated_fetch)
-//     .retry_exponential_if(kMaxAttempts, kBaseRetryDelay, io_context_,
-//                           should_retry)
-//     .then([this](dto::DeviceInstallConfigDto config) -> ReturnIO {
-//       return persist_config(std::move(config)).then([this]() -> ReturnIO {
-//         return ReturnIO::pure(cached_config_);
-//       });
-//     });
 
 std::optional<dto::DeviceInstallConfigDto>
 InstallConfigManager::load_from_disk() {
@@ -944,9 +808,8 @@ InstallConfigManager::load_from_disk() {
     local_version_ = dto_config.version;
     return dto_config;
   } catch (const std::exception &e) {
-    output_.logger().error()
-        << "Failed to parse cached install_config.json: " << e.what()
-        << std::endl;
+    BOOST_LOG_SEV(lg, trivial::error)
+        << "Failed to parse cached install_config.json: " << e.what();
     return std::nullopt;
   }
 }
@@ -1009,48 +872,6 @@ monad::IO<void> InstallConfigManager::persist_config(
   }
 }
 
-// std::optional<std::string> InstallConfigManager::load_access_token() const {
-//   const auto token_file = state_dir() / "access_token.txt";
-
-//   std::error_code ec;
-//   const auto mtime = std::filesystem::last_write_time(token_file, ec);
-//   if (!ec && cached_access_token_ && cached_access_token_mtime_ &&
-//       mtime == *cached_access_token_mtime_) {
-//     return cached_access_token_;
-//   }
-
-//   std::ifstream ifs(token_file, std::ios::binary);
-//   if (!ifs.is_open()) {
-//     cached_access_token_.reset();
-//     cached_access_token_mtime_.reset();
-//     return std::nullopt;
-//   }
-
-//   std::string token((std::istreambuf_iterator<char>(ifs)),
-//                     std::istreambuf_iterator<char>());
-//   auto first = token.find_first_not_of(" \t\r\n");
-//   if (first == std::string::npos) {
-//     cached_access_token_.reset();
-//     cached_access_token_mtime_.reset();
-//     return std::nullopt;
-//   }
-//   auto last = token.find_last_not_of(" \t\r\n");
-//   if (last == std::string::npos || last < first) {
-//     cached_access_token_.reset();
-//     cached_access_token_mtime_.reset();
-//     return std::nullopt;
-//   }
-
-//   token = token.substr(first, last - first + 1);
-//   cached_access_token_ = token;
-//   if (!ec) {
-//     cached_access_token_mtime_ = mtime;
-//   } else {
-//     cached_access_token_mtime_.reset();
-//   }
-//   return cached_access_token_;
-// }
-
 std::filesystem::path InstallConfigManager::state_dir() const {
   return runtime_dir_ / "state";
 }
@@ -1090,9 +911,6 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                           "CopyActionHandler factory returned null"));
   }
-  // if (customized_)
-  //   copy_handler->customize(runtime_dir_, resource_materializer_factory_);
-
   // First perform copy actions
   return copy_handler->apply(config, target_ob_type, target_ob_id)
       .then([this, copy_handler, &config, target_ob_type, target_ob_id]() {
@@ -1111,10 +929,6 @@ monad::IO<void> InstallConfigManager::apply_copy_actions(
         }
 
         auto exec_handler = exec_handler_factory_();
-        // if (customized_)
-        //   exec_handler->customize(runtime_dir_,
-        //   resource_materializer_factory_,
-        //                           exec_env_resolver_factory_);
         return exec_handler->apply(config, allowed_types);
       })
       .catch_then([this, copy_handler](monad::Error err) {
@@ -1175,6 +989,14 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
   using ReturnIO = monad::IO<void>;
 
   if (signal.type == "install.updated") {
+    using ReturnIO = monad::IO<void>;
+    if (!config_provider_.get().auto_apply_config) {
+      BOOST_LOG_SEV(lg, trivial::info)
+          << "auto_apply_config disabled; install.updated ignored. Run 'cert-ctrl"
+          << " install-config pull/apply' to stage changes manually.";
+      return ReturnIO::pure();
+    }
+
     auto typed = ::data::get_install_updated(signal);
     std::optional<std::int64_t> expected_version;
     std::optional<std::string> expected_hash;
@@ -1185,39 +1007,47 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
 
     return ensure_config_version(expected_version, expected_hash)
         .then([this](auto config_ptr) {
-          using ReturnIO = monad::IO<void>;
-          if (!config_provider_.get().auto_apply_config) {
-            output_.logger().info()
-                << "auto_apply_config disabled; staged install-config version "
-                << config_ptr->version << " for manual approval." << std::endl;
-            output_.logger().info()
-                << "To apply staged changes (including any cmd/cmd_argv "
-                   "updates), run: cert-ctrl install-config apply"
-                << std::endl;
-            return ReturnIO::pure();
-          }
           return apply_copy_actions(*config_ptr, std::nullopt, std::nullopt);
         });
   }
 
-  if (signal.type == "cert.renewed") {
-    if (auto typed = ::data::get_cert_renewed(signal)) {
-      invalidate_resource_cache("cert", typed->cert_id);
-      return ensure_cached_config().then([this, cert_id = typed->cert_id](
-                                             auto config_ptr) {
+  if (signal.type == "cert.updated") {
+    if (auto typed = ::data::get_cert_updated(signal)) {
+      const auto cert_id = typed->cert_id;
+      invalidate_resource_cache("cert", cert_id);
+      return ensure_cached_config().then([this, cert_id](auto config_ptr) {
+        auto scan = scan_cert_actionability(*config_ptr, cert_id);
+        if (!scan.actionable()) {
+          if (!scan.has_matching_items) {
+            BOOST_LOG_SEV(lg, trivial::info)
+                << "cert.updated for cert " << cert_id
+                << " ignored: no install items reference this cert";
+          } else {
+            BOOST_LOG_SEV(lg, trivial::info)
+                << "cert.updated for cert " << cert_id
+                << " ignored: install items lack destinations or commands";
+          }
+          return ReturnIO::pure();
+        }
+
+        BOOST_LOG_SEV(lg, trivial::info)
+            << "Applying install config items for cert " << cert_id
+            << " due to cert.updated signal";
         return apply_copy_actions(*config_ptr, std::string("cert"), cert_id);
       });
     }
   }
 
-  if (signal.type == "cert.revoked") {
-    if (auto typed = ::data::get_cert_revoked(signal)) {
+  if (signal.type == "cert.unassigned") {
+    if (auto typed = ::data::get_cert_unassigned(signal)) {
       invalidate_resource_cache("cert", typed->cert_id);
-      output_.logger().info()
-          << "cert.revoked received; local cache purged for cert "
-          << typed->cert_id << std::endl;
+
+      BOOST_LOG_SEV(lg, trivial::info)
+          << "cert.unassigned received; cache purged for cert "
+          << typed->cert_id;
     } else {
-      output_.logger().warning() << "cert.revoked signal missing cert_id";
+      BOOST_LOG_SEV(lg, trivial::warning)
+          << "cert.unassigned signal missing cert_id";
     }
     return ReturnIO::pure();
   }
@@ -1225,8 +1055,9 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
   return ReturnIO::pure();
 }
 
-monad::IO<void> InstallConfigManager::handle_ca_assignment(
-    std::int64_t ca_id, std::optional<std::string> ca_name) {
+monad::IO<void>
+InstallConfigManager::handle_ca_assignment(std::int64_t ca_id,
+                                           std::optional<std::string> ca_name) {
   using ReturnIO = monad::IO<void>;
 
   if (ca_id <= 0) {
@@ -1263,8 +1094,8 @@ monad::IO<void> InstallConfigManager::handle_ca_assignment(
   dto::DeviceInstallConfigDto config;
   config.installs.emplace_back(std::move(ca_item));
 
-  output_.logger().info()
-      << "Applying ca.assigned for CA " << ca_id << std::endl;
+  output_.logger().info() << "Applying ca.assigned for CA " << ca_id
+                          << std::endl;
 
   return import_handler->apply(config, std::string("ca"), ca_id);
 }
@@ -1291,8 +1122,8 @@ monad::IO<void> InstallConfigManager::handle_ca_unassignment(
 
   invalidate_resource_cache("ca", ca_id);
 
-  output_.logger().info()
-      << "Applying ca.unassigned for CA " << ca_id << std::endl;
+  output_.logger().info() << "Applying ca.unassigned for CA " << ca_id
+                          << std::endl;
 
   return import_handler->remove_ca(ca_id, ca_name);
 }

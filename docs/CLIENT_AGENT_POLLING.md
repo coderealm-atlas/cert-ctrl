@@ -132,25 +132,35 @@ Cursor expiry (`409 Conflict`) is surfaced as an error; manually deleting `state
 3. When `auto_apply_config` is `true`, `apply_copy_actions()` executes copy/import directives immediately. Otherwise the config stays staged until operators run `cert-ctrl install-config apply`.
 4. Resource bundles referenced by install items are cached under `resources/{certs|cas}/<id>/current/`. Certificates include decrypted private keys, PEM/DER material, `fullchain.pem`, optional PFX, and `meta.json` for traceability.
 
-### cert.renewed
+### cert.updated
 
 ```
-{ "type": "cert.renewed", "ref": { "cert_id": 9981 } }
+{ "type": "cert.updated", "ref": { "cert_id": 9981 } }
 ```
 
-- `CertRenewedHandler` reuses the cached install configuration (fetching it if absent).
-- `InstallConfigManager::apply_copy_actions()` is invoked with `target_ob_type="cert"` so only the destinations tied to that certificate are touched.
-- Materialisation reuses the same resource cache as `install.updated`, ensuring decrypted keys and certificate chains stay in sync.
+- Server emits `cert.updated` whenever a device’s certificate payload changes
+  (renewal, new wrap, metadata edits). See `DEVICE_POLLING_UPDATES.md` for the
+  authoritative contract.
+- `CertUpdatedHandler` handles this event type. It reuses the cached install
+  configuration (fetching it if absent) and scopes
+  `InstallConfigManager::apply_copy_actions()` to `target_ob_type="cert"` so
+  only destinations tied to that certificate are touched.
+- Materialisation uses the same cache as `install.updated`. If the backend
+  responds with `409 WRAP_PENDING` when fetching deploy materials, the agent
+  logs the condition and waits for the next `cert.updated` signal, matching the
+  server guidance for per-device key wrapping.
 
-### cert.revoked
+### cert.unassigned
 
 ```
-{ "type": "cert.revoked", "ref": { "cert_id": 9982 } }
+{ "type": "cert.unassigned", "ref": { "cert_id": 9982 } }
 ```
 
-- The current implementation logs a warning and returns success without removing local files.
-- Downstream automation for quarantining or deleting the cached materials is still TODO.
-- Operators should remove or replace the certificate manually until handler support lands.
+- Emitted when the control plane detaches a certificate from this device.
+- The agent purges `runtime/resources/certs/<id>` (and any cached passwords)
+  immediately so further copy/exec actions stop refreshing the certificate.
+- Destination files are not deleted yet; operators should remove local copies
+  or re-run install-config workflows to deploy replacements.
 
 ## Manual Promotion & Recovery (`cert-ctrl install-config ...`)
 
@@ -210,7 +220,9 @@ Running `cert-ctrl` with no subcommand triggers the update check followed by the
 
 ## Known Gaps & Roadmap
 
-- `cert.revoked` only logs a warning; automated cleanup of cached resources is pending.
+- `cert.unassigned` removes cached materials but does not yet delete deployed
+  files/directories. Manual cleanup is required until install actions gain
+  removal hooks.
 - Cursor expiry (`409 Conflict`) requires manual intervention (delete `state/last_cursor.txt`).
 - No built-in metrics endpoint; operators rely on logs.
 - Self-update remains manual; the CLI points to installer scripts per platform.

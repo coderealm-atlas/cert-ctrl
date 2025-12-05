@@ -18,7 +18,9 @@ const defaultOptions = {
     verbose: false,
     force: false,
     installDir: '',
-    dryRun: false
+    dryRun: false,
+    writableDirs: '',
+    disableSandbox: false
   },
   baseUrl: 'https://install.lets-script.com'
 };

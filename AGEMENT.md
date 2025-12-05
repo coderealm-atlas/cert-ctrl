@@ -56,7 +56,7 @@ Tips:
 - Endpoint: `GET /apiv1/devices/self/updates`.
 - Default behavior is immediate response; long polling uses `wait=<seconds>` (max 30).
 - Responses include a cursor (`ETag`). Persist it and send via `If-None-Match` to avoid duplicate signals.
-- Expect signal types such as `install.updated`, `cert.renewed`, and `cert.revoked`; ignore unknown types gracefully.
+- Expect signal types such as `install.updated`, `cert.updated`, and `cert.unassigned`; ignore unknown types gracefully.
 
 ## Testing Guidance
 - Shell harnesses in the repo (`device_registration_workflow.sh`, etc.) exercise end-to-end flows. Prefer them for smoke checks after major changes.

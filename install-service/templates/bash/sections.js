@@ -45,39 +45,48 @@ if [ -z "$STATE_DIR" ] && [ -n "$STATE_DIR_PLACEHOLDER" ]; then
     STATE_DIR="$STATE_DIR_PLACEHOLDER"
 fi
 STATE_DIR_NAME="$(basename "$STATE_DIR")"
+
+SANDBOX_DISABLED="\${SANDBOX_DISABLED:-{{SANDBOX_DISABLED}}}"
+if [ -z "$SANDBOX_DISABLED" ]; then
+    SANDBOX_DISABLED="false"
+fi
+
+WRITABLE_DIRS="\${WRITABLE_DIRS:-}"
+WRITABLE_DIRS_PLACEHOLDER="{{WRITABLE_DIRS}}"
+if [ -z "$WRITABLE_DIRS" ] && [ -n "$WRITABLE_DIRS_PLACEHOLDER" ]; then
+    WRITABLE_DIRS="$WRITABLE_DIRS_PLACEHOLDER"
+fi
+
 RESTART_SERVICE_AFTER_INSTALL="false"
 SHA256_CMD=()
 
 declare -a SYSTEMD_EXTRA_RW_PATHS=()
 
-add_systemd_rw_path() {
-    local candidate="$1"
-    local force="\${2:-false}"
-
-    if [ -z "$candidate" ]; then
+append_custom_rw_paths() {
+    local raw_list="$1"
+    if [ -z "$raw_list" ]; then
         return 0
     fi
 
-    if [ "$force" != "force" ] && [ ! -e "$candidate" ]; then
-        return 0
-    fi
+    local IFS=','
+    local -a custom_paths
+    read -ra custom_paths <<< "$raw_list"
 
-    if [ "$candidate" = "$CONFIG_DIR" ] || [ "$candidate" = "$STATE_DIR" ]; then
-        return 0
-    fi
-
-    local existing
-    for existing in "\${SYSTEMD_EXTRA_RW_PATHS[@]}"; do
-        if [ "$existing" = "$candidate" ]; then
-            return 0
+    local entry trimmed
+    for entry in "\${custom_paths[@]}"; do
+        trimmed=$(trim_whitespace "$entry")
+        if [ -n "$trimmed" ]; then
+            add_systemd_rw_path "$trimmed" "force"
         fi
     done
-
-    SYSTEMD_EXTRA_RW_PATHS+=("$candidate")
 }
 
 collect_systemd_rw_paths() {
     SYSTEMD_EXTRA_RW_PATHS=()
+
+    if [ "$SANDBOX_DISABLED" = "true" ]; then
+        return 0
+    fi
 
     local -a linux_candidates=(
         "/usr/local/share/ca-certificates"
@@ -110,6 +119,25 @@ collect_systemd_rw_paths() {
     if [ -n "$ca_import_dir" ]; then
         add_systemd_rw_path "$ca_import_dir" "force"
     fi
+
+    if [ -n "$WRITABLE_DIRS" ]; then
+        log_verbose "Adding user-specified writable paths: $WRITABLE_DIRS"
+        append_custom_rw_paths "$WRITABLE_DIRS"
+    fi
+}
+
+trim_whitespace() {
+    local value="$1"
+
+    while [ -n "$value" ] && [[ "$value" =~ ^[[:space:]] ]]; do
+        value="\${value#?}"
+    done
+
+    while [ -n "$value" ] && [[ "$value" =~ [[:space:]]$ ]]; do
+        value="\${value%?}"
+    done
+
+    printf '%s' "$value"
 }
 
 OS_ID=""
@@ -1067,7 +1095,11 @@ install_systemd_service_unit() {
     local unit_path="/etc/systemd/system/$SERVICE_NAME"
     declare -a preserved_readwrite_paths=()
     declare -A seen_readwrite_paths=()
+    local preserved_protect_system="__UNSET__"
+    local preserved_protect_home="__UNSET__"
+    local unit_previously_existed="false"
     if [ -f "$unit_path" ]; then
+        unit_previously_existed="true"
         while IFS= read -r line; do
             case "$line" in
                 ReadWritePaths=*)
@@ -1078,6 +1110,12 @@ install_systemd_service_unit() {
                             seen_readwrite_paths["$existing_path"]=1
                         fi
                     fi
+                    ;;
+                ProtectSystem=*)
+                    preserved_protect_system="$line"
+                    ;;
+                ProtectHome=*)
+                    preserved_protect_home="$line"
                     ;;
             esac
         done < "$unit_path"
@@ -1107,38 +1145,42 @@ install_systemd_service_unit() {
     sed -i "s|@@STATE_DIR_NAME@@|$STATE_DIR_NAME|g" "$unit_path"
     sed -i "s|@@STATE_DIR@@|$STATE_DIR|g" "$unit_path"
 
-    collect_systemd_rw_paths
+    local extra_readwrite_block=""
+    if [ "$SANDBOX_DISABLED" = "true" ]; then
+        log_warning "ProtectSystem/ProtectHome disabled (explicit --no-sandbox)"
+    else
+        collect_systemd_rw_paths
 
-    local -a combined_readwrite_paths=()
-    local extra_path
+        local -a combined_readwrite_paths=()
+        local extra_path
 
-    if [ \${#SYSTEMD_EXTRA_RW_PATHS[@]} -gt 0 ]; then
-        for extra_path in "\${SYSTEMD_EXTRA_RW_PATHS[@]}"; do
-            combined_readwrite_paths+=("$extra_path")
-        done
-        log_verbose "Granting write access to trust store paths: \${SYSTEMD_EXTRA_RW_PATHS[*]}"
-    fi
-
-    for extra_path in "\${preserved_readwrite_paths[@]}"; do
-        if [ "$extra_path" = "$CONFIG_DIR" ] || [ "$extra_path" = "$STATE_DIR" ]; then
-            continue
+        if [ \${#SYSTEMD_EXTRA_RW_PATHS[@]} -gt 0 ]; then
+            for extra_path in "\${SYSTEMD_EXTRA_RW_PATHS[@]}"; do
+                combined_readwrite_paths+=("$extra_path")
+            done
+            log_verbose "Granting write access to trust store paths: \${SYSTEMD_EXTRA_RW_PATHS[*]}"
         fi
-        local already_present="false"
-        local existing_path
-        for existing_path in "\${combined_readwrite_paths[@]}"; do
-            if [ "$existing_path" = "$extra_path" ]; then
-                already_present="true"
-                break
+
+        for extra_path in "\${preserved_readwrite_paths[@]}"; do
+            if [ "$extra_path" = "$CONFIG_DIR" ] || [ "$extra_path" = "$STATE_DIR" ]; then
+                continue
+            fi
+            local already_present="false"
+            local existing_path
+            for existing_path in "\${combined_readwrite_paths[@]}"; do
+                if [ "$existing_path" = "$extra_path" ]; then
+                    already_present="true"
+                    break
+                fi
+            done
+            if [ "$already_present" = "false" ]; then
+                combined_readwrite_paths+=("$extra_path")
             fi
         done
-        if [ "$already_present" = "false" ]; then
-            combined_readwrite_paths+=("$extra_path")
-        fi
-    done
 
-    local extra_readwrite_block=""
-    if [ \${#combined_readwrite_paths[@]} -gt 0 ]; then
-        extra_readwrite_block=$(printf 'ReadWritePaths=%s\n' "\${combined_readwrite_paths[@]}")
+        if [ \${#combined_readwrite_paths[@]} -gt 0 ]; then
+            extra_readwrite_block=$(printf 'ReadWritePaths=%s\n' "\${combined_readwrite_paths[@]}")
+        fi
     fi
 
     local tmp_unit=$(mktemp)
@@ -1154,12 +1196,50 @@ install_systemd_service_unit() {
                 fi
                 continue
             fi
+
+            case "$line" in
+                ProtectSystem=*)
+                    if [ "$SANDBOX_DISABLED" = "true" ]; then
+                        continue
+                    fi
+                    if [ "$unit_previously_existed" = "true" ]; then
+                        if [ "$preserved_protect_system" = "__UNSET__" ]; then
+                            continue
+                        fi
+                        if [ -n "$preserved_protect_system" ] && [ "$preserved_protect_system" != "__UNSET__" ]; then
+                            printf '%s\n' "$preserved_protect_system"
+                            continue
+                        fi
+                    fi
+                    ;;
+                ProtectHome=*)
+                    if [ "$SANDBOX_DISABLED" = "true" ]; then
+                        continue
+                    fi
+                    if [ "$unit_previously_existed" = "true" ]; then
+                        if [ "$preserved_protect_home" = "__UNSET__" ]; then
+                            continue
+                        fi
+                        if [ -n "$preserved_protect_home" ] && [ "$preserved_protect_home" != "__UNSET__" ]; then
+                            printf '%s\n' "$preserved_protect_home"
+                            continue
+                        fi
+                    fi
+                    ;;
+            esac
+
             printf '%s\n' "$line"
         done < "$unit_path"
     } > "$tmp_unit"
     mv "$tmp_unit" "$unit_path"
     chmod 0644 "$unit_path"
     restore_selinux_context "$unit_path"
+
+    if [ "$SANDBOX_DISABLED" = "true" ]; then
+        sed -i '/^ProtectSystem=/d' "$unit_path"
+        sed -i '/^ProtectHome=/d' "$unit_path"
+        sed -i '/^ReadWritePaths=/d' "$unit_path"
+    fi
 
     ensure_service_directories
 
@@ -1757,6 +1837,10 @@ while [[ $# -gt 0 ]]; do
             CONFIG_DIR="$2"
             shift 2
             ;;
+        --writable-dirs|--rw-dirs)
+            WRITABLE_DIRS="$2"
+            shift 2
+            ;;
         --service)
             INSTALL_SERVICE="true"
             ENABLE_SERVICE="true"
@@ -1773,6 +1857,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-enable)
             ENABLE_SERVICE="false"
+            shift
+            ;;
+        --no-sandbox)
+            SANDBOX_DISABLED="true"
+            shift
+            ;;
+        --sandbox)
+            SANDBOX_DISABLED="false"
             shift
             ;;
         --non-interactive|--yes|-y)
@@ -1805,6 +1897,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --version VER     Install specific version"
             echo "  --install-dir DIR Custom install directory"
             echo "  --config-dir DIR  Override configuration directory"
+            echo "  --writable-dirs LIST  Comma-separated directories added to systemd ReadWritePaths"
+            echo "  --no-sandbox      Disable systemd ProtectSystem/ProtectHome sandbox"
+            echo "  --sandbox         Re-enable sandbox after using --no-sandbox"
             echo "  --force           Overwrite existing installation"
             echo "  --service         Install and enable systemd service"
             echo "  --no-service      Skip systemd service installation"
@@ -1845,6 +1940,10 @@ fi
 
 if [ -z "$VERBOSE" ]; then
     VERBOSE="false"
+fi
+
+if [ "$SANDBOX_DISABLED" = "true" ] && [ -n "$WRITABLE_DIRS" ]; then
+    log_warning "writable-dirs option ignored because sandbox is disabled"
 fi
 
 # Run installation
