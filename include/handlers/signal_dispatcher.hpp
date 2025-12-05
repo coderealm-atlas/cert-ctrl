@@ -55,7 +55,7 @@ public:
         
         // Check if already processed
         if (is_processed(signal_id)) {
-            BOOST_LOG_SEV(lg_, trivial::debug)
+            BOOST_LOG_SEV(lg_, trivial::trace)
                 << "Signal already processed: " << signal_id;
             return monad::IO<void>::pure();
         }

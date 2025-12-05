@@ -11,8 +11,11 @@ The agent consumes the `/apiv1/devices/self/updates` stream. Each element is
 mapped to `data::DeviceUpdateSignal` with one of the following concrete types:
 
 - `install.updated` &rarr; indicates that a new install-config version is ready.
-- `cert.renewed` &rarr; certificate materials were regenerated in place.
-- `cert.revoked` &rarr; certificate is no longer usable (cleanup path).
+- `cert.updated` &rarr; certificate payload changed (renewal, wrap ready, or
+  metadata edits) and the device needs to refresh its bundle.
+- `cert.unassigned` &rarr; backend emits this when a certificate is detached
+  from a device. The agent purges the cached materials for the referenced
+  certificate immediately so future installs stop deploying it.
 - `ca.assigned` &rarr; control plane granted this device a new CA trust anchor;
   the agent immediately stages the CA bundle and imports it into the platform
   trust stores without waiting for a broader install-config update.
@@ -39,15 +42,17 @@ now:
   `ensure_config_version(...)`, stages it to disk, and runs copy/import actions
   (subject to `auto_apply_config`). Resource cache eviction is not required
   because the install-config will reference the correct set of materials.
-- **cert.renewed** – the manager calls
+- **cert.updated** – the manager calls
   `invalidate_resource_cache("cert", cert_id)` before reapplying copy actions.
   The helper removes `runtime/resources/certs/<id>` and forgets any stored PFX
   password so that `InstallResourceMaterializer` is forced to download the
-  newest certificate payload on the next run.
-- **cert.revoked** – the local cache for the certificate is purged. At the
-  moment we do not attempt to delete destination files, but they will no longer
-  be refreshed. Follow-up work will add explicit removal/quarantine logic when
-  revoke semantics are finalised.
+  newest certificate payload on the next run. After invalidation, handlers
+  fetch deploy materials using the same flow as `install.updated`, so 409
+  `WRAP_PENDING` responses continue to be retried until another
+  `cert.updated` arrives (per `DEVICE_POLLING_UPDATES.md`).
+- **cert.unassigned** – cached certificate resources are purged (same flow as
+  `cert.updated` invalidation) so detached certificates stop refreshing. CLI
+  destinations still require manual cleanup until delete semantics are agreed.
 - **ca.assigned** – the handler invalidates any cached CA bundle, downloads the
   new CA payload directly from `/devices/self/cas/<id>/bundle`, writes it under
   `resources/cas/<id>/current`, and runs the `import_ca` pipeline. This path
@@ -59,6 +64,17 @@ now:
   revoked CA without waiting for manual intervention.
 These steps ensure that frequent certificate rotations invalidate cached
 materials even if the install-config version remains unchanged.
+
+## Auto-Apply Behavior
+
+With `auto_apply_config=true`, every `install.updated` signal downloads the
+referenced config version and immediately runs copy/import actions. When the
+flag is `false`, the agent now ignores `install.updated` entirely: it logs the
+event and keeps using the previously staged `install_config.json` until a human
+invokes `cert-ctrl install-config pull/apply`. Follow-up signals such as
+`cert.updated` therefore continue to execute the last manually approved config,
+ensuring that no remote changes are rolled out until an operator pulls them
+explicitly.
 
 ## CLI-Driven Invalidation
 

@@ -92,12 +92,12 @@ struct InstallUpdatedRef {
   std::optional<std::string> installs_hash_b64;
 };
 
-struct CertRenewedRef {
+struct CertUpdatedRef {
   int64_t cert_id{};
   std::optional<std::string> serial; // optional
 };
 
-struct CertRevokedRef {
+struct CertUnassignedRef {
   int64_t cert_id{};
 };
 
@@ -115,11 +115,11 @@ struct CaUnassignedRef {
 // compatibility. A derived typed_ref variant is populated when type matches a
 // known enumerated signal.
 struct DeviceUpdateSignal {
-  std::string type;      // e.g. install.updated, cert.renewed
+  std::string type;      // e.g. install.updated, cert.updated
   int64_t ts_ms{};       // event time
   json::object ref;      // original lightweight reference object
-  std::variant<std::monostate, InstallUpdatedRef, CertRenewedRef,
-               CertRevokedRef, CaAssignedRef, CaUnassignedRef>
+  std::variant<std::monostate, InstallUpdatedRef, CertUpdatedRef,
+               CertUnassignedRef, CaAssignedRef, CaUnassignedRef>
       typed_ref; // convenience decoded form (monostate if unknown)
 
   friend DeviceUpdateSignal tag_invoke(
@@ -160,8 +160,8 @@ struct DeviceUpdateSignal {
           }
         }
         s.typed_ref = r;
-      } else if (s.type == "cert.renewed") {
-        CertRenewedRef r{};
+      } else if (s.type == "cert.updated") {
+        CertUpdatedRef r{};
         if (auto *cid = s.ref.if_contains("cert_id")) {
           r.cert_id = json::value_to<int64_t>(*cid);
         }
@@ -171,8 +171,8 @@ struct DeviceUpdateSignal {
           }
         }
         s.typed_ref = r;
-      } else if (s.type == "cert.revoked") {
-        CertRevokedRef r{};
+      } else if (s.type == "cert.unassigned") {
+        CertUnassignedRef r{};
         if (auto *cid = s.ref.if_contains("cert_id")) {
           r.cert_id = json::value_to<int64_t>(*cid);
         }
@@ -257,11 +257,11 @@ struct DeviceUpdatesResponse {
 inline bool is_install_updated(const DeviceUpdateSignal &s) {
   return std::holds_alternative<InstallUpdatedRef>(s.typed_ref);
 }
-inline bool is_cert_renewed(const DeviceUpdateSignal &s) {
-  return std::holds_alternative<CertRenewedRef>(s.typed_ref);
+inline bool is_cert_updated(const DeviceUpdateSignal &s) {
+  return std::holds_alternative<CertUpdatedRef>(s.typed_ref);
 }
-inline bool is_cert_revoked(const DeviceUpdateSignal &s) {
-  return std::holds_alternative<CertRevokedRef>(s.typed_ref);
+inline bool is_cert_unassigned(const DeviceUpdateSignal &s) {
+  return std::holds_alternative<CertUnassignedRef>(s.typed_ref);
 }
 inline bool is_ca_assigned(const DeviceUpdateSignal &s) {
   return std::holds_alternative<CaAssignedRef>(s.typed_ref);
@@ -276,15 +276,15 @@ get_install_updated(const DeviceUpdateSignal &s) {
     return *p;
   return std::nullopt;
 }
-inline std::optional<CertRenewedRef>
-get_cert_renewed(const DeviceUpdateSignal &s) {
-  if (auto p = std::get_if<CertRenewedRef>(&s.typed_ref))
+inline std::optional<CertUpdatedRef>
+get_cert_updated(const DeviceUpdateSignal &s) {
+  if (auto p = std::get_if<CertUpdatedRef>(&s.typed_ref))
     return *p;
   return std::nullopt;
 }
-inline std::optional<CertRevokedRef>
-get_cert_revoked(const DeviceUpdateSignal &s) {
-  if (auto p = std::get_if<CertRevokedRef>(&s.typed_ref))
+inline std::optional<CertUnassignedRef>
+get_cert_unassigned(const DeviceUpdateSignal &s) {
+  if (auto p = std::get_if<CertUnassignedRef>(&s.typed_ref))
     return *p;
   return std::nullopt;
 }
@@ -306,8 +306,8 @@ get_ca_unassigned(const DeviceUpdateSignal &s) {
 // Provide aliases inside certctrl::data so both namespaces can reference
 // update-signal types without qualification mismatches in tooling.
 namespace certctrl::data {
-using ::data::CertRenewedRef;
-using ::data::CertRevokedRef;
+using ::data::CertUpdatedRef;
+using ::data::CertUnassignedRef;
 using ::data::CaAssignedRef;
 using ::data::CaUnassignedRef;
 using ::data::DeviceUpdateSignal;

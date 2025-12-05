@@ -100,8 +100,8 @@ Comprehensive integration test for `updates_polling_handler.hpp` has been create
 
 3. **Concrete Handlers:**
    - `InstallUpdatedHandler` - Handles install.updated signals
-   - `CertRenewedHandler` - Handles cert.renewed signals
-   - `CertRevokedHandler` - Handles cert.revoked signals
+   - `CertUpdatedHandler` - Handles cert.updated signals
+   - `CertUnassignedHandler` - Handles cert.unassigned signals
 
 4. **UpdatesPollingHandler Integration**
    - Signal dispatcher integration
