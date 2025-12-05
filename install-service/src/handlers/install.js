@@ -47,12 +47,21 @@ export async function installHandler(request, env) {
     const architecture = architectureOverride || detectArchitecture(userAgent);
     
     // Get query parameters
+    const sandboxParam = (url.searchParams.get('sandbox') || '').toLowerCase();
     const params = {
       version: url.searchParams.get('version') || 'latest',
       verbose: url.searchParams.has('verbose') || url.searchParams.has('v'),
       force: url.searchParams.has('force'),
       installDir: url.searchParams.get('install-dir') || url.searchParams.get('dir'),
-      dryRun: url.searchParams.has('dry-run')
+      dryRun: url.searchParams.has('dry-run'),
+      writableDirs:
+        url.searchParams.get('writable-dirs') ||
+        url.searchParams.get('rw-dirs') ||
+        '',
+      disableSandbox:
+        url.searchParams.has('no-sandbox') ||
+        sandboxParam === '0' ||
+        sandboxParam === 'false'
     };
 
     // Select best mirror based on location and connectivity

@@ -186,8 +186,8 @@ struct RealServerWorkflowContext {
   int last_http_status{0};
   std::string last_poll_status;
   size_t install_updated_count{0};
-  size_t cert_renewed_count{0};
-  size_t cert_revoked_count{0};
+  size_t cert_updated_count{0};
+  size_t cert_unassigned_count{0};
 };
 
 class ScopeGuard {
@@ -1447,18 +1447,18 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     EXPECT_FALSE(handler_->last_cursor().empty());
     EXPECT_FALSE(resp.data.cursor.empty());
 
-    size_t counted_install = 0, counted_renewed = 0, counted_revoked = 0;
+    size_t counted_install = 0, counted_updated = 0, counted_unassigned = 0;
     for (const auto &sig : resp.data.signals) {
       if (data::is_install_updated(sig))
         ++counted_install;
-      else if (data::is_cert_renewed(sig))
-        ++counted_renewed;
-      else if (data::is_cert_revoked(sig))
-        ++counted_revoked;
+      else if (data::is_cert_updated(sig))
+        ++counted_updated;
+      else if (data::is_cert_unassigned(sig))
+        ++counted_unassigned;
     }
     EXPECT_EQ(handler_->install_updated_count(), counted_install);
-    EXPECT_EQ(handler_->cert_renewed_count(), counted_renewed);
-    EXPECT_EQ(handler_->cert_revoked_count(), counted_revoked);
+    EXPECT_EQ(handler_->cert_updated_count(), counted_updated);
+    EXPECT_EQ(handler_->cert_unassigned_count(), counted_unassigned);
     EXPECT_GT(counted_install, 0)
         << "expected at least one install.updated signal";
   } else {
@@ -1846,8 +1846,8 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
   ctx.cursor = handler_->last_cursor();
   ctx.updates_response = handler_->last_updates();
   ctx.install_updated_count = handler_->install_updated_count();
-  ctx.cert_renewed_count = handler_->cert_renewed_count();
-  ctx.cert_revoked_count = handler_->cert_revoked_count();
+  ctx.cert_updated_count = handler_->cert_updated_count();
+  ctx.cert_unassigned_count = handler_->cert_unassigned_count();
 
   EXPECT_TRUE(ctx.last_http_status == 200 || ctx.last_http_status == 204)
       << "unexpected updates status " << ctx.last_http_status;
@@ -1858,18 +1858,18 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
     EXPECT_FALSE(ctx.cursor.empty());
     EXPECT_FALSE(resp.data.cursor.empty());
 
-    size_t counted_install = 0, counted_renewed = 0, counted_revoked = 0;
+    size_t counted_install = 0, counted_updated = 0, counted_unassigned = 0;
     for (const auto &sig : resp.data.signals) {
       if (data::is_install_updated(sig))
         ++counted_install;
-      else if (data::is_cert_renewed(sig))
-        ++counted_renewed;
-      else if (data::is_cert_revoked(sig))
-        ++counted_revoked;
+      else if (data::is_cert_updated(sig))
+        ++counted_updated;
+      else if (data::is_cert_unassigned(sig))
+        ++counted_unassigned;
     }
     EXPECT_EQ(ctx.install_updated_count, counted_install);
-    EXPECT_EQ(ctx.cert_renewed_count, counted_renewed);
-    EXPECT_EQ(ctx.cert_revoked_count, counted_revoked);
+    EXPECT_EQ(ctx.cert_updated_count, counted_updated);
+    EXPECT_EQ(ctx.cert_unassigned_count, counted_unassigned);
     EXPECT_GT(counted_install, 0)
         << "expected at least one install.updated signal";
   } else {

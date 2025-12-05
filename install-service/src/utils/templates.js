@@ -47,6 +47,8 @@ export async function getInstallTemplate(scriptType, options) {
     SERVICE_LABEL: defaults.serviceLabel,
     LOG_DIR: defaults.logDir,
     DRY_RUN: params.dryRun ? 'true' : 'false',
+    WRITABLE_DIRS: sanitizeWritableDirs(params.writableDirs),
+    SANDBOX_DISABLED: params.disableSandbox ? 'true' : 'false',
     GITHUB_REPO_OWNER: 'coderealm-atlas',
     GITHUB_REPO_NAME: 'cert-ctrl'
   };
@@ -72,4 +74,26 @@ function interpolateTemplate(template, vars) {
   result = result.replace(/\\\$\{/g, '${');
   
   return result;
+}
+
+function sanitizeWritableDirs(value) {
+  if (!value) {
+    return '';
+  }
+
+  const allowedChars = /[^A-Za-z0-9_~\/\.\-,:+]/g;
+  const unique = new Set();
+
+  value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .forEach((entry) => {
+      const cleaned = entry.replace(allowedChars, '');
+      if (cleaned) {
+        unique.add(cleaned);
+      }
+    });
+
+  return Array.from(unique).join(',');
 }

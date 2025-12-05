@@ -26,6 +26,7 @@
 #include "common_macros.hpp"
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
+#include "data/data_shape.hpp"
 #include "data/install_config_dto.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "http_client_manager.hpp"
@@ -367,6 +368,17 @@ public:
 private:
   std::string name_;
 };
+
+::data::DeviceUpdateSignal make_cert_updated_signal(std::int64_t cert_id) {
+  json::object ref;
+  ref["cert_id"] = cert_id;
+  json::object payload;
+  payload["type"] = "cert.updated";
+  payload["ts_ms"] = 1234567;
+  payload["ref"] = ref;
+  json::value signal = payload;
+  return json::value_to<::data::DeviceUpdateSignal>(signal);
+}
 
 struct MockAccessTokenLoaderFixed
     : public certctrl::install_actions::IAccessTokenLoader {
@@ -760,6 +772,124 @@ TEST_F(InstallConfigManagerFixture, SkipsCopyActionsWithEmptyDestinations) {
   ASSERT_FALSE(apply_r->is_err())
       << "Expected success but got error: " << apply_r->error();
 
+  EXPECT_FALSE(std::filesystem::exists(dest_path));
+
+  std::filesystem::remove_all(runtime_dir);
+}
+
+TEST_F(InstallConfigManagerFixture,
+  CertUpdatedAppliesCopyActionsWhenInstallItemsActionable) {
+  misc::ThreadNotifier notifier;
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
+
+  const std::int64_t target_cert = 321;
+
+  dto::DeviceInstallConfigDto config{};
+  config.version = 3;
+
+  dto::InstallItem copy_item{};
+  copy_item.id = "copy-cert";
+  copy_item.type = "copy";
+  copy_item.ob_type = std::string{"cert"};
+  copy_item.ob_id = target_cert;
+  copy_item.from = std::vector<std::string>{"fullchain.pem"};
+  auto dest_path = runtime_dir / "deploy" / "certs" / "active.pem";
+  copy_item.to = std::vector<std::string>{dest_path.string()};
+  config.installs.push_back(copy_item);
+
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+
+  std::optional<monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+      plan_result;
+  harness_->install_manager()
+      .ensure_config_version(config.version, std::nullopt)
+      .run([&](auto result) {
+        plan_result = result;
+        notifier.notify();
+      });
+  notifier.waitForNotification();
+  ASSERT_TRUE(plan_result.has_value());
+  ASSERT_TRUE(plan_result->is_ok()) << plan_result->error();
+
+  auto signal = make_cert_updated_signal(target_cert);
+
+  std::optional<monad::MyVoidResult> apply_r;
+  harness_->install_manager()
+      .apply_copy_actions_for_signal(signal)
+      .run([&](auto result) {
+        apply_r = result;
+        notifier.notify();
+      });
+  notifier.waitForNotification();
+  ASSERT_TRUE(apply_r.has_value());
+  ASSERT_TRUE(apply_r->is_ok()) << apply_r->error();
+
+  ASSERT_TRUE(std::filesystem::exists(dest_path));
+  const auto copied = read_file(dest_path);
+  EXPECT_NE(copied.find("BEGIN CERTIFICATE"), std::string::npos);
+
+  std::filesystem::remove_all(runtime_dir);
+}
+
+TEST_F(InstallConfigManagerFixture,
+  CertUpdatedSkipsWhenInstallItemsLackTargets) {
+  misc::ThreadNotifier notifier;
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
+
+  const std::int64_t target_cert = 654;
+
+  dto::DeviceInstallConfigDto config{};
+  config.version = 7;
+
+  dto::InstallItem copy_item{};
+  copy_item.id = "copy-empty";
+  copy_item.type = "copy";
+  copy_item.ob_type = std::string{"cert"};
+  copy_item.ob_id = target_cert;
+  copy_item.from = std::vector<std::string>{"fullchain.pem"};
+  copy_item.to = std::vector<std::string>{};
+  config.installs.push_back(copy_item);
+
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+
+  auto resource_dir = runtime_dir / "resources" / "certs" /
+                      std::to_string(target_cert) / "current";
+  write_file(resource_dir / "fullchain.pem", "CHAIN654\n");
+
+  std::optional<monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+      plan_result;
+  harness_->install_manager()
+      .ensure_config_version(config.version, std::nullopt)
+      .run([&](auto result) {
+        plan_result = result;
+        notifier.notify();
+      });
+  notifier.waitForNotification();
+  ASSERT_TRUE(plan_result.has_value());
+  ASSERT_TRUE(plan_result->is_ok()) << plan_result->error();
+
+  auto signal = make_cert_updated_signal(target_cert);
+
+  std::optional<monad::MyVoidResult> apply_r;
+  harness_->install_manager()
+      .apply_copy_actions_for_signal(signal)
+      .run([&](auto result) {
+        apply_r = result;
+        notifier.notify();
+      });
+  notifier.waitForNotification();
+  ASSERT_TRUE(apply_r.has_value());
+  ASSERT_TRUE(apply_r->is_ok()) << apply_r->error();
+
+  auto dest_path = runtime_dir / "deploy" / "certs" / "inactive.pem";
   EXPECT_FALSE(std::filesystem::exists(dest_path));
 
   std::filesystem::remove_all(runtime_dir);

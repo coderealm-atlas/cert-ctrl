@@ -91,7 +91,33 @@ curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --version v1.
 
 # Verbose output
 curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --verbose
+
+# Grant cert-ctrl access to extra directories during service install
+curl -fsSL "https://install.lets-script.com/install.sh?writable-dirs=/etc/nginx/ssl,/var/www/certs" | \
+  sudo bash -s -- --service
+
+# Equivalent when running a downloaded copy
+curl -fsSL https://install.lets-script.com/install.sh -o install.sh
+sudo bash install.sh --writable-dirs /etc/nginx/ssl,/var/www/certs
+
+# Drop the systemd sandbox entirely (not recommended unless you trust the host)
+curl -fsSL "https://install.lets-script.com/install.sh?no-sandbox=1" | sudo bash -s -- --service
+# or
+sudo bash install.sh --no-sandbox
 ```
+
+The installer keeps `ProtectSystem=strict` by default. Supplying `writable-dirs` (via query
+string or `--writable-dirs` CLI flag) appends those absolute paths to the systemd unit's
+`ReadWritePaths=` list so cert-ctrl can copy certificates directly into application-specific
+locations while leaving the rest of the filesystem read-only.
+
+Use `--no-sandbox` (or `?no-sandbox=1`) if you need cert-ctrl to run without any systemd
+filesystem restrictions. This grants full root write access; prefer adding targeted
+`writable-dirs` entries instead.
+
+Already-installed agents keep any manual sandbox tweaks you make to `certctrl.service`. If you
+remove or customize `ProtectSystem=/ProtectHome=` in a previous deployment, later upgrades
+respect that existing setting instead of re-imposing the default hardening automatically.
 
 ### Force Platform Detection
 

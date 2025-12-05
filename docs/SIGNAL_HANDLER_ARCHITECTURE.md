@@ -19,8 +19,8 @@ include/handlers/
 └── signal_handlers/
     ├── signal_handler_base.hpp     # Common interface
     ├── install_updated_handler.hpp # install.updated handler
-    ├── cert_renewed_handler.hpp    # cert.renewed handler
-    └── cert_revoked_handler.hpp    # cert.revoked handler (logging only)
+    ├── cert_updated_handler.hpp    # cert.updated handler
+    └── cert_unassigned_handler.hpp # cert.unassigned handler (cache purge)
 ```
 
 `UpdatesPollingHandler` constructs the dispatcher with the runtime directory (last entry in `ConfigSources.paths_`) and registers the three handlers using a shared `InstallConfigManager`.
@@ -49,15 +49,18 @@ Because deduplication relies on the backend timestamp, identical `type`/`ts_ms` 
 - When `auto_apply_config` is `true`, immediately invokes `apply_copy_actions()` to execute all copy/import directives and materialise resources under `runtime_dir/resources/{certs|cas}/<id>/current/`.
 - When `auto_apply_config` is `false` (default), logs that the new plan has been staged and returns without executing actions. Operators promote staged configs via `cert-ctrl install-config apply`.
 
-### CertRenewedHandler
+### CertUpdatedHandler
 
+- Handles backend `cert.updated` signals which fire any time a device certificate payload changes (renewals, wrap rotation, metadata edits).
 - Ensures the cached install configuration is available (fetching it if necessary) and reruns `apply_copy_actions()` for the targeted certificate ID.
-- Reuses the same resource cache as the install handler, guaranteeing decrypted keys, PEM chains, DER files, and PFX bundles stay in sync.
+- Reuses the same resource cache as the install handler, guaranteeing decrypted keys, PEM chains, DER files, and PFX bundles stay in sync. When deploy fetches return `409 WRAP_PENDING`, the handler logs the condition and waits for a subsequent `cert.updated` before retrying, per `DEVICE_POLLING_UPDATES.md`.
 
-### CertRevokedHandler
+### CertUnassignedHandler
 
-- Logs that the certificate was revoked and returns success.
-- No automatic cleanup yet; a TODO remains in the source so operators know the current limitation.
+- Purges `runtime/resources/certs/<id>` whenever the backend detaches a
+    certificate from the device so follow-up installs stop refreshing it.
+- Leaves deployed destination files in place; removal workflows will be wired
+    through install actions once delete semantics are available.
 
 ## InstallConfigManager Integration
 
@@ -89,7 +92,8 @@ Removing these files clears local state; the next poll will refetch and rebuild 
 
 ## Limitations & Future Work
 
-- `cert.revoked` handling is informational only.
+- `cert.unassigned` stops refreshing detached certificates but still relies on
+    manual cleanup for deployed files.
 - No adaptive backoff lives in the dispatcher; the poller enforces a minimum 10-second delay and honours server `Retry-After` hints.
 - All work is synchronous. If install actions become expensive we will need background workers or a task queue.
 - Deduplication depends on backend timestamps; if the upstream system emits duplicate `ts_ms` values, signals may be dropped.
@@ -104,7 +108,7 @@ Potential enhancements:
 Current automated coverage is minimal. Recommended additions:
 - Dispatcher deduplication round-trip (load → dispatch → persist).
 - `InstallUpdatedHandler` tests for staging vs auto-apply using a stubbed `InstallConfigManager`.
-- `CertRenewedHandler` test verifying selective copy behaviour for a specific certificate ID.
+- `CertUpdatedHandler` test verifying selective copy behaviour for a specific certificate ID.
 
 ## Documentation Alignment
 
