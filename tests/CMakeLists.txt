@@ -8,6 +8,8 @@ if(NOT BUILD_TESTING)
   return()
 endif()
 
+set(DEVICE_STATE_STORE_SRC ${CMAKE_SOURCE_DIR}/src/state/device_state_store.cpp)
+
 if(MSVC)
   add_compile_options(/utf-8)
 
@@ -121,6 +123,7 @@ add_executable(test_login_handler_workflow
   ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
+  ${DEVICE_STATE_STORE_SRC}
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_login_handler_workflow PRIVATE cxx_std_17)
@@ -144,6 +147,7 @@ target_link_libraries(test_login_handler_workflow PRIVATE
   MINIZIP::minizip-ng
   jwt-cpp::jwt-cpp
   unofficial-sodium::sodium
+  unofficial::sqlite3::sqlite3
   fmt::fmt
   protobuf::libprotobuf
   OpenSSL::SSL
@@ -166,6 +170,7 @@ gtest_discover_tests(test_login_handler_workflow DISCOVERY_TIMEOUT ${TEST_DISCOV
 # Real server integration login test (requires running external server)
 add_executable(test_login_real_server
   test_login_real_server.cpp
+  ${DEVICE_STATE_STORE_SRC}
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_login_real_server PRIVATE cxx_std_17)
@@ -192,6 +197,7 @@ target_link_libraries(test_login_real_server PRIVATE
   Boost::log
   Boost::log_setup
   unofficial-sodium::sodium
+  unofficial::sqlite3::sqlite3
   certctrl_libatomic
   di_config
 )
@@ -214,6 +220,7 @@ add_executable(test_device_registration
   ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
+  ${DEVICE_STATE_STORE_SRC}
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_device_registration PRIVATE cxx_std_17)
@@ -239,6 +246,8 @@ target_link_libraries(test_device_registration PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   unofficial-sodium::sodium
+  unofficial::sqlite3::sqlite3
+  unofficial::sqlite3::sqlite3
   certctrl_libatomic
   di_config
 )
@@ -268,6 +277,7 @@ add_executable(test_install_config_manager
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
+  ${DEVICE_STATE_STORE_SRC}
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_install_config_manager PRIVATE cxx_std_17)
@@ -297,6 +307,7 @@ target_link_libraries(test_install_config_manager PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   unofficial-sodium::sodium
+  unofficial::sqlite3::sqlite3
   certctrl_libatomic
   di_config
 )
@@ -405,6 +416,7 @@ add_executable(test_updates_polling_handler
   ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
   ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
   ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
+  ${DEVICE_STATE_STORE_SRC}
   ${HTTP_CLIENT_SRCS}
 )
 target_compile_features(test_updates_polling_handler PRIVATE cxx_std_17)
@@ -435,6 +447,7 @@ target_link_libraries(test_updates_polling_handler PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   unofficial-sodium::sodium
+  unofficial::sqlite3::sqlite3
   certctrl_libatomic
   di_config
 )

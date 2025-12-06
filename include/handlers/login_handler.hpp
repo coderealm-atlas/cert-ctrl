@@ -26,6 +26,7 @@
 #include "io_monad.hpp"
 #include "my_error_codes.hpp"
 #include "simple_data.hpp"
+#include "state/device_state_store.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
 #include <fmt/format.h>
 
@@ -43,6 +44,7 @@ class LoginHandler : public certctrl::IHandler,
   cjj365::ConfigSources &config_sources_;
   certctrl::ICertctrlConfigProvider &certctrl_config_provider_;
   client_async::HttpClientManager &http_client_;
+  IDeviceStateStore &state_store_;
   customio::ConsoleOutput &output_hub_;
   CliCtx &cli_ctx_;
   src::severity_logger<trivial::severity_level> lg;
@@ -61,11 +63,13 @@ public:
                certctrl::ICertctrlConfigProvider &certctrl_config_provider,
                CliCtx &cli_ctx, //
                customio::ConsoleOutput &output_hub,
-               client_async::HttpClientManager &http_client)
+               client_async::HttpClientManager &http_client,
+               IDeviceStateStore &state_store)
       : ioc_(io_context_manager.ioc()),
         config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
-        output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
+        http_client_(http_client), state_store_(state_store),
+        output_hub_(output_hub), cli_ctx_(cli_ctx),
         device_auth_url_(fmt::format("{}/auth/device",
                                      certctrl_config_provider_.get().base_url)),
         opt_desc_("misc subcommand options") {
@@ -122,11 +126,9 @@ public:
 private:
   void clear_cached_session();
   monad::IO<bool> reuse_existing_session_if_possible();
-  monad::IO<bool> refresh_session_with_token(const std::string &refresh_token,
-                                             const std::filesystem::path &out_dir);
+  monad::IO<bool>
+  refresh_session_with_token(const std::string &refresh_token);
   std::optional<std::filesystem::path> resolve_runtime_dir() const;
-  static std::optional<std::string>
-  read_text_file_trimmed(const std::filesystem::path &path);
   static bool is_access_token_valid(const std::string &token,
                                     std::chrono::seconds skew);
 };

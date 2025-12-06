@@ -17,8 +17,8 @@
 #include <filesystem>
 #include <fmt/format.h>
 #include <fstream>
-#include <iterator>
 #include <jwt-cpp/jwt.h>
+#include <string>
 #include <string_view>
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -42,26 +42,26 @@ std::string determine_device_ip(asio::io_context &ioc,
     return std::string{kFallback};
   }
 
-  boost::urls::url_view url = parsed.value();
-  std::string host = std::string(url.host());
-  if (host.empty()) {
+  auto host_view = parsed->host();
+  if (host_view.empty()) {
     return std::string{kFallback};
   }
 
-  std::string service;
-  if (url.has_port()) {
-    service = std::string(url.port());
-  } else if (url.scheme_id() == boost::urls::scheme::https) {
-    service = "443";
-  } else {
-    service = "80";
-  }
+  auto port_view = parsed->port();
+  std::string service = port_view.empty() ? std::string("443")
+                                          : std::string(port_view);
 
+  auto host_str = std::string(host_view);
+
+  asio::ip::udp::resolver resolver(ioc);
   boost::system::error_code ec;
-  boost::asio::ip::udp::resolver resolver(ioc);
-  auto results = resolver.resolve(host, service, ec);
+  auto results = resolver.resolve(asio::ip::udp::v4(), host_str, service, ec);
   if (ec || results.empty()) {
-    return std::string{kFallback};
+    ec = {};
+    results = resolver.resolve(asio::ip::udp::v6(), host_str, service, ec);
+    if (ec || results.empty()) {
+      return std::string{kFallback};
+    }
   }
 
   auto endpoint = results.begin()->endpoint();
@@ -112,28 +112,6 @@ std::optional<std::filesystem::path> LoginHandler::resolve_runtime_dir() const {
   return std::nullopt;
 }
 
-std::optional<std::string>
-LoginHandler::read_text_file_trimmed(const std::filesystem::path &path) {
-  std::ifstream ifs(path, std::ios::binary);
-  if (!ifs.is_open()) {
-    return std::nullopt;
-  }
-  std::string contents((std::istreambuf_iterator<char>(ifs)), {});
-  auto first = contents.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) {
-    return std::nullopt;
-  }
-  auto last = contents.find_last_not_of(" \t\r\n");
-  if (last == std::string::npos || last < first) {
-    return std::nullopt;
-  }
-  std::string trimmed = contents.substr(first, last - first + 1);
-  if (trimmed.empty()) {
-    return std::nullopt;
-  }
-  return trimmed;
-}
-
 bool LoginHandler::is_access_token_valid(const std::string &token,
                                          std::chrono::seconds skew) {
   try {
@@ -160,25 +138,18 @@ void LoginHandler::clear_cached_session() {
     return;
   }
 
-  const auto state_dir = *runtime_dir / "state";
-  bool removed_any = false;
-  auto remove_file = [&](const std::filesystem::path &file) {
-    std::error_code ec;
-    if (std::filesystem::remove(file, ec)) {
-      removed_any = true;
-    } else if (ec) {
-      output_hub_.logger().warning()
-          << "Failed to remove cached session file '" << file
-          << "': " << ec.message() << std::endl;
-    }
-  };
-
-  remove_file(state_dir / "access_token.txt");
-  remove_file(state_dir / "refresh_token.txt");
-
-  if (removed_any) {
+  const bool had_access = state_store_.get_access_token().has_value();
+  const bool had_refresh = state_store_.get_refresh_token().has_value();
+  if (auto err = state_store_.clear_tokens()) {
+    output_hub_.logger().warning()
+        << "Failed to clear cached device session tokens: " << *err
+        << std::endl;
+  } else if (had_access || had_refresh) {
     output_hub_.printer().yellow()
         << "Cleared cached device session tokens." << std::endl;
+  } else {
+    output_hub_.logger().trace() << "No cached device session tokens present"
+                                 << std::endl;
   }
 
   registration_completed_ = false;
@@ -195,12 +166,8 @@ monad::IO<bool> LoginHandler::reuse_existing_session_if_possible() {
     return IO<bool>::pure(false);
   }
 
-  const auto state_dir = *runtime_dir / "state";
-  const auto access_path = state_dir / "access_token.txt";
-  const auto refresh_path = state_dir / "refresh_token.txt";
-
-  auto cached_access = read_text_file_trimmed(access_path);
-  auto cached_refresh = read_text_file_trimmed(refresh_path);
+  auto cached_access = state_store_.get_access_token();
+  auto cached_refresh = state_store_.get_refresh_token();
 
   const std::chrono::seconds skew(60);
   if (cached_access && is_access_token_valid(*cached_access, skew)) {
@@ -209,7 +176,7 @@ monad::IO<bool> LoginHandler::reuse_existing_session_if_possible() {
   }
 
   if (cached_refresh && !cached_refresh->empty()) {
-    return self->refresh_session_with_token(*cached_refresh, *runtime_dir)
+    return self->refresh_session_with_token(*cached_refresh)
         .catch_then([self](const monad::Error &e) {
           self->output_hub_.logger().warning()
               << "Refresh token attempt failed: " << e.what << std::endl;
@@ -229,8 +196,7 @@ monad::IO<bool> LoginHandler::reuse_existing_session_if_possible() {
 }
 
 monad::IO<bool>
-LoginHandler::refresh_session_with_token(const std::string &refresh_token,
-                                         const std::filesystem::path &out_dir) {
+LoginHandler::refresh_session_with_token(const std::string &refresh_token) {
   using namespace monad;
 
   auto self = shared_from_this();
@@ -239,41 +205,13 @@ LoginHandler::refresh_session_with_token(const std::string &refresh_token,
   auto payload_obj = std::make_shared<boost::json::object>(
       boost::json::object{{"refresh_token", refresh_token}});
 
-  auto write_text_0600 =
-      [](const std::filesystem::path &p,
-         const std::string &text) -> std::optional<std::string> {
-    try {
-      std::error_code ec;
-      if (auto parent = p.parent_path(); !parent.empty()) {
-        std::filesystem::create_directories(parent, ec);
-        if (ec) {
-          return std::string{"create_directories failed: "} + ec.message();
-        }
-      }
-      std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-      if (!ofs.is_open()) {
-        return std::string{"open failed for "} + p.string();
-      }
-      ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
-      if (!ofs) {
-        return std::string{"write failed for "} + p.string();
-      }
-#ifndef _WIN32
-      ::chmod(p.c_str(), 0600);
-#endif
-      return std::nullopt;
-    } catch (const std::exception &ex) {
-      return std::string{"write_text_0600 exception: "} + ex.what();
-    }
-  };
-
   return http_io<PostJsonTag>(refresh_url)
       .map([payload_obj](auto ex) {
         ex->setRequestJsonBody(*payload_obj);
         return ex;
       })
       .then(http_request_io<PostJsonTag>(self->http_client_))
-      .then([self, out_dir, refresh_url, write_text_0600](auto ex) -> IO<bool> {
+      .then([self, refresh_url](auto ex) -> IO<bool> {
         if (!ex->is_2xx()) {
           std::string error_msg =
               std::string("Refresh token request failed via ") + refresh_url;
@@ -337,14 +275,11 @@ LoginHandler::refresh_session_with_token(const std::string &refresh_token,
           return IO<bool>::fail(std::move(err));
         }
 
-        const auto state_dir = out_dir / "state";
-        if (auto err = write_text_0600(state_dir / "access_token.txt",
-                                       *new_access_token)) {
-          self->output_hub_.logger().warning() << *err << std::endl;
-        }
-        if (auto err = write_text_0600(state_dir / "refresh_token.txt",
-                                       *new_refresh_token)) {
-          self->output_hub_.logger().warning() << *err << std::endl;
+        if (auto err = self->state_store_.save_tokens(new_access_token,
+                                                      new_refresh_token,
+                                                      new_expires_in)) {
+          self->output_hub_.logger().warning()
+              << "Failed to persist refreshed tokens: " << *err << std::endl;
         }
         if (new_expires_in) {
           self->output_hub_.printer().yellow()
@@ -575,22 +510,20 @@ VoidPureIO LoginHandler::register_device() {
   bool persist_device_identity = false;
   std::string device_public_id = derived_device_public_id;
   if (!out_dir.empty()) {
-    const auto device_id_path = out_dir / "state" / "device_public_id.txt";
-    auto persisted_id = self->read_text_file_trimmed(device_id_path);
+    auto persisted_id = self->state_store_.get_device_public_id();
     if (persisted_id && is_valid_device_public_id(*persisted_id)) {
       device_public_id = *persisted_id;
       if (*persisted_id != derived_device_public_id) {
         self->output_hub_.logger().warning()
             << "Derived device_public_id " << derived_device_public_id
-            << " differs from persisted value " << *persisted_id
+            << " differs from stored value " << *persisted_id
             << "; continuing with persisted identifier." << std::endl;
       }
     } else {
       if (persisted_id && !persisted_id->empty()) {
         self->output_hub_.logger().warning()
-            << "Ignoring malformed device_public_id stored at "
-            << device_id_path << "; regenerating a new identifier."
-            << std::endl;
+            << "Ignoring malformed device_public_id stored in state store;"
+            << " regenerating a new identifier." << std::endl;
       }
       persist_device_identity = true;
       device_public_id = derived_device_public_id;
@@ -640,44 +573,12 @@ VoidPureIO LoginHandler::register_device() {
     }
   };
 
-  auto write_text_0600 =
-      [](const std::filesystem::path &p,
-         const std::string &text) -> std::optional<std::string> {
-    try {
-      std::error_code ec;
-      if (auto parent = p.parent_path(); !parent.empty()) {
-        std::filesystem::create_directories(parent, ec);
-        if (ec)
-          return std::string{"create_directories failed: "} + ec.message();
-      }
-      {
-        std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-        if (!ofs.is_open())
-          return std::string{"open failed for "} + p.string();
-        ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
-        if (!ofs)
-          return std::string{"write failed for "} + p.string();
-      }
-#ifndef _WIN32
-      ::chmod(p.c_str(), 0600);
-#endif
-      return std::nullopt;
-    } catch (const std::exception &e) {
-      return std::string{"write_text_0600 exception: "} + e.what();
-    }
-  };
-
   if (!out_dir.empty() && persist_device_identity) {
-    const auto state_dir = out_dir / "state";
-    if (auto err = write_text_0600(state_dir / "device_public_id.txt",
-                                   device_public_id)) {
+    if (auto err =
+            self->state_store_.save_device_identity(device_public_id,
+                                                    derived_fp_hex)) {
       self->output_hub_.logger().warning()
-          << "Failed to persist device_public_id: " << *err << std::endl;
-    }
-    if (auto err = write_text_0600(state_dir / "device_fingerprint_hex.txt",
-                                   derived_fp_hex)) {
-      self->output_hub_.logger().warning()
-          << "Failed to persist device fingerprint hex: " << *err
+          << "Failed to persist device identity in SQLite store: " << *err
           << std::endl;
     }
   }
@@ -767,11 +668,8 @@ VoidPureIO LoginHandler::register_device() {
     std::optional<std::string> refresh_for_payload;
     if (!refresh_token.empty()) {
       refresh_for_payload = refresh_token;
-    } else if (!out_dir.empty()) {
-      if (auto stored_refresh =
-              read_text_file_trimmed(out_dir / "state" / "refresh_token.txt")) {
-        refresh_for_payload = std::move(*stored_refresh);
-      }
+    } else {
+      refresh_for_payload = self->state_store_.get_refresh_token();
     }
     if (refresh_for_payload) {
       payload["refresh_token"] = *refresh_for_payload;
@@ -786,7 +684,7 @@ VoidPureIO LoginHandler::register_device() {
         return ex;
       })
       .then(http_request_io<PostJsonTag>(self->http_client_))
-      .then([self, out_dir, write_text_0600](auto ex) mutable {
+      .then([self, out_dir](auto ex) mutable {
         if (!ex->is_2xx()) {
           std::string error_msg = "Device registration failed";
           if (ex->response) {
@@ -890,19 +788,20 @@ VoidPureIO LoginHandler::register_device() {
           device_id_str = decode_device_id(effective_access);
         }
 
-        if (!out_dir.empty()) {
-          const auto state_dir = out_dir / "state";
-          if (!effective_access.empty()) {
-            if (auto err = write_text_0600(state_dir / "access_token.txt",
-                                           effective_access)) {
-              self->output_hub_.logger().warning() << *err << std::endl;
-            }
-          }
-          if (!effective_refresh.empty()) {
-            if (auto err = write_text_0600(state_dir / "refresh_token.txt",
-                                           effective_refresh)) {
-              self->output_hub_.logger().warning() << *err << std::endl;
-            }
+        std::optional<std::string> access_opt;
+        std::optional<std::string> refresh_opt;
+        if (!effective_access.empty()) {
+          access_opt = effective_access;
+        }
+        if (!effective_refresh.empty()) {
+          refresh_opt = effective_refresh;
+        }
+        if (access_opt || refresh_opt || self->poll_resp_->expires_in) {
+          if (auto err = self->state_store_.save_tokens(
+                  access_opt, refresh_opt, self->poll_resp_->expires_in)) {
+            self->output_hub_.logger().warning()
+                << "Failed to persist device session tokens: " << *err
+                << std::endl;
           }
         }
 

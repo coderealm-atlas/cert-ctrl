@@ -100,6 +100,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT WIN32)
 endif()
 
 find_package(Threads REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 if(USE_SYSTEM_OPENSSL)
     message(STATUS "OpenSSL linkage: using system-provided shared libraries")
@@ -651,6 +652,7 @@ list(APPEND APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/certificates_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/update_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_apply_handler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/state/device_state_store.cpp
 )
 
 # Always use a stable target name; vary only the output file name per config
@@ -747,6 +749,7 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE OpenSSL::Crypto
     PRIVATE protobuf::libprotoc
     PRIVATE protobuf::libprotobuf
+    PRIVATE unofficial::sqlite3::sqlite3
     PRIVATE Boost::program_options
     PRIVATE Boost::process
     PRIVATE Boost::iostreams

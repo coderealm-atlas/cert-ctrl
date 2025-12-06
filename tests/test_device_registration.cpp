@@ -24,6 +24,7 @@
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
 #include "misc_util.hpp"
+#include "state/device_state_store.hpp"
 
 namespace di = boost::di;
 namespace fs = std::filesystem;
@@ -129,6 +130,9 @@ protected:
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>()
             .in(di::singleton),
+        di::bind<certctrl::IDeviceStateStore>()
+          .to<certctrl::SqliteDeviceStateStore>()
+          .in(di::singleton),
         di::bind<cjj365::IIoContextManager>().to<cjj365::IoContextManager>().in(
             di::singleton));
 

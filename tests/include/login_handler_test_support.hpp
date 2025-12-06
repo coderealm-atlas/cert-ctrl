@@ -34,6 +34,7 @@
 #include "http_client_config_provider.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
+#include "state/device_state_store.hpp"
 
 namespace login_handler_test {
 
@@ -305,9 +306,11 @@ protected:
   certctrl::ICertctrlConfigProvider *config_provider_{};
 
   void SetUp() override {
+  const auto runtime_dir = temp_dir_.path / "runtime";
   json::object app_json{{"auto_apply_config", false},
-                          {"verbose", "info"},
-                          {"url_base", "to_set"}};
+              {"verbose", "info"},
+              {"url_base", "to_set"},
+              {"runtime_dir", runtime_dir.string()}};
     write_json_file(temp_dir_.path / "application.json", app_json);
 
     json::object httpclient_json{{"threads_num", 1},
@@ -351,6 +354,9 @@ protected:
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>()
             .in(di::singleton),
+      di::bind<certctrl::IDeviceStateStore>()
+        .to<certctrl::SqliteDeviceStateStore>()
+        .in(di::singleton),
         di::bind<cjj365::IIoContextManager>().to<cjj365::IoContextManager>().in(
             di::singleton));
     using InjT = decltype(injector);

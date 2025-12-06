@@ -17,6 +17,7 @@
 #include "io_context_manager.hpp"
 #include "io_monad.hpp"
 #include "my_error_codes.hpp"
+#include "state/device_state_store.hpp"
 
 namespace asio = boost::asio;
 
@@ -47,56 +48,14 @@ public:
 };
 
 class AccessTokenLoaderFile : public IAccessTokenLoader {
-  std::filesystem::path token_file;
-  mutable std::optional<std::string> cached_access_token_;
-  mutable std::optional<std::filesystem::file_time_type>
-      cached_access_token_mtime_;
+  certctrl::IDeviceStateStore &state_store_;
 
 public:
-  AccessTokenLoaderFile(certctrl::ICertctrlConfigProvider &config_provider) {
-    token_file =
-        config_provider.get().runtime_dir / "state" / "access_token.txt";
-  }
+  AccessTokenLoaderFile(certctrl::IDeviceStateStore &state_store)
+      : state_store_(state_store) {}
 
   std::optional<std::string> load_token() const override {
-
-  std::error_code ec;
-  const auto mtime = std::filesystem::last_write_time(token_file, ec);
-  if (!ec && cached_access_token_ && cached_access_token_mtime_ &&
-      mtime == *cached_access_token_mtime_) {
-    return cached_access_token_;
-  }
-
-  std::ifstream ifs(token_file, std::ios::binary);
-  if (!ifs.is_open()) {
-    cached_access_token_.reset();
-    cached_access_token_mtime_.reset();
-    return std::nullopt;
-  }
-
-  std::string token((std::istreambuf_iterator<char>(ifs)),
-                    std::istreambuf_iterator<char>());
-  auto first = token.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) {
-    cached_access_token_.reset();
-    cached_access_token_mtime_.reset();
-    return std::nullopt;
-  }
-  auto last = token.find_last_not_of(" \t\r\n");
-  if (last == std::string::npos || last < first) {
-    cached_access_token_.reset();
-    cached_access_token_mtime_.reset();
-    return std::nullopt;
-  }
-
-  token = token.substr(first, last - first + 1);
-  cached_access_token_ = token;
-  if (!ec) {
-    cached_access_token_mtime_ = mtime;
-  } else {
-    cached_access_token_mtime_.reset();
-  }
-  return cached_access_token_;
+    return state_store_.get_access_token();
   }
 };
 

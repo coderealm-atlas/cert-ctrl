@@ -37,6 +37,7 @@
 #include "log_stream.hpp"
 #include "misc_util.hpp"
 #include "result_monad.hpp"
+#include "state/device_state_store.hpp"
 
 namespace {
 namespace di = boost::di;
@@ -393,15 +394,18 @@ protected:
   certctrl::ICertctrlConfigProvider *config_provider_;
   cjj365::IIoContextManager *io_context_manager_{nullptr};
   client_async::HttpClientManager *http_client_manager_{nullptr};
+  certctrl::IDeviceStateStore *state_store_{nullptr};
   std::unique_ptr<cjj365::ConfigSources> config_sources_ptr_;
   std::shared_ptr<customio::ConsoleOutputWithColor> output_ptr_;
   static std::shared_ptr<customio::ConsoleOutputWithColor> shared_output_;
   std::unique_ptr<certctrl::CliCtx> cli_ctx_ptr_;
   void SetUp() override {
 
+    const auto runtime_dir = temp_dir.path / "runtime";
     json::object app_json{{"auto_apply_config", false},
-                          {"verbose", "info"},
-                          {"url_base", "to_set"}};
+                {"verbose", "info"},
+                {"url_base", "to_set"},
+                {"runtime_dir", runtime_dir.string()}};
     write_json_file(temp_dir.path / "application.json", app_json);
 
     json::object httpclient_json{{"threads_num", 1},
@@ -449,6 +453,9 @@ protected:
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>()
             .in(di::singleton),
+        di::bind<certctrl::IDeviceStateStore>()
+          .to<certctrl::SqliteDeviceStateStore>()
+          .in(di::singleton),
         di::bind<cjj365::IIoContextManager>().to<cjj365::IoContextManager>().in(
             di::singleton));
     using InjT = decltype(injector);
@@ -464,6 +471,7 @@ protected:
     handler_ = inj.create<std::shared_ptr<certctrl::LoginHandler>>();
     io_context_manager_ = &inj.create<cjj365::IIoContextManager &>();
     http_client_manager_ = &inj.create<client_async::HttpClientManager &>();
+    state_store_ = &inj.create<certctrl::IDeviceStateStore &>();
   }
   void TearDown() override {
     handler_.reset();
@@ -488,6 +496,7 @@ protected:
 
     injector_holder_.reset();
     config_provider_ = nullptr;
+    state_store_ = nullptr;
     config_sources_ptr_.reset();
     cli_ctx_ptr_.reset();
     output_ptr_.reset();
@@ -559,22 +568,13 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   EXPECT_TRUE(fs::exists(pk_path));
   EXPECT_TRUE(fs::exists(sk_path));
 
-  auto state_dir = temp_dir.path / "state";
-  auto access_path = state_dir / "access_token.txt";
-  auto refresh_path = state_dir / "refresh_token.txt";
-  ASSERT_TRUE(fs::exists(access_path));
-  ASSERT_TRUE(fs::exists(refresh_path));
-
-  {
-    std::ifstream ifs(access_path);
-    std::string stored_access((std::istreambuf_iterator<char>(ifs)), {});
-    EXPECT_EQ(stored_access, server_->access_token());
-  }
-  {
-    std::ifstream ifs(refresh_path);
-    std::string stored_refresh((std::istreambuf_iterator<char>(ifs)), {});
-    EXPECT_EQ(stored_refresh, server_->refresh_token());
-  }
+  ASSERT_NE(state_store_, nullptr);
+  auto stored_access = state_store_->get_access_token();
+  auto stored_refresh = state_store_->get_refresh_token();
+  ASSERT_TRUE(stored_access.has_value());
+  ASSERT_TRUE(stored_refresh.has_value());
+  EXPECT_EQ(*stored_access, server_->access_token());
+  EXPECT_EQ(*stored_refresh, server_->refresh_token());
 }
 
 TEST_F(LoginHandlerWorkflowTest, PollRetriesBeforeApproval) {
@@ -612,9 +612,6 @@ TEST_F(LoginHandlerWorkflowTest, PollRetriesBeforeApproval) {
 }
 
 TEST_F(LoginHandlerWorkflowTest, ReusesExistingValidTokens) {
-  auto state_dir = temp_dir.path / "state";
-  fs::create_directories(state_dir);
-
   const auto now = std::chrono::system_clock::now();
   auto access_token =
       jwt::create()
@@ -625,15 +622,9 @@ TEST_F(LoginHandlerWorkflowTest, ReusesExistingValidTokens) {
           .set_expires_at(now + std::chrono::hours(1))
           .sign(jwt::algorithm::hs256{"secret"});
   auto refresh_token = server_->refresh_token();
-
-  {
-    std::ofstream ofs(state_dir / "access_token.txt");
-    ofs << access_token;
-  }
-  {
-    std::ofstream ofs(state_dir / "refresh_token.txt");
-    ofs << refresh_token;
-  }
+  ASSERT_NE(state_store_, nullptr);
+  ASSERT_FALSE(state_store_->save_tokens(access_token, refresh_token, 3600)
+                   .has_value());
 
   misc::ThreadNotifier notifier(5000);
   std::optional<monad::MyVoidResult> start_result;
@@ -649,16 +640,12 @@ TEST_F(LoginHandlerWorkflowTest, ReusesExistingValidTokens) {
   EXPECT_EQ(server_->poll_calls(), 0);
   EXPECT_EQ(server_->registration_calls(), 0);
 
-  {
-    std::ifstream ifs(state_dir / "access_token.txt");
-    std::string stored((std::istreambuf_iterator<char>(ifs)), {});
-    EXPECT_EQ(stored, access_token);
-  }
-  {
-    std::ifstream ifs(state_dir / "refresh_token.txt");
-    std::string stored((std::istreambuf_iterator<char>(ifs)), {});
-    EXPECT_EQ(stored, refresh_token);
-  }
+  auto cached_access = state_store_->get_access_token();
+  auto cached_refresh = state_store_->get_refresh_token();
+  ASSERT_TRUE(cached_access.has_value());
+  ASSERT_TRUE(cached_refresh.has_value());
+  EXPECT_EQ(*cached_access, access_token);
+  EXPECT_EQ(*cached_refresh, refresh_token);
 
   const char *env_access = std::getenv("DEVICE_ACCESS_TOKEN");
   EXPECT_TRUE(env_access == nullptr || std::string_view(env_access).empty());
@@ -679,9 +666,6 @@ TEST_F(LoginHandlerWorkflowTest, ReusesExistingValidTokens) {
 }
 
 TEST_F(LoginHandlerWorkflowTest, RefreshesUsingStoredRefreshToken) {
-  auto state_dir = temp_dir.path / "state";
-  fs::create_directories(state_dir);
-
   const auto now = std::chrono::system_clock::now();
   auto expired_access =
       jwt::create()
@@ -690,15 +674,10 @@ TEST_F(LoginHandlerWorkflowTest, RefreshesUsingStoredRefreshToken) {
           .set_expires_at(now - std::chrono::minutes(5))
           .sign(jwt::algorithm::hs256{"secret"});
   auto stored_refresh = server_->refresh_token();
-
-  {
-    std::ofstream ofs(state_dir / "access_token.txt");
-    ofs << expired_access;
-  }
-  {
-    std::ofstream ofs(state_dir / "refresh_token.txt");
-    ofs << stored_refresh;
-  }
+  ASSERT_NE(state_store_, nullptr);
+  ASSERT_FALSE(state_store_
+                   ->save_tokens(expired_access, stored_refresh, std::nullopt)
+                   .has_value());
 
   auto refreshed_access =
       jwt::create()
@@ -731,16 +710,12 @@ TEST_F(LoginHandlerWorkflowTest, RefreshesUsingStoredRefreshToken) {
   const char *env_refresh = std::getenv("DEVICE_REFRESH_TOKEN");
   EXPECT_TRUE(env_refresh == nullptr || std::string_view(env_refresh).empty());
 
-  {
-    std::ifstream ifs(state_dir / "access_token.txt");
-    std::string stored((std::istreambuf_iterator<char>(ifs)), {});
-    EXPECT_EQ(stored, refreshed_access);
-  }
-  {
-    std::ifstream ifs(state_dir / "refresh_token.txt");
-    std::string stored((std::istreambuf_iterator<char>(ifs)), {});
-    EXPECT_EQ(stored, refreshed_refresh);
-  }
+  auto stored = state_store_->get_access_token();
+  auto refreshed = state_store_->get_refresh_token();
+  ASSERT_TRUE(stored.has_value());
+  ASSERT_TRUE(refreshed.has_value());
+  EXPECT_EQ(*stored, refreshed_access);
+  EXPECT_EQ(*refreshed, refreshed_refresh);
 
   misc::ThreadNotifier register_notifier(2000);
   std::optional<monad::MyVoidResult> register_result;
