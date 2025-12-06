@@ -1029,9 +1029,6 @@ TEST_F(InstallConfigManagerFixture, FailsCaImportWhenServerReturns500) {
   auto runtime_dir = make_temp_runtime_dir();
   FailingCaServer server;
 
-  std::filesystem::create_directories(runtime_dir / "state");
-  write_file(runtime_dir / "state" / "access_token.txt", "test-access-token");
-
   dto::DeviceInstallConfigDto config{};
   dto::InstallItem ca_item{};
   ca_item.id = "ca-fetch";
@@ -1061,6 +1058,10 @@ TEST_F(InstallConfigManagerFixture, FailsCaImportWhenServerReturns500) {
   resource_fetcher_ptr->bind(harness_->io_context_manager(),
                              harness_->config_provider(), harness_->output(),
                              harness_->http_client_manager());
+
+  ASSERT_FALSE(harness_->state_store()
+                   .save_tokens("test-access-token", std::nullopt, std::nullopt)
+                   .has_value());
 
   monad::MyVoidResult r;
   harness_->install_manager()
@@ -1526,10 +1527,6 @@ TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
 
   auto config_dir = make_temp_runtime_dir();
   auto runtime_dir = make_temp_runtime_dir();
-  auto state_access = runtime_dir / "state" / "access_token.txt";
-  auto state_refresh = runtime_dir / "state" / "refresh_token.txt";
-  write_file(state_access, "expired-access");
-  write_file(state_refresh, "refresh-initial");
 
   auto fetch_call_count = std::make_shared<std::atomic<int>>(0);
   auto first_token = std::make_shared<std::string>("<unset>");
@@ -1562,6 +1559,11 @@ TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
       std::make_unique<LambdaInstallConfigFetcher>(std::move(fetch_override)),
       std::make_unique<MockerResourceFetcher>(""), nullptr, base_url);
 
+  ASSERT_FALSE(harness_->state_store()
+                   .save_tokens("expired-access", "refresh-initial",
+                                std::nullopt)
+                   .has_value());
+
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
@@ -1588,8 +1590,12 @@ TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
   EXPECT_EQ(refresh_server.last_refresh_token(), "refresh-initial");
   EXPECT_TRUE(refresh_server.observed_expected_token());
 
-  EXPECT_EQ(read_file(state_access), "refreshed-access");
-  EXPECT_EQ(read_file(state_refresh), "refreshed-refresh");
+  auto stored_access = harness_->state_store().get_access_token();
+  auto stored_refresh = harness_->state_store().get_refresh_token();
+  ASSERT_TRUE(stored_access.has_value());
+  ASSERT_TRUE(stored_refresh.has_value());
+  EXPECT_EQ(*stored_access, "refreshed-access");
+  EXPECT_EQ(*stored_refresh, "refreshed-refresh");
 
   std::filesystem::remove_all(runtime_dir);
 }

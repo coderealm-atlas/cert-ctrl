@@ -48,6 +48,7 @@
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
 #include "resource_fetcher.hpp"
+#include "state/device_state_store.hpp"
 #include "version.h"
 
 #if defined(__has_feature)
@@ -278,6 +279,7 @@ public:
       http_client_manager_ = &inj.template create<client_async::HttpClientManager &>();
       config_provider_ = &inj.template create<certctrl::ICertctrlConfigProvider &>();
       config_provider_->get().base_url = std::move(base_url);
+      state_store_ = &inj.template create<certctrl::IDeviceStateStore &>();
       handler_ = inj.template create<std::shared_ptr<certctrl::UpdatesPollingHandler>>();
     };
 
@@ -327,6 +329,8 @@ public:
     return *config_provider_;
   }
 
+  certctrl::IDeviceStateStore &state_store() { return *state_store_; }
+
   std::shared_ptr<certctrl::UpdatesPollingHandler> handler() {
     return handler_;
   }
@@ -345,6 +349,7 @@ private:
   cjj365::IoContextManager *io_context_manager_{nullptr};
   client_async::HttpClientManager *http_client_manager_{nullptr};
   certctrl::ICertctrlConfigProvider *config_provider_{nullptr};
+  certctrl::IDeviceStateStore *state_store_{nullptr};
   std::shared_ptr<certctrl::UpdatesPollingHandler> handler_;
   std::shared_ptr<certctrl::ISessionRefresher> session_refresher_override_;
 };
@@ -412,14 +417,6 @@ TEST(UpdatesPollingHandlerUnitTest,
   fs::create_directories(tmp_root / "state", ec);
   ASSERT_FALSE(ec) << "failed to create temp state dir: " << ec.message();
 
-  const std::string stored_id = "12345678-1234-1234-1234-123456789abc";
-  {
-    std::ofstream ofs(tmp_root / "state" / "device_public_id.txt",
-                      std::ios::binary | std::ios::trunc);
-    ASSERT_TRUE(ofs.is_open());
-    ofs << stored_id;
-  }
-
   ScopeGuard cleanup([&]() {
     std::error_code rm_ec;
     fs::remove_all(tmp_root, rm_ec);
@@ -439,6 +436,11 @@ TEST(UpdatesPollingHandlerUnitTest,
                                 cli_ctx);
   auto handler = harness.handler();
   ASSERT_TRUE(handler);
+
+  const std::string stored_id = "12345678-1234-1234-1234-123456789abc";
+  ASSERT_FALSE(harness.state_store()
+                   .save_device_identity(stored_id, std::nullopt)
+                   .has_value());
 
   auto payload =
       certctrl::UpdatesPollingHandlerTestFriend::BuildNotifyPayload(*handler);
@@ -607,27 +609,10 @@ protected:
 
   void persist_device_tokens(const std::string &access_token,
                              const std::optional<std::string> &refresh_token) {
-    auto state_dir = tmp_root_ / "state";
-    std::error_code ec;
-    fs::create_directories(state_dir, ec);
-    if (ec) {
-      ADD_FAILURE() << "Failed to create state dir: " << ec.message();
-      return;
-    }
-
-    {
-      std::ofstream ofs(state_dir / "access_token.txt",
-                        std::ios::binary | std::ios::trunc);
-      ofs << access_token;
-    }
-
-    auto refresh_path = state_dir / "refresh_token.txt";
-    if (refresh_token && !refresh_token->empty()) {
-      std::ofstream ofs(refresh_path, std::ios::binary | std::ios::trunc);
-      ofs << *refresh_token;
-    } else {
-      std::error_code remove_ec;
-      fs::remove(refresh_path, remove_ec);
+    auto result = harness_->state_store().save_tokens(
+        access_token, refresh_token.value_or(std::string{}), std::nullopt);
+    if (result) {
+      ADD_FAILURE() << "Failed to persist tokens: " << *result;
     }
   }
 
@@ -686,10 +671,6 @@ protected:
       return std::nullopt;
     }
     const auto state_dir = tmp_root_ / "state";
-    if (!ensure_dir(state_dir)) {
-      ADD_FAILURE() << "failed to create state dir: " << state_dir;
-      return std::nullopt;
-    }
 
     const fs::path secret_targets[] = {keys_dir / "dev_sk.bin",
                                        tmp_root_ / "dev_sk.bin",
