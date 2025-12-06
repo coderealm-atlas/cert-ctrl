@@ -31,10 +31,11 @@ SessionRefresher::SessionRefresher(
     cjj365::IoContextManager &io_context_manager,
     certctrl::ICertctrlConfigProvider &config_provider,
     customio::ConsoleOutput &output,
-    client_async::HttpClientManager &http_client)
+    client_async::HttpClientManager &http_client,
+    IDeviceStateStore &state_store)
     : io_context_manager_(io_context_manager),
       config_provider_(config_provider), output_(output),
-      http_client_(http_client) {
+      http_client_(http_client), state_store_(state_store) {
   runtime_dir_ = config_provider_.get().runtime_dir;
 }
 
@@ -222,6 +223,14 @@ monad::IO<void> SessionRefresher::perform_refresh_request(
             "Refresh response missing tokens"));
         }
 
+        if (auto err = state_store_.save_tokens(new_access_token,
+                                                new_refresh_token,
+                                                new_expires_in)) {
+          output_.logger().warning()
+              << "Failed to persist refreshed tokens in state store: "
+              << *err << std::endl;
+        }
+
         auto state_path = state_dir();
         if (state_path.empty()) {
           return monad::IO<void>::fail(monad::make_error(
@@ -262,6 +271,10 @@ monad::IO<void> SessionRefresher::handle_refresh_error(
 }
 
 std::optional<std::string> SessionRefresher::load_refresh_token() const {
+  if (auto stored = state_store_.get_refresh_token(); stored && !stored->empty()) {
+    return stored;
+  }
+
   auto dir = state_dir();
   if (dir.empty()) {
     return std::nullopt;

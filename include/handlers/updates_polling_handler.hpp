@@ -41,6 +41,7 @@
 #include "my_error_codes.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
 #include "version.h"
+#include "state/device_state_store.hpp"
 
 namespace po = boost::program_options;
 namespace asio = boost::asio;
@@ -68,6 +69,7 @@ class UpdatesPollingHandler
   certctrl::ICertctrlConfigProvider &certctrl_config_provider_;
   client_async::HttpClientManager &http_client_;
   customio::ConsoleOutput &output_hub_;
+  certctrl::IDeviceStateStore &state_store_;
   CliCtx &cli_ctx_;
   src::severity_logger<trivial::severity_level> lg;
   po::options_description opt_desc_;
@@ -97,7 +99,6 @@ class UpdatesPollingHandler
   std::shared_ptr<ISessionRefresher> session_refresher_;
   std::optional<int> server_override_delay_ms_;
   std::optional<std::string> cached_access_token_;
-  std::optional<std::filesystem::file_time_type> cached_access_token_mtime_;
   std::string notify_endpoint_;
   bool notify_sent_this_run_{false};
 
@@ -108,12 +109,14 @@ public:
       certctrl::ICertctrlConfigProvider &certctrl_config_provider, //
       CliCtx &cli_ctx,                                             //
       customio::ConsoleOutput &output_hub,                         //
+      certctrl::IDeviceStateStore &state_store,                    //
       client_async::HttpClientManager &http_client,                //
       std::shared_ptr<InstallConfigManager> install_config_manager,
       std::shared_ptr<ISessionRefresher> session_refresher)
       : ioc_(io_context_manager.ioc()), config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
-        output_hub_(output_hub), cli_ctx_(cli_ctx), http_client_(http_client),
+        http_client_(http_client), output_hub_(output_hub),
+        state_store_(state_store), cli_ctx_(cli_ctx),
         opt_desc_("updates polling options"),
         endpoint_base_(fmt::format("{}/apiv1/devices/self/updates",
                                    certctrl_config_provider_.get().base_url)),
@@ -258,51 +261,27 @@ public:
 
 private:
   std::optional<std::string> load_access_token_from_state() {
+    auto token = state_store_.get_access_token();
+    if (token && !token->empty()) {
+      cached_access_token_ = token;
+      return cached_access_token_;
+    }
+
     if (config_sources_.paths_.empty()) {
       cached_access_token_.reset();
-      cached_access_token_mtime_.reset();
       return std::nullopt;
     }
 
     const auto runtime_dir = config_sources_.paths_.back();
     const auto token_path = runtime_dir / "state" / "access_token.txt";
-
-    std::error_code ec;
-    const auto mtime = std::filesystem::last_write_time(token_path, ec);
-    if (!ec && cached_access_token_ && cached_access_token_mtime_ &&
-        mtime == *cached_access_token_mtime_) {
+    auto legacy_token = read_trimmed_file(token_path);
+    if (legacy_token && !legacy_token->empty()) {
+      cached_access_token_ = legacy_token;
       return cached_access_token_;
     }
 
-    std::ifstream ifs(token_path, std::ios::binary);
-    if (!ifs.is_open()) {
-      cached_access_token_.reset();
-      cached_access_token_mtime_.reset();
-      return std::nullopt;
-    }
-
-    std::string token((std::istreambuf_iterator<char>(ifs)),
-                      std::istreambuf_iterator<char>());
-    auto first = token.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) {
-      cached_access_token_.reset();
-      cached_access_token_mtime_.reset();
-      return std::nullopt;
-    }
-    auto last = token.find_last_not_of(" \t\r\n");
-    if (last == std::string::npos || last < first) {
-      cached_access_token_.reset();
-      cached_access_token_mtime_.reset();
-      return std::nullopt;
-    }
-
-    cached_access_token_ = token.substr(first, last - first + 1);
-    if (!ec) {
-      cached_access_token_mtime_ = mtime;
-    } else {
-      cached_access_token_mtime_.reset();
-    }
-    return cached_access_token_;
+    cached_access_token_.reset();
+    return std::nullopt;
   }
 
   monad::IO<void> refresh_access_token(std::string reason) {
@@ -314,7 +293,6 @@ private:
     return session_refresher_->refresh(std::move(reason))
         .then([this]() -> monad::IO<void> {
           cached_access_token_.reset();
-          cached_access_token_mtime_.reset();
           return monad::IO<void>::pure();
         });
   }
@@ -724,6 +702,12 @@ private:
   }
 
   std::optional<std::string> load_device_public_id_from_state() const {
+    if (auto store_id = state_store_.get_device_public_id()) {
+      if (!store_id->empty()) {
+        return store_id;
+      }
+    }
+
     if (config_sources_.paths_.empty()) {
       return std::nullopt;
     }

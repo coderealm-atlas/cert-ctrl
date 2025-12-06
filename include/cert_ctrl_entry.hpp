@@ -44,6 +44,7 @@
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
 #include "resource_fetcher.hpp"
+#include "state/device_state_store.hpp"
 #include "version.h"
 
 #ifdef to
@@ -195,6 +196,9 @@ public:
             .to<certctrl::install_actions::DeviceInstallConfigFetcher>(),
         di::bind<certctrl::install_actions::IResourceFetcher>().to<
             certctrl::install_actions::ResourceFetcher>(),
+        di::bind<certctrl::IDeviceStateStore>()
+          .to<certctrl::SqliteDeviceStateStore>()
+          .in(di::singleton),
     di::bind<certctrl::install_actions::IMaterializePasswordManager>()
       .to<certctrl::install_actions::MaterializePasswordManager>()
       .in(di::singleton),

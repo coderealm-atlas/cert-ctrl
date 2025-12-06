@@ -16,6 +16,7 @@
 #include "handlers/install_config_manager.hpp"
 #include "handlers/session_refresher.hpp"
 #include "install_config_manager_test_utils.hpp"
+#include "state/device_state_store.hpp"
 #include "test_config_utils.hpp"
 
 struct InstallManagerDiHarness {
@@ -72,6 +73,7 @@ struct InstallManagerDiHarness {
 
     session_refresher_ =
       inj.create<std::shared_ptr<certctrl::ISessionRefresher>>();
+    state_store_ = &inj.create<certctrl::IDeviceStateStore &>();
 
     if (token_loader_override) {
       token_loader_ = token_loader_override;
@@ -115,6 +117,7 @@ struct InstallManagerDiHarness {
     http_client_manager_owner_.reset();
     io_context_manager_owner_.reset();
     config_provider_owner_.reset();
+    state_store_ = nullptr;
     cjj365::ConfigSources::instance_count.store(0);
     std::error_code ec;
     if (cleanup_config_) {
@@ -128,6 +131,8 @@ struct InstallManagerDiHarness {
   certctrl::ICertctrlConfigProvider &config_provider() {
     return *config_provider_;
   }
+
+  certctrl::IDeviceStateStore &state_store() { return *state_store_; }
 
   customio::ConsoleOutput &output() { return *output_; }
 
@@ -220,6 +225,7 @@ private:
   certctrl::ICertctrlConfigProvider *config_provider_{nullptr};
   cjj365::IoContextManager *io_context_manager_{nullptr};
   client_async::HttpClientManager *http_client_manager_{nullptr};
+  certctrl::IDeviceStateStore *state_store_{nullptr};
   std::unique_ptr<certctrl::ICertctrlConfigProvider> config_provider_owner_{};
   std::unique_ptr<cjj365::IoContextManager> io_context_manager_owner_{};
   std::unique_ptr<client_async::HttpClientManager> http_client_manager_owner_{};

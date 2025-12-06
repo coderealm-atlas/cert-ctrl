@@ -14,6 +14,7 @@
 #include "http_client_config_provider.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
+#include "state/device_state_store.hpp"
 
 namespace di = boost::di;
 
@@ -45,6 +46,9 @@ inline auto build_base_injector(
           .to<cjj365::IocConfigProviderFile>(),
       di::bind<certctrl::ICertctrlConfigProvider>()
           .to<certctrl::CertctrlConfigProviderFile>(),
+      di::bind<certctrl::IDeviceStateStore>()
+          .to<certctrl::SqliteDeviceStateStore>()
+          .in(di::singleton),
       di::bind<certctrl::install_actions::IAccessTokenLoader>()
           .to<certctrl::install_actions::AccessTokenLoaderFile>(),
       di::bind<certctrl::install_actions::IMaterializePasswordManager>()

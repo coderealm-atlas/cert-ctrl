@@ -13,6 +13,7 @@
 #include "http_client_manager.hpp"
 #include "io_context_manager.hpp"
 #include "io_monad.hpp"
+#include "state/device_state_store.hpp"
 
 namespace certctrl {
 
@@ -28,7 +29,8 @@ public:
   SessionRefresher(cjj365::IoContextManager &io_context_manager,
                    certctrl::ICertctrlConfigProvider &config_provider,
                    customio::ConsoleOutput &output,
-                   client_async::HttpClientManager &http_client);
+                   client_async::HttpClientManager &http_client,
+                   IDeviceStateStore &state_store);
 
   monad::IO<void> refresh(std::string reason) override;
 
@@ -68,6 +70,7 @@ private:
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;
   client_async::HttpClientManager &http_client_;
+  IDeviceStateStore &state_store_;
   std::filesystem::path runtime_dir_;
 
   mutable std::mutex mutex_;
