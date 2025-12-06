@@ -272,6 +272,12 @@ detect_service_manager() {
         return 0
     fi
 
+    # macOS / Darwin -> launchd
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "launchd"
+        return 0
+    fi
+
     local rc_update_path
     if rc_update_path=$(find_command_path rc-update 2>/dev/null); then
         if [ -n "$rc_update_path" ]; then
@@ -1450,6 +1456,61 @@ install_service_unit() {
         systemd)
             ensure_service_account
             install_systemd_service_unit
+            ;;
+        launchd)
+            # Minimal launchd support for macOS within the generic installer
+            # Emit a LaunchDaemon plist and load it using launchctl.
+            # We inline the essential bits here to avoid requiring the
+            # separate macOS-only installer path when the generic script
+            # is used on Darwin hosts.
+            PLIST_PATH="/Library/LaunchDaemons/\${SERVICE_NAME%.service}.plist"
+            mkdir -p "$(dirname "$PLIST_PATH")"
+            cat > "$PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>\${SERVICE_NAME%.service}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>\${INSTALL_DIR}/cert-ctrl</string>
+        <string>--config-dirs</string>
+        <string>\${CONFIG_DIR}</string>
+        <string>--keep-running</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CERTCTRL_STATE_DIR</key>
+        <string>\${STATE_DIR}</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>\${CONFIG_DIR}</string>
+    <key>StandardOutPath</key>
+    <string>\${LOG_DIR}/certctrl.log</string>
+    <key>StandardErrorPath</key>
+    <string>\${LOG_DIR}/certctrl.err.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+EOF
+            chown root:wheel "$PLIST_PATH" || true
+            chmod 644 "$PLIST_PATH" || true
+
+            # Attempt to (re)load the daemon via modern launchctl APIs, fallback to legacy load
+            if launchctl list | grep -q "\${SERVICE_NAME%.service}" >/dev/null 2>&1; then
+                launchctl bootout system "$PLIST_PATH" >/dev/null 2>&1 || true
+            fi
+            if launchctl bootstrap system "$PLIST_PATH" >/dev/null 2>&1; then
+                launchctl enable system/\${SERVICE_NAME%.service} >/dev/null 2>&1 || true
+                launchctl kickstart -k system/\${SERVICE_NAME%.service} >/dev/null 2>&1 || true
+                log_success "Service \${SERVICE_NAME} started (launchd)"
+            else
+                launchctl load "$PLIST_PATH" >/dev/null 2>&1 || log_warning "Failed to load LaunchDaemon; verify manually"
+            fi
             ;;
         openrc)
             ensure_service_account
