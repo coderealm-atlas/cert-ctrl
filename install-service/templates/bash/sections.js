@@ -46,6 +46,15 @@ if [ -z "$STATE_DIR" ] && [ -n "$STATE_DIR_PLACEHOLDER" ]; then
 fi
 STATE_DIR_NAME="$(basename "$STATE_DIR")"
 
+LOG_DIR="\${LOG_DIR:-}"
+LOG_DIR_PLACEHOLDER="{{LOG_DIR}}"
+if [ -z "$LOG_DIR" ] && [ -n "$LOG_DIR_PLACEHOLDER" ]; then
+    LOG_DIR="$LOG_DIR_PLACEHOLDER"
+fi
+if [ -z "$LOG_DIR" ]; then
+    LOG_DIR="/var/log"
+fi
+
 SANDBOX_DISABLED="\${SANDBOX_DISABLED:-{{SANDBOX_DISABLED}}}"
 if [ -z "$SANDBOX_DISABLED" ]; then
     SANDBOX_DISABLED="false"
@@ -147,59 +156,7 @@ SERVICE_MANAGER=""
 
 find_command_path() {
     local cmd="$1"
-    local resolved
-    resolved=$(command -v "$cmd" 2>/dev/null || true)
-    if [ -n "$resolved" ]; then
-        echo "$resolved"
-        return 0
-    fi
-    if [ -x "/sbin/$cmd" ]; then
-        echo "/sbin/$cmd"
-        return 0
-    fi
-    if [ -x "/usr/sbin/$cmd" ]; then
-        echo "/usr/sbin/$cmd"
-        return 0
-    fi
-    return 1
-}
-
-restore_selinux_context() {
-    local target_path="$1"
-
-    if [ -z "$target_path" ] || [ ! -e "$target_path" ]; then
-        return 0
-    fi
-
-    if ! command -v selinuxenabled >/dev/null 2>&1; then
-        return 0
-    fi
-
-    if ! selinuxenabled >/dev/null 2>&1; then
-        return 0
-    fi
-
-    if command -v restorecon >/dev/null 2>&1; then
-        if restorecon -F "$target_path" >/dev/null 2>&1; then
-            log_verbose "SELinux context refreshed for $target_path"
-        else
-            log_warning "restorecon failed for $target_path; systemd may not see the unit"
-        fi
-        return 0
-    fi
-
-    if command -v chcon >/dev/null 2>&1 && [ -f /usr/lib/systemd/system/sshd.service ]; then
-        if chcon --reference=/usr/lib/systemd/system/sshd.service "$target_path" >/dev/null 2>&1; then
-            log_verbose "Applied SELinux context from sshd.service to $target_path"
-        else
-            log_warning "Unable to set SELinux context for $target_path"
-        fi
-        return 0
-    fi
-
-    log_warning "SELinux detected but restorecon/chcon unavailable; certctrl.service may require manual relabel"
-}
-
+            install_launchd_service_unit
 # Override with environment or parameters
 INSTALL_DIR="\${INSTALL_DIR:-{{INSTALL_DIR}}}"
 if [ -z "$INSTALL_DIR" ]; then
@@ -308,6 +265,65 @@ get_freebsd_service_name() {
         name="\${name%.service}"
     fi
     echo "$name"
+}
+
+get_launchd_label() {
+    local label="$SERVICE_NAME"
+    if [[ "$label" == *.service ]]; then
+        label="\${label%.service}"
+    fi
+    if [ -z "$label" ]; then
+        label="com.coderealm.certctrl"
+    fi
+    echo "$label"
+}
+
+get_launchd_plist_path() {
+    local label
+    label=$(get_launchd_label)
+    echo "/Library/LaunchDaemons/$label.plist"
+}
+
+prepare_launchd_log_files() {
+    if [ -z "$LOG_DIR" ]; then
+        return 0
+    fi
+    if [ ! -d "$LOG_DIR" ]; then
+        log_info "Creating log directory $LOG_DIR"
+        mkdir -p "$LOG_DIR"
+    fi
+    local stdout_path="$LOG_DIR/certctrl.log"
+    local stderr_path="$LOG_DIR/certctrl.err.log"
+    : > "$stdout_path"
+    : > "$stderr_path"
+    chmod 0644 "$stdout_path" "$stderr_path"
+}
+
+reload_launchd_service() {
+    local plist_path
+    plist_path=$(get_launchd_plist_path)
+    local label
+    label=$(get_launchd_label)
+
+    if launchctl list 2>/dev/null | grep -q "$label"; then
+        log_info "Unloading existing launchd job $label"
+        launchctl bootout system "$plist_path" >/dev/null 2>&1 || launchctl unload "$plist_path" >/dev/null 2>&1 || true
+    fi
+
+    log_info "Loading launchd job $label"
+    if launchctl bootstrap system "$plist_path" >/dev/null 2>&1; then
+        launchctl enable system/"$label" >/dev/null 2>&1 || true
+        launchctl kickstart -k system/"$label" >/dev/null 2>&1 || true
+        log_success "Service $label started (launchd)"
+        return 0
+    fi
+
+    if launchctl load "$plist_path" >/dev/null 2>&1; then
+        log_warning "Launchd bootstrap unavailable; job loaded via legacy launchctl load"
+    else
+        log_warning "Failed to load LaunchDaemon at $plist_path; run: launchctl bootstrap system $plist_path"
+        return 1
+    fi
 }
 
 is_suse_like() {
@@ -686,6 +702,9 @@ check_dependencies() {
                     log_warning "rc-service not found; OpenRC service management will require manual commands"
                 fi
                 ;;
+            launchd)
+                deps+=("launchctl")
+                ;;
             *)
                 log_warning "No supported service manager detected; skipping service installation"
                 INSTALL_SERVICE="false"
@@ -934,6 +953,21 @@ stop_service_if_running() {
         fi
         return 0
     fi
+    if [ "$SERVICE_MANAGER" = "launchd" ]; then
+        local plist_path
+        plist_path=$(get_launchd_plist_path)
+        local label
+        label=$(get_launchd_label)
+        if launchctl list 2>/dev/null | grep -q "$label"; then
+            log_info "Stopping $label before upgrading binary"
+            if launchctl bootout system "$plist_path" >/dev/null 2>&1 || launchctl unload "$plist_path" >/dev/null 2>&1; then
+                RESTART_SERVICE_AFTER_INSTALL="true"
+            else
+                log_warning "Failed to stop $label; continuing with installation"
+            fi
+        fi
+        return 0
+    fi
     if ! command -v systemctl >/dev/null 2>&1; then
         return 0
     fi
@@ -1053,6 +1087,64 @@ pidfile="/run/@@OPENRC_NAME@@.pid"
 
 depend() {
     need net
+}
+
+install_launchd_service_unit() {
+    local plist_path
+    plist_path=$(get_launchd_plist_path)
+    local label
+    label=$(get_launchd_label)
+
+    log_info "Installing launchd service at $plist_path"
+
+    ensure_service_directories
+    prepare_launchd_log_files
+    mkdir -p "$(dirname "$plist_path")"
+
+    cat > "$plist_path" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$label</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$INSTALL_DIR/cert-ctrl</string>
+        <string>--config-dirs</string>
+        <string>$CONFIG_DIR</string>
+        <string>--keep-running</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CERTCTRL_STATE_DIR</key>
+        <string>$STATE_DIR</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>$CONFIG_DIR</string>
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/certctrl.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/certctrl.err.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+EOF
+
+    chown root:wheel "$plist_path" >/dev/null 2>&1 || true
+    chmod 0644 "$plist_path"
+    log_success "LaunchDaemon written to $plist_path"
+
+    if [ "$ENABLE_SERVICE" = "true" ]; then
+        if ! reload_launchd_service; then
+            log_warning "LaunchDaemon installed but failed to start automatically; run: launchctl bootstrap system $plist_path"
+        fi
+    else
+        log_info "Service installed. Enable manually with: launchctl bootstrap system $plist_path && launchctl enable system/$label"
+    fi
 }
 
 start_pre() {
@@ -1425,6 +1517,8 @@ install_service_unit() {
             log_info "DRY RUN: Would install systemd unit $SERVICE_NAME"
         elif [ "$SERVICE_MANAGER" = "freebsd-rcd" ]; then
             log_info "DRY RUN: Would install FreeBSD rc.d service $(get_freebsd_service_name)"
+        elif [ "$SERVICE_MANAGER" = "launchd" ]; then
+            log_info "DRY RUN: Would install launchd service $(get_launchd_label)"
         else
             log_info "DRY RUN: No supported service manager detected"
         fi
@@ -1445,6 +1539,15 @@ install_service_unit() {
             log_info "To install service manually after installation:"
             log_info "  sudo sysrc \${rc_name}_enable=YES"
             log_info "  sudo service $rc_name start"
+        elif [ "$SERVICE_MANAGER" = "launchd" ]; then
+            local plist_path
+            plist_path=$(get_launchd_plist_path)
+            local label
+            label=$(get_launchd_label)
+            log_info "To install service manually after installation:"
+            log_info "  sudo launchctl bootstrap system $plist_path"
+            log_info "  sudo launchctl enable system/$label"
+            log_info "  sudo launchctl kickstart -k system/$label"
         else
             log_info "To install service manually after installation:"
             log_info "  sudo systemctl enable --now $SERVICE_NAME"
@@ -1540,6 +1643,8 @@ install_binary() {
                 log_info "DRY RUN: Would install systemd unit $SERVICE_NAME"
             elif [ "$SERVICE_MANAGER" = "freebsd-rcd" ]; then
                 log_info "DRY RUN: Would install FreeBSD rc.d service $(get_freebsd_service_name)"
+            elif [ "$SERVICE_MANAGER" = "launchd" ]; then
+                log_info "DRY RUN: Would install launchd service $(get_launchd_label)"
             else
                 log_info "DRY RUN: Service installation skipped (no supported manager)"
             fi
@@ -1645,6 +1750,12 @@ install_binary() {
                 fi
             else
                 log_warning "Service was stopped but 'service' is unavailable; start manually once available"
+            fi
+        elif [ "$SERVICE_MANAGER" = "launchd" ]; then
+            if ! reload_launchd_service; then
+                local plist_path
+                plist_path=$(get_launchd_plist_path)
+                log_warning "Launchd job failed to restart automatically; run: launchctl bootstrap system $plist_path"
             fi
         else
             if [ "$EUID" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
