@@ -130,10 +130,11 @@ std::string format_utc(const std::chrono::system_clock::time_point &tp) {
 InfoHandler::InfoHandler(cjj365::ConfigSources &config_sources,
                          certctrl::ICertctrlConfigProvider &config_provider,
                          customio::ConsoleOutput &output_hub,
-                         CliCtx &cli_ctx)
+                         CliCtx &cli_ctx,
+                         certctrl::IDeviceStateStore &state_store)
     : config_sources_(config_sources),
       certctrl_config_provider_(config_provider),
-      output_hub_(output_hub), cli_ctx_(cli_ctx) {}
+      output_hub_(output_hub), cli_ctx_(cli_ctx), state_store_(state_store) {}
 
 monad::IO<void> InfoHandler::start() {
   using VoidIO = monad::IO<void>;
@@ -201,7 +202,16 @@ monad::IO<void> InfoHandler::start() {
       cjj365::device::device_public_id_from_fingerprint(fingerprint);
   std::optional<std::string> stored_device_id;
   fs::path device_id_path;
-  if (!runtime_dir.empty()) {
+
+  // Prefer device id from state store (SQLite) when available
+  if (state_store_.available()) {
+    if (auto id = state_store_.get_device_public_id(); id && !id->empty()) {
+      stored_device_id = id;
+    }
+  }
+
+  // Fallback to legacy file if DB didn't have a valid id
+  if (!stored_device_id && !runtime_dir.empty()) {
     device_id_path = runtime_dir / "state" / "device_public_id.txt";
     stored_device_id = read_trimmed(device_id_path);
     const bool stored_valid =
@@ -217,11 +227,33 @@ monad::IO<void> InfoHandler::start() {
             << "device_public_id.txt missing; writing derived identifier to "
             << device_id_path << std::endl;
       }
-      if (auto err = write_text_0600(device_id_path, public_id)) {
-        output_hub_.logger().warning()
-            << "Failed to persist device_public_id: " << *err << std::endl;
+
+      // Attempt to persist into SQLite first. If that fails, fall back to file.
+      if (state_store_.available()) {
+        const std::optional<std::string> id_payload(public_id);
+        if (auto err = state_store_.save_device_identity(id_payload, std::optional<std::string>(fingerprint))) {
+          output_hub_.logger().warning()
+              << "Failed to persist device_public_id to SQLite: " << *err
+              << "; falling back to legacy file" << std::endl;
+          if (auto err2 = write_text_0600(device_id_path, public_id)) {
+            output_hub_.logger().warning()
+                << "Failed to persist device_public_id: " << *err2 << std::endl;
+          } else {
+            stored_device_id = public_id;
+          }
+        } else {
+          // persisted to DB successfully; remove legacy file if present
+          std::error_code ec;
+          std::filesystem::remove(device_id_path, ec);
+          stored_device_id = public_id;
+        }
       } else {
-        stored_device_id = public_id;
+        if (auto err = write_text_0600(device_id_path, public_id)) {
+          output_hub_.logger().warning()
+              << "Failed to persist device_public_id: " << *err << std::endl;
+        } else {
+          stored_device_id = public_id;
+        }
       }
     }
   }
