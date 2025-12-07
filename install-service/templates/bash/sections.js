@@ -6,89 +6,55 @@ String.raw`#!/bin/bash
 # Platform: {{PLATFORM}}-{{ARCHITECTURE}}
 # Mirror: {{MIRROR_NAME}}
 # Country: {{COUNTRY}}
-
 set -euo pipefail
 
-# Configuration from service
-PLATFORM="{{PLATFORM}}"
-PLATFORM_CONFIDENCE="{{PLATFORM_CONFIDENCE}}"
-ARCHITECTURE="{{ARCHITECTURE}}"
-MIRROR_URL="{{MIRROR_URL}}"
-BASE_URL="{{BASE_URL}}"
-VERSION="{{VERSION}}"
-# System installation only - user installation removed
-# USER_INSTALL is always false
+# Configuration derived from the installer service (overridable via env)
+PLATFORM="\${PLATFORM:-{{PLATFORM}}}"
+ARCHITECTURE="\${ARCHITECTURE:-{{ARCHITECTURE}}}"
+PLATFORM_CONFIDENCE="\${PLATFORM_CONFIDENCE:-{{PLATFORM_CONFIDENCE}}}"
+BASE_URL="\${BASE_URL:-{{BASE_URL}}}"
+MIRROR_URL="\${MIRROR_URL:-{{MIRROR_URL}}}"
+VERSION="\${VERSION:-{{VERSION}}}"
 VERBOSE="\${VERBOSE:-{{VERBOSE}}}"
 FORCE="\${FORCE:-{{FORCE}}}"
 DRY_RUN="\${DRY_RUN:-{{DRY_RUN}}}"
-
-# Advanced configuration (overridable via environment or flags)
-CONFIG_DIR="\${CONFIG_DIR:-}"
+WRITABLE_DIRS="\${WRITABLE_DIRS:-{{WRITABLE_DIRS}}}"
+SANDBOX_DISABLED="\${SANDBOX_DISABLED:-{{SANDBOX_DISABLED}}}"
 INSTALL_SERVICE="\${INSTALL_SERVICE:-}"
 ENABLE_SERVICE="\${ENABLE_SERVICE:-}"
 SERVICE_NAME="\${SERVICE_NAME:-certctrl.service}"
 SERVICE_ACCOUNT="\${SERVICE_ACCOUNT:-root}"
-SERVICE_DESCRIPTION="cert-ctrl certificate management agent"
+SERVICE_DESCRIPTION="\${SERVICE_DESCRIPTION:-cert-ctrl certificate management agent}"
 NONINTERACTIVE="\${NONINTERACTIVE:-false}"
 CHANNEL="\${CHANNEL:-stable}"
 
-LAST_DOWNLOAD_URL=""
-LAST_CHECKSUM_URL=""
-CONFIG_DIR_PLACEHOLDER="{{CONFIG_DIR}}"
-if [ -z "$CONFIG_DIR" ] && [ -n "$CONFIG_DIR_PLACEHOLDER" ]; then
-    CONFIG_DIR="$CONFIG_DIR_PLACEHOLDER"
-fi
-
-STATE_DIR="\${STATE_DIR:-/var/lib/certctrl}"
-STATE_DIR_PLACEHOLDER="{{STATE_DIR}}"
-if [ -z "$STATE_DIR" ] && [ -n "$STATE_DIR_PLACEHOLDER" ]; then
-    STATE_DIR="$STATE_DIR_PLACEHOLDER"
+CONFIG_DIR="\${CONFIG_DIR:-{{CONFIG_DIR}}}"
+STATE_DIR="\${STATE_DIR:-{{STATE_DIR}}}"
+if [ -z "$STATE_DIR" ]; then
+    STATE_DIR="/var/lib/certctrl"
 fi
 STATE_DIR_NAME="$(basename "$STATE_DIR")"
-
-LOG_DIR="\${LOG_DIR:-}"
-LOG_DIR_PLACEHOLDER="{{LOG_DIR}}"
-if [ -z "$LOG_DIR" ] && [ -n "$LOG_DIR_PLACEHOLDER" ]; then
-    LOG_DIR="$LOG_DIR_PLACEHOLDER"
-fi
+LOG_DIR="\${LOG_DIR:-{{LOG_DIR}}}"
 if [ -z "$LOG_DIR" ]; then
     LOG_DIR="/var/log"
 fi
 
-SANDBOX_DISABLED="\${SANDBOX_DISABLED:-{{SANDBOX_DISABLED}}}"
-if [ -z "$SANDBOX_DISABLED" ]; then
-    SANDBOX_DISABLED="false"
-fi
-
-WRITABLE_DIRS="\${WRITABLE_DIRS:-}"
-WRITABLE_DIRS_PLACEHOLDER="{{WRITABLE_DIRS}}"
-if [ -z "$WRITABLE_DIRS" ] && [ -n "$WRITABLE_DIRS_PLACEHOLDER" ]; then
-    WRITABLE_DIRS="$WRITABLE_DIRS_PLACEHOLDER"
-fi
-
+LAST_DOWNLOAD_URL=""
+LAST_CHECKSUM_URL=""
 RESTART_SERVICE_AFTER_INSTALL="false"
-SHA256_CMD=()
+SYSTEMD_EXTRA_RW_PATHS=()
 
-declare -a SYSTEMD_EXTRA_RW_PATHS=()
+if [ -z "$BASE_URL" ]; then
+    BASE_URL="https://install.lets-script.com"
+fi
 
-append_custom_rw_paths() {
-    local raw_list="$1"
-    if [ -z "$raw_list" ]; then
-        return 0
-    fi
+if [ -z "$MIRROR_URL" ]; then
+    MIRROR_URL="$BASE_URL/releases/proxy"
+fi
 
-    local IFS=','
-    local -a custom_paths
-    read -ra custom_paths <<< "$raw_list"
-
-    local entry trimmed
-    for entry in "\${custom_paths[@]}"; do
-        trimmed=$(trim_whitespace "$entry")
-        if [ -n "$trimmed" ]; then
-            add_systemd_rw_path "$trimmed" "force"
-        fi
-    done
-}
+if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+    VERSION="latest"
+fi
 
 collect_systemd_rw_paths() {
     SYSTEMD_EXTRA_RW_PATHS=()
@@ -135,6 +101,49 @@ collect_systemd_rw_paths() {
     fi
 }
 
+add_systemd_rw_path() {
+    local path="$1"
+    local mode="\${2:-auto}"
+
+    if [ -z "$path" ]; then
+        return 0
+    fi
+
+    local normalized="$path"
+    if [ "$normalized" != "/" ]; then
+        normalized="\${normalized%/}"
+    fi
+
+    if [ "$mode" != "force" ] && [ ! -e "$normalized" ]; then
+        return 0
+    fi
+
+    local existing
+    for existing in "\${SYSTEMD_EXTRA_RW_PATHS[@]}"; do
+        if [ "$existing" = "$normalized" ]; then
+            return 0
+        fi
+    done
+
+    SYSTEMD_EXTRA_RW_PATHS+=("$normalized")
+}
+
+append_custom_rw_paths() {
+    local list="$1"
+    if [ -z "$list" ]; then
+        return 0
+    fi
+
+    local IFS=','
+    local entry
+    for entry in $list; do
+        entry=$(trim_whitespace "$entry")
+        if [ -n "$entry" ]; then
+            add_systemd_rw_path "$entry" "force"
+        fi
+    done
+}
+
 trim_whitespace() {
     local value="$1"
 
@@ -156,7 +165,23 @@ SERVICE_MANAGER=""
 
 find_command_path() {
     local cmd="$1"
-            install_launchd_service_unit
+    local resolved
+    resolved=$(command -v "$cmd" 2>/dev/null || true)
+    if [ -n "$resolved" ]; then
+        echo "$resolved"
+        return 0
+    fi
+    if [ -x "/sbin/$cmd" ]; then
+        echo "/sbin/$cmd"
+        return 0
+    fi
+    if [ -x "/usr/sbin/$cmd" ]; then
+        echo "/usr/sbin/$cmd"
+        return 0
+    fi
+    return 1
+}
+
 # Override with environment or parameters
 INSTALL_DIR="\${INSTALL_DIR:-{{INSTALL_DIR}}}"
 if [ -z "$INSTALL_DIR" ]; then
@@ -640,6 +665,34 @@ run_with_timeout() {
     return 0
 }
 
+restore_selinux_context() {
+    local target_path="$1"
+
+    if [ -z "$target_path" ] || [ ! -e "$target_path" ]; then
+        return 0
+    fi
+
+    if ! command -v selinuxenabled >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! selinuxenabled >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -F "$target_path" >/dev/null 2>&1 || log_warning "restorecon failed for $target_path"
+        return 0
+    fi
+
+    if command -v chcon >/dev/null 2>&1 && [ -f /usr/lib/systemd/system/sshd.service ]; then
+        chcon --reference=/usr/lib/systemd/system/sshd.service "$target_path" >/dev/null 2>&1 || log_warning "chcon failed for $target_path"
+        return 0
+    fi
+
+    log_warning "SELinux detected but restorecon/chcon unavailable; manual relabel may be required"
+}
+
 select_artifact_slug() {
     local platform_arch="$1"
     if [ -z "$platform_arch" ]; then
@@ -897,25 +950,6 @@ install_config_files() {
     log_success "Configuration installed"
 }
 
-ensure_service_account() {
-    local account="$SERVICE_ACCOUNT"
-
-    if [ "$account" = "" ] || [ "$account" = "root" ]; then
-        return 0
-    fi
-
-    if id "$account" &> /dev/null; then
-        return 0
-    fi
-
-    if command -v useradd &> /dev/null; then
-        log_info "Creating service account $account"
-        useradd --system --no-create-home --shell /usr/sbin/nologin "$account"
-    else
-        log_warning "useradd not available; please ensure account $account exists"
-    fi
-}
-
 stop_service_if_running() {
     # Avoid ETXTBUSY when overwriting the binary while the service is running
     if [ "$EUID" -ne 0 ]; then
@@ -1089,6 +1123,9 @@ depend() {
     need net
 }
 
+EOF
+}
+
 install_launchd_service_unit() {
     local plist_path
     plist_path=$(get_launchd_plist_path)
@@ -1139,18 +1176,14 @@ EOF
     log_success "LaunchDaemon written to $plist_path"
 
     if [ "$ENABLE_SERVICE" = "true" ]; then
-        if ! reload_launchd_service; then
+        if reload_launchd_service; then
+            RESTART_SERVICE_AFTER_INSTALL="false"
+        else
             log_warning "LaunchDaemon installed but failed to start automatically; run: launchctl bootstrap system $plist_path"
         fi
     else
         log_info "Service installed. Enable manually with: launchctl bootstrap system $plist_path && launchctl enable system/$label"
     fi
-}
-
-start_pre() {
-    checkpath --directory --mode 0755 /run
-}
-EOF
 }
 
 enable_service_with_retry() {
@@ -1402,6 +1435,7 @@ install_openrc_service_unit() {
         if rc_service_bin=$(find_command_path rc-service 2>/dev/null); then
             if "$rc_service_bin" "$openrc_name" restart >/dev/null 2>&1; then
                 log_success "$openrc_name service started"
+                RESTART_SERVICE_AFTER_INSTALL="false"
             else
                 log_warning "Failed to start $openrc_name automatically; run: rc-service $openrc_name start"
             fi
@@ -1488,6 +1522,7 @@ install_freebsd_service_unit() {
             log_info "Restarting $rc_name via service (timeout 20s)"
             if run_with_timeout 20 "$service_bin" "$rc_name" restart >/dev/null 2>&1; then
                 log_success "$rc_name service started"
+                RESTART_SERVICE_AFTER_INSTALL="false"
             else
                 local restart_status=$?
                 if [ "$restart_status" -eq 124 ]; then
@@ -1557,70 +1592,15 @@ install_service_unit() {
 
     case "$SERVICE_MANAGER" in
         systemd)
-            ensure_service_account
             install_systemd_service_unit
             ;;
         launchd)
-            # Minimal launchd support for macOS within the generic installer
-            # Emit a LaunchDaemon plist and load it using launchctl.
-            # We inline the essential bits here to avoid requiring the
-            # separate macOS-only installer path when the generic script
-            # is used on Darwin hosts.
-            PLIST_PATH="/Library/LaunchDaemons/\${SERVICE_NAME%.service}.plist"
-            mkdir -p "$(dirname "$PLIST_PATH")"
-            cat > "$PLIST_PATH" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>\${SERVICE_NAME%.service}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>\${INSTALL_DIR}/cert-ctrl</string>
-        <string>--config-dirs</string>
-        <string>\${CONFIG_DIR}</string>
-        <string>--keep-running</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>CERTCTRL_STATE_DIR</key>
-        <string>\${STATE_DIR}</string>
-    </dict>
-    <key>WorkingDirectory</key>
-    <string>\${CONFIG_DIR}</string>
-    <key>StandardOutPath</key>
-    <string>\${LOG_DIR}/certctrl.log</string>
-    <key>StandardErrorPath</key>
-    <string>\${LOG_DIR}/certctrl.err.log</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-</dict>
-</plist>
-EOF
-            chown root:wheel "$PLIST_PATH" || true
-            chmod 644 "$PLIST_PATH" || true
-
-            # Attempt to (re)load the daemon via modern launchctl APIs, fallback to legacy load
-            if launchctl list | grep -q "\${SERVICE_NAME%.service}" >/dev/null 2>&1; then
-                launchctl bootout system "$PLIST_PATH" >/dev/null 2>&1 || true
-            fi
-            if launchctl bootstrap system "$PLIST_PATH" >/dev/null 2>&1; then
-                launchctl enable system/\${SERVICE_NAME%.service} >/dev/null 2>&1 || true
-                launchctl kickstart -k system/\${SERVICE_NAME%.service} >/dev/null 2>&1 || true
-                log_success "Service \${SERVICE_NAME} started (launchd)"
-            else
-                launchctl load "$PLIST_PATH" >/dev/null 2>&1 || log_warning "Failed to load LaunchDaemon; verify manually"
-            fi
+            install_launchd_service_unit
             ;;
         openrc)
-            ensure_service_account
             install_openrc_service_unit
             ;;
         freebsd-rcd)
-            ensure_service_account
             install_freebsd_service_unit
             ;;
         *)
@@ -1938,7 +1918,7 @@ main() {
 
     maybe_skip_install
     
-    local temp_file=$(download_binary "$artifact_slug" "$platform_arch")
+    local temp_file=$(download_binary "$artifact_slug" "$artifact_slug")
 
     if [ "$DRY_RUN" = "true" ]; then
         log_info "DRY RUN: No changes were made"
@@ -1984,6 +1964,16 @@ main() {
                 echo "  - Check service status: service $rc_name status"
             else
                 echo "  - Enable service when ready: sudo sysrc \${rc_name}_enable=YES && sudo service $rc_name start"
+            fi
+        elif [ "$SERVICE_MANAGER" = "launchd" ]; then
+            local label
+            label=$(get_launchd_label)
+            local plist_path
+            plist_path=$(get_launchd_plist_path)
+            if [ "$ENABLE_SERVICE" = "true" ]; then
+                echo "  - Check service status: launchctl print system/$label"
+            else
+                echo "  - Enable service when ready: sudo launchctl bootstrap system $plist_path && sudo launchctl enable system/$label"
             fi
         elif [ "$ENABLE_SERVICE" = "true" ]; then
             echo "  - Check service status: systemctl status $SERVICE_NAME"
