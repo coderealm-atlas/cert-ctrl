@@ -1,7 +1,7 @@
 #include "handlers/info_handler.hpp"
 
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -114,7 +114,7 @@ decode_expiry(const std::string &token) {
 
 std::string format_utc(const std::chrono::system_clock::time_point &tp) {
   std::time_t raw = std::chrono::system_clock::to_time_t(tp);
-  std::tm tm {};
+  std::tm tm{};
 #if defined(_WIN32)
   gmtime_s(&tm, &raw);
 #else
@@ -129,12 +129,11 @@ std::string format_utc(const std::chrono::system_clock::time_point &tp) {
 
 InfoHandler::InfoHandler(cjj365::ConfigSources &config_sources,
                          certctrl::ICertctrlConfigProvider &config_provider,
-                         customio::ConsoleOutput &output_hub,
-                         CliCtx &cli_ctx,
+                         customio::ConsoleOutput &output_hub, CliCtx &cli_ctx,
                          certctrl::IDeviceStateStore &state_store)
     : config_sources_(config_sources),
-      certctrl_config_provider_(config_provider),
-      output_hub_(output_hub), cli_ctx_(cli_ctx), state_store_(state_store) {}
+      certctrl_config_provider_(config_provider), output_hub_(output_hub),
+      cli_ctx_(cli_ctx), state_store_(state_store) {}
 
 monad::IO<void> InfoHandler::start() {
   using VoidIO = monad::IO<void>;
@@ -184,13 +183,14 @@ monad::IO<void> InfoHandler::start() {
     proxy << std::endl;
   }
 
-  if (auto logging_cfg = config_sources_.logging_config(); logging_cfg.is_ok()) {
+  if (auto logging_cfg = config_sources_.logging_config();
+      logging_cfg.is_ok()) {
     auto proxy = printer.white();
     proxy << "  Log dir: " << logging_cfg.value().log_dir << std::endl;
   } else {
     output_hub_.logger().warning()
-        << "Unable to resolve log configuration: "
-        << logging_cfg.error().what << std::endl;
+        << "Unable to resolve log configuration: " << logging_cfg.error().what
+        << std::endl;
   }
 
   printer.cyan() << "Device" << std::endl;
@@ -203,64 +203,70 @@ monad::IO<void> InfoHandler::start() {
   std::optional<std::string> stored_device_id;
   fs::path device_id_path;
 
-  // Prefer device id from state store (SQLite) when available
-  if (state_store_.available()) {
-    if (auto id = state_store_.get_device_public_id(); id && !id->empty()) {
-      stored_device_id = id;
-    }
+  // Prefer device id from state store (SQLite); getter will lazily
+  // initialize the store if needed so the DB remains authoritative.
+  if (auto id = state_store_.get_device_public_id(); id && !id->empty()) {
+    stored_device_id = id;
   }
 
-  // Fallback to legacy file if DB didn't have a valid id
+  // Legacy fallback: only consult the flat file if nothing valid was found
+  // in SQLite (e.g., first run before login).
   if (!stored_device_id && !runtime_dir.empty()) {
     device_id_path = runtime_dir / "state" / "device_public_id.txt";
     stored_device_id = read_trimmed(device_id_path);
-    const bool stored_valid =
-        stored_device_id && is_valid_device_public_id(*stored_device_id);
-    if (!stored_valid) {
-      if (stored_device_id) {
-        output_hub_.logger().warning()
-            << "Ignoring malformed device_public_id stored at "
-            << device_id_path << "; rewriting derived identifier."
-            << std::endl;
-      } else {
-        output_hub_.logger().info()
-            << "device_public_id.txt missing; writing derived identifier to "
-            << device_id_path << std::endl;
-      }
+  }
 
-      // Attempt to persist into SQLite first. If that fails, fall back to file.
-      if (state_store_.available()) {
-        const std::optional<std::string> id_payload(public_id);
-        if (auto err = state_store_.save_device_identity(id_payload, std::optional<std::string>(fingerprint))) {
+  const bool stored_valid =
+      stored_device_id && is_valid_device_public_id(*stored_device_id);
+  if (!stored_valid) {
+    const bool had_existing_id = static_cast<bool>(stored_device_id);
+    if (had_existing_id && device_id_path.empty()) {
+      output_hub_.logger().warning()
+          << "Ignoring malformed device_public_id stored in SQLite; "
+          << "rewriting derived identifier." << std::endl;
+    } else if (had_existing_id) {
+      output_hub_.logger().warning()
+          << "Ignoring malformed device_public_id stored at "
+          << device_id_path.string() << "; rewriting derived identifier."
+          << std::endl;
+    }
+    stored_device_id.reset();
+
+    const std::optional<std::string> id_payload(public_id);
+    const std::optional<std::string> fingerprint_payload(fingerprint);
+    if (auto err = state_store_.save_device_identity(id_payload,
+                             fingerprint_payload)) {
+      output_hub_.logger().warning()
+          << "Failed to persist device_public_id to SQLite: " << *err
+          << "; falling back to legacy file" << std::endl;
+      if (!device_id_path.empty()) {
+        if (!had_existing_id) {
+          output_hub_.logger().info()
+              << "device_public_id.txt missing; writing derived identifier to "
+              << device_id_path.string() << std::endl;
+        }
+        if (auto err2 = write_text_0600(device_id_path, public_id)) {
           output_hub_.logger().warning()
-              << "Failed to persist device_public_id to SQLite: " << *err
-              << "; falling back to legacy file" << std::endl;
-          if (auto err2 = write_text_0600(device_id_path, public_id)) {
-            output_hub_.logger().warning()
-                << "Failed to persist device_public_id: " << *err2 << std::endl;
-          } else {
-            stored_device_id = public_id;
-          }
+              << "Failed to persist device_public_id: " << *err2 << std::endl;
         } else {
-          // persisted to DB successfully; remove legacy file if present
-          std::error_code ec;
-          std::filesystem::remove(device_id_path, ec);
           stored_device_id = public_id;
         }
       } else {
-        if (auto err = write_text_0600(device_id_path, public_id)) {
-          output_hub_.logger().warning()
-              << "Failed to persist device_public_id: " << *err << std::endl;
-        } else {
-          stored_device_id = public_id;
-        }
+        output_hub_.logger().warning()
+            << "Unable to persist device_public_id: no writable state directory"
+            << std::endl;
+      }
+    } else {
+      stored_device_id = public_id;
+      if (!device_id_path.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(device_id_path, ec);
       }
     }
   }
-  auto default_name = fmt::format(
-      "CLI Device {}",
-      device_info.hostname.empty() ? std::string{"unknown"}
-                                   : device_info.hostname);
+  auto default_name = fmt::format("CLI Device {}", device_info.hostname.empty()
+                                                       ? std::string{"unknown"}
+                                                       : device_info.hostname);
 
   {
     auto proxy = printer.white();
@@ -326,13 +332,13 @@ monad::IO<void> InfoHandler::start() {
 
   {
     auto proxy = printer.white();
-    proxy << "  Access token: "
-      << (access_token ? "present" : "missing") << std::endl;
+    proxy << "  Access token: " << (access_token ? "present" : "missing")
+          << std::endl;
   }
   {
     auto proxy = printer.white();
-    proxy << "  Refresh token: "
-      << (refresh_token ? "present" : "missing") << std::endl;
+    proxy << "  Refresh token: " << (refresh_token ? "present" : "missing")
+          << std::endl;
   }
 
   if (access_token) {
