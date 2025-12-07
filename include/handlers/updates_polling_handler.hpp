@@ -155,7 +155,8 @@ public:
 
     // Initialize signal dispatcher with handlers
     auto runtime_dir = config_sources_.paths_.back();
-    signal_dispatcher_ = std::make_unique<SignalDispatcher>(runtime_dir);
+    signal_dispatcher_ =
+      std::make_unique<SignalDispatcher>(runtime_dir, &state_store_);
 
     if (!install_config_manager_) {
       BOOST_LOG_SEV(lg, trivial::warning)
@@ -187,6 +188,8 @@ public:
     BOOST_LOG_SEV(lg, trivial::info)
         << "Registered " << signal_dispatcher_->handler_count()
         << " signal handlers";
+
+    load_cursor_from_state();
   }
 
   std::string command() const override { return "updates"; }
@@ -464,12 +467,63 @@ private:
   }
 
   void save_cursor(const std::string &cursor) {
+    const std::optional<std::string> payload(cursor);
+    if (auto err = state_store_.save_updates_cursor(payload)) {
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "Failed to persist cursor to SQLite: " << *err
+          << "; falling back to legacy file";
+      persist_cursor_to_file(cursor);
+      return;
+    }
+
+    remove_legacy_cursor_file();
+  }
+
+  void load_cursor_from_state() {
+    if (auto stored = state_store_.get_updates_cursor()) {
+      if (!stored->empty()) {
+        cursor_ = *stored;
+        BOOST_LOG_SEV(lg, trivial::info)
+            << "Resuming updates cursor from SQLite entry";
+        remove_legacy_cursor_file();
+        return;
+      }
+    }
+
+    if (config_sources_.paths_.empty()) {
+      return;
+    }
+    const auto runtime_dir = config_sources_.paths_.back();
+    const auto cursor_path = runtime_dir / "state" / "last_cursor.txt";
+    auto legacy_cursor = read_trimmed_file(cursor_path);
+    if (!legacy_cursor || legacy_cursor->empty()) {
+      return;
+    }
+
+    cursor_ = *legacy_cursor;
+    BOOST_LOG_SEV(lg, trivial::info)
+        << "Resuming updates cursor from legacy file";
+
+    const std::optional<std::string> payload(cursor_);
+    if (auto err = state_store_.save_updates_cursor(payload)) {
+      BOOST_LOG_SEV(lg, trivial::warning)
+          << "Failed to migrate cursor into SQLite: " << *err;
+      return;
+    }
+
+    remove_legacy_cursor_file();
+  }
+
+  void persist_cursor_to_file(const std::string &cursor) {
+    if (config_sources_.paths_.empty()) {
+      return;
+    }
+
     auto config_dir = config_sources_.paths_.back();
     auto cursor_file = config_dir / "state" / "last_cursor.txt";
     auto temp_file = config_dir / "state" / ".last_cursor.txt.tmp";
 
     try {
-      // Ensure state directory exists
       std::filesystem::create_directories(config_dir / "state");
 
       std::ofstream ofs(temp_file);
@@ -482,8 +536,21 @@ private:
                                        std::filesystem::perms::owner_write);
     } catch (const std::exception &e) {
       BOOST_LOG_SEV(lg, trivial::error)
-          << "Failed to save cursor: " << e.what();
+          << "Failed to save cursor to file: " << e.what();
     }
+  }
+
+  void remove_legacy_cursor_file() const {
+    if (config_sources_.paths_.empty()) {
+      return;
+    }
+
+    auto config_dir = config_sources_.paths_.back();
+    auto cursor_file = config_dir / "state" / "last_cursor.txt";
+    auto temp_file = config_dir / "state" / ".last_cursor.txt.tmp";
+    std::error_code ec;
+    std::filesystem::remove(cursor_file, ec);
+    std::filesystem::remove(temp_file, ec);
   }
 
   int compute_failure_delay_ms() const {

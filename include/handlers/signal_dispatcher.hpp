@@ -1,14 +1,18 @@
 #pragma once
 
-#include "signal_handlers/signal_handler_base.hpp"
 #include "data/data_shape.hpp"
+#include "signal_handlers/signal_handler_base.hpp"
+#include "state/device_state_store.hpp"
 #include "util/my_logging.hpp"
-#include <memory>
-#include <unordered_map>
-#include <unordered_set>
+#include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <chrono>
+#include <memory>
+#include <optional>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include <boost/json.hpp>
 
 namespace certctrl {
@@ -19,15 +23,17 @@ namespace certctrl {
  */
 class SignalDispatcher {
 private:
-    std::unordered_map<std::string, 
+    std::unordered_map<std::string,
                        std::shared_ptr<signal_handlers::ISignalHandler>> handlers_;
     std::filesystem::path state_dir_;
+    certctrl::IDeviceStateStore *state_store_{nullptr};
     std::unordered_set<std::string> processed_signals_;
     src::severity_logger<trivial::severity_level> lg_;
     
 public:
-    explicit SignalDispatcher(const std::filesystem::path& config_dir) 
-        : state_dir_(config_dir / "state") {
+    explicit SignalDispatcher(const std::filesystem::path& config_dir,
+                              certctrl::IDeviceStateStore *state_store = nullptr)
+        : state_dir_(config_dir / "state"), state_store_(state_store) {
         // Ensure state directory exists
         std::filesystem::create_directories(state_dir_);
         load_processed_signals();
@@ -138,94 +144,171 @@ private:
      * Load processed signals from disk on startup.
      */
     void load_processed_signals() {
+        if (state_store_) {
+            if (auto stored = state_store_->get_processed_signals_json()) {
+                if (!stored->empty() && hydrate_from_serialized(*stored)) {
+                    BOOST_LOG_SEV(lg_, trivial::info)
+                        << "Loaded " << processed_signals_.size()
+                        << " processed signals from SQLite";
+                    remove_legacy_processed_signals_file();
+                    return;
+                }
+            }
+        }
+
+        if (load_from_legacy_file()) {
+            BOOST_LOG_SEV(lg_, trivial::info)
+                << "Loaded " << processed_signals_.size()
+                << " processed signals from disk";
+            migrate_file_payload_to_store();
+        }
+    }
+
+    /**
+     * Save processed signals to persistent storage.
+     * Keeps only recent signals (last 1000 or last 7 days).
+     */
+    void save_processed_signals() {
+        try {
+            auto serialized = serialize_processed_signals();
+            persist_processed_signals(serialized);
+        } catch (const std::exception &e) {
+            BOOST_LOG_SEV(lg_, trivial::error)
+                << "Failed to save processed signals: " << e.what();
+        }
+    }
+
+    bool hydrate_from_serialized(const std::string &payload) {
+        try {
+            auto jv = boost::json::parse(payload);
+            const auto &arr = jv.as_array();
+            processed_signals_.clear();
+            for (const auto &item : arr) {
+                processed_signals_.insert(std::string(item.as_string()));
+            }
+            return true;
+        } catch (const std::exception &e) {
+            BOOST_LOG_SEV(lg_, trivial::error)
+                << "Failed to parse processed signals payload: " << e.what();
+            return false;
+        }
+    }
+
+    bool load_from_legacy_file() {
         auto file = state_dir_ / "processed_signals.json";
         if (!std::filesystem::exists(file)) {
             BOOST_LOG_SEV(lg_, trivial::debug)
                 << "No processed signals file found (first run)";
-            return;
+            return false;
         }
-        
+
         try {
             std::ifstream ifs(file);
             std::string content((std::istreambuf_iterator<char>(ifs)),
-                               std::istreambuf_iterator<char>());
-            
-            auto jv = boost::json::parse(content);
-            auto& arr = jv.as_array();
-            
-            for (const auto& item : arr) {
-                processed_signals_.insert(std::string(item.as_string()));
-            }
-            
-            BOOST_LOG_SEV(lg_, trivial::info)
-                << "Loaded " << processed_signals_.size() 
-                << " processed signals from disk";
-        } catch (const std::exception& e) {
+                                std::istreambuf_iterator<char>());
+            return hydrate_from_serialized(content);
+        } catch (const std::exception &e) {
             BOOST_LOG_SEV(lg_, trivial::error)
                 << "Failed to load processed signals: " << e.what();
+            return false;
         }
     }
-    
-    /**
-     * Save processed signals to disk atomically.
-     * Keeps only recent signals (last 1000 or last 7 days).
-     */
-    void save_processed_signals() {
+
+    std::string serialize_processed_signals() const {
+        boost::json::array arr;
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
+
+        std::vector<std::pair<int64_t, std::string>> signals_with_ts;
+        signals_with_ts.reserve(processed_signals_.size());
+
+        for (const auto &sig_id : processed_signals_) {
+            auto pos = sig_id.find(':');
+            if (pos == std::string::npos) {
+                continue;
+            }
+            try {
+                int64_t ts_ms = std::stoll(sig_id.substr(pos + 1));
+                if (now_ms - ts_ms < 7 * 24 * 3600 * 1000LL) {
+                    signals_with_ts.emplace_back(ts_ms, sig_id);
+                }
+            } catch (const std::exception &) {
+                continue;
+            }
+        }
+
+        std::sort(signals_with_ts.begin(), signals_with_ts.end(),
+                  [](const auto &a, const auto &b) { return a.first > b.first; });
+
+        size_t limit = std::min(signals_with_ts.size(), size_t(1000));
+        for (size_t i = 0; i < limit; ++i) {
+            arr.push_back(boost::json::value(signals_with_ts[i].second));
+        }
+
+        return boost::json::serialize(arr);
+    }
+
+    void persist_processed_signals(const std::string &payload) {
+        bool saved = false;
+        if (state_store_) {
+            const std::optional<std::string> serialized(payload);
+            if (auto err = state_store_->save_processed_signals_json(serialized)) {
+                BOOST_LOG_SEV(lg_, trivial::error)
+                    << "Failed to write processed signals to SQLite: " << *err;
+            } else {
+                saved = true;
+                remove_legacy_processed_signals_file();
+            }
+        }
+
+        if (!saved) {
+            save_processed_signals_to_file(payload);
+        }
+    }
+
+    void migrate_file_payload_to_store() {
+        if (!state_store_) {
+            return;
+        }
+
+        const auto payload = serialize_processed_signals();
+        const std::optional<std::string> serialized(payload);
+        if (auto err = state_store_->save_processed_signals_json(serialized)) {
+            BOOST_LOG_SEV(lg_, trivial::warning)
+                << "Failed to migrate processed signals to SQLite: " << *err;
+            return;
+        }
+        remove_legacy_processed_signals_file();
+    }
+
+    void save_processed_signals_to_file(const std::string &payload) {
         auto file = state_dir_ / "processed_signals.json";
         auto temp_file = state_dir_ / ".processed_signals.json.tmp";
-        
+
         try {
-            boost::json::array arr;
-            
-            // Keep only recent signals (last 1000 or last 7 days)
-            auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch()
-            ).count();
-            
-            std::vector<std::pair<int64_t, std::string>> signals_with_ts;
-            
-            for (const auto& sig_id : processed_signals_) {
-                // Parse timestamp from signal_id (format: "type:timestamp_ms")
-                auto pos = sig_id.find(':');
-                if (pos != std::string::npos) {
-                    try {
-                        int64_t ts_ms = std::stoll(sig_id.substr(pos + 1));
-                        // Keep signals from last 7 days
-                        if (now_ms - ts_ms < 7 * 24 * 3600 * 1000LL) {
-                            signals_with_ts.push_back({ts_ms, sig_id});
-                        }
-                    } catch (const std::exception&) {
-                        // Invalid timestamp, skip
-                        continue;
-                    }
-                }
-            }
-            
-            // Sort by timestamp descending
-            std::sort(signals_with_ts.begin(), signals_with_ts.end(),
-                     [](const auto& a, const auto& b) { return a.first > b.first; });
-            
-            // Limit to last 1000 signals
-            size_t limit = std::min(signals_with_ts.size(), size_t(1000));
-            for (size_t i = 0; i < limit; ++i) {
-                arr.push_back(boost::json::value(signals_with_ts[i].second));
-            }
-            
-            // Write atomically
+            std::filesystem::create_directories(state_dir_);
             {
                 std::ofstream ofs(temp_file);
-                ofs << boost::json::serialize(arr);
+                ofs << payload;
             }
-            
+
             std::filesystem::rename(temp_file, file);
-            std::filesystem::permissions(file, 
-                std::filesystem::perms::owner_read | 
-                std::filesystem::perms::owner_write);
-                
-        } catch (const std::exception& e) {
+            std::filesystem::permissions(
+                file, std::filesystem::perms::owner_read |
+                          std::filesystem::perms::owner_write);
+        } catch (const std::exception &e) {
             BOOST_LOG_SEV(lg_, trivial::error)
-                << "Failed to save processed signals: " << e.what();
+                << "Failed to save processed signals to file: " << e.what();
         }
+    }
+
+    void remove_legacy_processed_signals_file() const {
+        auto file = state_dir_ / "processed_signals.json";
+        auto temp_file = state_dir_ / ".processed_signals.json.tmp";
+        std::error_code ec;
+        std::filesystem::remove(file, ec);
+        std::filesystem::remove(temp_file, ec);
     }
 };
 

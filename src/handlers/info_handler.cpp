@@ -156,7 +156,7 @@ monad::IO<void> InfoHandler::start() {
   } else {
     for (const auto &dir : search_paths) {
       auto proxy = printer.white();
-      proxy << "  - " << dir;
+      proxy << "  - " << dir.string();
       if (!runtime_dir.empty() && dir == runtime_dir) {
         proxy << "  (runtime)";
       }
@@ -166,7 +166,7 @@ monad::IO<void> InfoHandler::start() {
 
   auto runtime_proxy = printer.white();
   if (!runtime_dir.empty()) {
-    runtime_proxy << "  Runtime dir: " << runtime_dir << std::endl;
+    runtime_proxy << "  Runtime dir: " << runtime_dir.string() << std::endl;
   } else {
     runtime_proxy << "  Runtime dir: <unset>" << std::endl;
   }
@@ -176,7 +176,7 @@ monad::IO<void> InfoHandler::start() {
     const fs::path state_dir = runtime_dir / "state";
     bool state_exists = fs::exists(state_dir, ec) && !ec;
     auto proxy = printer.white();
-    proxy << "  State dir: " << state_dir;
+    proxy << "  State dir: " << state_dir.string();
     if (!state_exists) {
       proxy << " (missing)";
     }
