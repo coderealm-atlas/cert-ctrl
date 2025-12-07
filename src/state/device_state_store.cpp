@@ -17,6 +17,8 @@ constexpr const char kInstallConfigKey[] = "install_config_json";
 constexpr const char kInstallConfigVersionKey[] = "install_config_version";
 constexpr const char kImportCaPrefix[] = "import_ca/ca-";
 constexpr const char kImportCaSuffix[] = ".name";
+constexpr const char kUpdatesCursorKey[] = "updates_cursor";
+constexpr const char kProcessedSignalsKey[] = "processed_signals_json";
 
 constexpr const char kCreateTableSql[] = R"SQL(
 CREATE TABLE IF NOT EXISTS kv_store (
@@ -283,6 +285,58 @@ SqliteDeviceStateStore::clear_install_config() {
 }
 
 std::optional<std::string>
+SqliteDeviceStateStore::get_updates_cursor() const {
+  std::scoped_lock lock(mutex_);
+  if (!ensure_initialized()) {
+    return std::nullopt;
+  }
+  return get_value(kUpdatesCursorKey);
+}
+
+std::optional<std::string> SqliteDeviceStateStore::save_updates_cursor(
+    const std::optional<std::string> &cursor) {
+  std::scoped_lock lock(mutex_);
+  if (!ensure_initialized()) {
+    return std::string{"State database unavailable"};
+  }
+
+  auto body = [&]() -> std::optional<std::string> {
+    if (cursor && !cursor->empty()) {
+      return upsert_value(kUpdatesCursorKey, *cursor);
+    }
+    return erase_value(kUpdatesCursorKey);
+  };
+
+  return with_transaction(body);
+}
+
+std::optional<std::string>
+SqliteDeviceStateStore::get_processed_signals_json() const {
+  std::scoped_lock lock(mutex_);
+  if (!ensure_initialized()) {
+    return std::nullopt;
+  }
+  return get_value(kProcessedSignalsKey);
+}
+
+std::optional<std::string> SqliteDeviceStateStore::save_processed_signals_json(
+    const std::optional<std::string> &serialized_json) {
+  std::scoped_lock lock(mutex_);
+  if (!ensure_initialized()) {
+    return std::string{"State database unavailable"};
+  }
+
+  auto body = [&]() -> std::optional<std::string> {
+    if (serialized_json && !serialized_json->empty()) {
+      return upsert_value(kProcessedSignalsKey, *serialized_json);
+    }
+    return erase_value(kProcessedSignalsKey);
+  };
+
+  return with_transaction(body);
+}
+
+std::optional<std::string>
 SqliteDeviceStateStore::get_imported_ca_name(std::int64_t ca_id) const {
   std::scoped_lock lock(mutex_);
   if (!ensure_initialized()) {
@@ -528,6 +582,53 @@ void SqliteDeviceStateStore::migrate_legacy_state_if_present() const {
     }
   };
 
+  auto migrate_updates_cursor = [&]() {
+    const auto cursor_path = state_dir / "last_cursor.txt";
+    auto legacy_cursor = read_trimmed_file(cursor_path);
+    auto current_cursor = get_value(kUpdatesCursorKey);
+    const bool need_cursor = legacy_cursor && !legacy_cursor->empty() && !current_cursor;
+    if (!need_cursor) {
+      return;
+    }
+
+    auto err = with_transaction([&]() -> std::optional<std::string> {
+      return upsert_value(kUpdatesCursorKey, *legacy_cursor);
+    });
+
+    if (err) {
+      output_.logger().warning()
+          << "Failed to migrate legacy updates cursor: " << *err << std::endl;
+      return;
+    }
+
+    std::error_code remove_ec;
+    std::filesystem::remove(cursor_path, remove_ec);
+  };
+
+  auto migrate_processed_signals = [&]() {
+    const auto signals_path = state_dir / "processed_signals.json";
+    auto legacy_signals = read_file_contents(signals_path);
+    auto current_signals = get_value(kProcessedSignalsKey);
+    const bool need_signals = legacy_signals && !legacy_signals->empty() && !current_signals;
+    if (!need_signals) {
+      return;
+    }
+
+    auto err = with_transaction([&]() -> std::optional<std::string> {
+      return upsert_value(kProcessedSignalsKey, *legacy_signals);
+    });
+
+    if (err) {
+      output_.logger().warning()
+          << "Failed to migrate processed signals history: " << *err
+          << std::endl;
+      return;
+    }
+
+    std::error_code remove_ec;
+    std::filesystem::remove(signals_path, remove_ec);
+  };
+
   auto migrate_imported_cas = [&]() {
     const auto import_dir = state_dir / "import_ca";
     std::error_code exists_ec;
@@ -601,6 +702,8 @@ void SqliteDeviceStateStore::migrate_legacy_state_if_present() const {
   migrate_tokens();
   migrate_device_identity();
   migrate_install_config();
+  migrate_updates_cursor();
+  migrate_processed_signals();
   migrate_imported_cas();
 
   legacy_checked_ = true;

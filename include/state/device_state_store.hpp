@@ -42,6 +42,14 @@ public:
                       std::optional<std::int64_t> version) = 0;
   virtual std::optional<std::string> clear_install_config() = 0;
 
+  virtual std::optional<std::string> get_updates_cursor() const = 0;
+  virtual std::optional<std::string>
+  save_updates_cursor(const std::optional<std::string> &cursor) = 0;
+
+  virtual std::optional<std::string> get_processed_signals_json() const = 0;
+  virtual std::optional<std::string> save_processed_signals_json(
+      const std::optional<std::string> &serialized_json) = 0;
+
   virtual std::optional<std::string>
   get_imported_ca_name(std::int64_t ca_id) const = 0;
   virtual std::optional<std::string>
@@ -78,6 +86,12 @@ public:
   save_install_config(const std::optional<std::string> &serialized_json,
                       std::optional<std::int64_t> version) override;
   std::optional<std::string> clear_install_config() override;
+  std::optional<std::string> get_updates_cursor() const override;
+  std::optional<std::string>
+  save_updates_cursor(const std::optional<std::string> &cursor) override;
+  std::optional<std::string> get_processed_signals_json() const override;
+  std::optional<std::string> save_processed_signals_json(
+      const std::optional<std::string> &serialized_json) override;
   std::optional<std::string>
   get_imported_ca_name(std::int64_t ca_id) const override;
   std::optional<std::string>
