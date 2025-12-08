@@ -1,6 +1,7 @@
 #include "handlers/session_refresher.hpp"
 
 #include <boost/beast/http.hpp>
+#include <boost/json.hpp>
 #include <fmt/format.h>
 
 #include "handlers/session_refresh_retry.hpp"
@@ -18,6 +19,93 @@
 namespace certctrl {
 
 namespace {
+
+constexpr int kRefreshTokenRotatedCode = 10003;
+constexpr std::string_view kRefreshTokenRotatedKey =
+    "refresh_token_rotated";
+
+struct ApiErrorDetails {
+  std::optional<int> code;
+  std::optional<std::string> key;
+  std::optional<std::string> message;
+};
+
+void capture_error_fields(const boost::json::value &val,
+                          ApiErrorDetails &details) {
+  if (!val.is_object()) {
+    return;
+  }
+
+  const auto &obj = val.as_object();
+  if (!details.code) {
+    if (auto *code = obj.if_contains("code")) {
+      if (code->is_int64()) {
+        details.code = static_cast<int>(code->as_int64());
+      } else if (code->is_string()) {
+        try {
+          details.code = std::stoi(code->as_string().c_str());
+        } catch (...) {
+        }
+      }
+    }
+  }
+
+  if (!details.key) {
+    if (auto *key = obj.if_contains("key"); key && key->is_string()) {
+      details.key = boost::json::value_to<std::string>(*key);
+    }
+  }
+
+  if (!details.message) {
+    if (auto *msg = obj.if_contains("message"); msg && msg->is_string()) {
+      details.message = boost::json::value_to<std::string>(*msg);
+    } else if (auto *error_msg = obj.if_contains("error");
+               error_msg && error_msg->is_string()) {
+      details.message = boost::json::value_to<std::string>(*error_msg);
+    }
+  }
+
+  if (auto *err = obj.if_contains("error")) {
+    capture_error_fields(*err, details);
+  }
+  if (auto *data = obj.if_contains("data")) {
+    capture_error_fields(*data, details);
+  }
+}
+
+std::optional<ApiErrorDetails>
+parse_api_error_details(std::string_view raw_body) {
+  if (raw_body.empty()) {
+    return std::nullopt;
+  }
+
+  try {
+    auto parsed = boost::json::parse(raw_body);
+    ApiErrorDetails details;
+    capture_error_fields(parsed, details);
+    if (details.code || details.key || details.message) {
+      return details;
+    }
+  } catch (...) {
+  }
+
+  return std::nullopt;
+}
+
+bool is_rotation_code(const ApiErrorDetails &details) {
+  if (details.code && *details.code == kRefreshTokenRotatedCode) {
+    return true;
+  }
+  if (details.key && *details.key == kRefreshTokenRotatedKey) {
+    return true;
+  }
+  if (details.message) {
+    return boost::beast::iequals(*details.message, "refresh token has been rotated") ||
+           details.message->find("rotated") != std::string::npos;
+  }
+  return false;
+}
+
 bool iequals(std::string_view haystack, std::string_view needle) {
   auto it = std::search(haystack.begin(), haystack.end(), needle.begin(),
                         needle.end(), [](char a, char b) {
@@ -102,6 +190,18 @@ monad::IO<void> SessionRefresher::attempt_refresh(
         return self->handle_refresh_error(state, std::move(err))
             .catch_then([self, state, attempt,
                          delay](monad::Error retry_err) {
+              if (is_rotation_error(retry_err)) {
+                self->output_.logger().warning()
+                    << "Session refresh aborted because the server rotated "
+                       "the refresh token family." << std::endl;
+                self->output_.printer().yellow()
+                    << "Device session refresh failed because the refresh "
+                       "token has been rotated upstream." << std::endl
+                    << "Please rerun 'cert-ctrl login --force' to "
+                       "re-authorize this device." << std::endl;
+                return monad::IO<void>::fail(std::move(retry_err));
+              }
+
               if (!session_refresh::is_retryable_error(retry_err)) {
                 return monad::IO<void>::fail(std::move(retry_err));
               }
@@ -151,13 +251,33 @@ monad::IO<void> SessionRefresher::perform_refresh_request(
         if (!ex->is_2xx()) {
           std::string error_msg = "Refresh token request failed";
           int status = 0;
+          std::string response_body;
           if (ex->response) {
             status = ex->response->result_int();
             error_msg += " (HTTP " + std::to_string(status) + ")";
             if (!ex->response->body().empty()) {
-              error_msg += ": " + std::string(ex->response->body());
+              response_body = std::string(ex->response->body());
+              error_msg += ": " + response_body;
             }
           }
+
+          if (auto api_error = parse_api_error_details(response_body);
+              api_error && is_rotation_code(*api_error)) {
+            std::string base_msg = api_error->message.value_or(
+                "Refresh token has been rotated by the server");
+            auto err = monad::make_error(
+                my_errors::GENERAL::UNAUTHORIZED,
+                fmt::format(
+                    "{} (code {}) — please rerun 'cert-ctrl login --force' to "
+                    "re-authorize this device.",
+                    base_msg, kRefreshTokenRotatedCode));
+            err.key = std::string{kRefreshTokenRotatedKey};
+            err.response_status = status;
+            err.params["server_code"] = kRefreshTokenRotatedCode;
+            err.params["server_message"] = base_msg;
+            return monad::IO<void>::fail(std::move(err));
+          }
+
           auto err = monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                                        std::move(error_msg));
           err.response_status = status;
@@ -339,6 +459,16 @@ std::filesystem::path SessionRefresher::state_dir() const {
 }
 
 bool SessionRefresher::is_rotation_error(const monad::Error &err) {
+  if (err.key == kRefreshTokenRotatedKey) {
+    return true;
+  }
+
+  if (auto *server_code = err.params.if_contains("server_code");
+      server_code && server_code->is_int64() &&
+      server_code->as_int64() == kRefreshTokenRotatedCode) {
+    return true;
+  }
+
   return iequals(err.what, "refresh token has been rotated") ||
          err.what.find("rotated") != std::string::npos;
 }

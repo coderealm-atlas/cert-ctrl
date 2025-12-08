@@ -21,6 +21,7 @@
 #include <random>
 #include <regex>
 #include <sstream>
+#include <system_error>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -73,6 +74,12 @@ struct TempDir {
 void write_json_file(const fs::path &file, const json::value &jv) {
   std::ofstream ofs(file);
   ofs << json::serialize(jv);
+}
+
+void reset_directory(const fs::path &dir) {
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
 }
 
 class TestDeviceServer {
@@ -399,9 +406,11 @@ protected:
   std::shared_ptr<customio::ConsoleOutputWithColor> output_ptr_;
   static std::shared_ptr<customio::ConsoleOutputWithColor> shared_output_;
   std::unique_ptr<certctrl::CliCtx> cli_ctx_ptr_;
+  void clear_state_store_artifacts();
   void SetUp() override {
 
     const auto runtime_dir = temp_dir.path / "runtime";
+    reset_directory(runtime_dir);
     json::object app_json{{"auto_apply_config", false},
                 {"verbose", "info"},
                 {"url_base", "to_set"},
@@ -472,6 +481,7 @@ protected:
     io_context_manager_ = &inj.create<cjj365::IIoContextManager &>();
     http_client_manager_ = &inj.create<client_async::HttpClientManager &>();
     state_store_ = &inj.create<certctrl::IDeviceStateStore &>();
+    clear_state_store_artifacts();
   }
   void TearDown() override {
     handler_.reset();
@@ -502,6 +512,27 @@ protected:
     output_ptr_.reset();
   }
 };
+
+void LoginHandlerWorkflowTest::clear_state_store_artifacts() {
+  if (!state_store_) {
+    return;
+  }
+  if (auto err = state_store_->clear_tokens()) {
+    FAIL() << "Failed to clear cached tokens: " << *err;
+  }
+  if (auto err = state_store_->clear_device_identity()) {
+    FAIL() << "Failed to clear cached device identity: " << *err;
+  }
+  if (auto err = state_store_->clear_install_config()) {
+    FAIL() << "Failed to clear cached install config: " << *err;
+  }
+  if (auto err = state_store_->save_updates_cursor(std::nullopt)) {
+    FAIL() << "Failed to clear updates cursor: " << *err;
+  }
+  if (auto err = state_store_->save_processed_signals_json(std::nullopt)) {
+    FAIL() << "Failed to clear processed signals: " << *err;
+  }
+}
 
 TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   misc::ThreadNotifier notifier(15000);
