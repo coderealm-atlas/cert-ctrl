@@ -91,6 +91,21 @@ gtest_discover_tests(test_boost_di_lifetimes DISCOVERY_TIMEOUT ${TEST_DISCOVERY_
 
 gtest_discover_tests(test_program_options DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
+add_executable(test_info_handler
+  test_info_handler.cpp
+)
+target_compile_features(test_info_handler PRIVATE cxx_std_17)
+target_include_directories(test_info_handler PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+)
+target_link_libraries(test_info_handler PRIVATE
+  GTest::gtest_main
+  Boost::json
+)
+
+gtest_discover_tests(test_info_handler DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+
 add_executable(test_device_fingerprint
   test_device_fingerprint.cpp
   ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
