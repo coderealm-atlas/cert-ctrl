@@ -8,6 +8,7 @@
 #include "version.h"
 #include <algorithm>
 #include <boost/asio/ip/udp.hpp>
+#include <boost/beast/http.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/url.hpp>
@@ -26,6 +27,7 @@
 
 namespace json = boost::json;
 namespace asio = boost::asio;
+namespace http = boost::beast::http;
 
 namespace certctrl {
 
@@ -310,17 +312,35 @@ VoidPureIO LoginHandler::start() {
       return self->poll();
     });
   };
+  auto should_use_api_key = [self]() {
+    return self->options_.api_key && !self->options_.api_key->empty();
+  };
+  auto begin_api_key_registration = [self]() -> VoidPureIO {
+    if (!self->options_.api_key || self->options_.api_key->empty()) {
+      return VoidPureIO::fail(
+          monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                            "--apikey requires a non-empty value"));
+    }
+    self->output_hub_.printer().yellow()
+        << "API key supplied; skipping device authorization flow."
+        << std::endl;
+    return self->register_device_with_api_key(*self->options_.api_key);
+  };
 
   if (options_.force) {
     self->output_hub_.printer().yellow()
         << "--force flag detected; starting fresh device authorization."
         << std::endl;
     self->clear_cached_session();
+    if (should_use_api_key()) {
+      return begin_api_key_registration();
+    }
     return begin_authorization();
   }
 
   return self->reuse_existing_session_if_possible().then(
-      [self, begin_authorization](bool reused) {
+      [self, begin_authorization, begin_api_key_registration,
+       should_use_api_key](bool reused) {
         if (reused) {
           self->output_hub_.printer().green()
               << "Existing device session is still "
@@ -329,6 +349,9 @@ VoidPureIO LoginHandler::start() {
           return VoidPureIO::pure();
         }
 
+        if (should_use_api_key()) {
+          return begin_api_key_registration();
+        }
         return begin_authorization();
       });
 }
@@ -495,12 +518,62 @@ VoidPureIO LoginHandler::register_device() {
         "Device authorization poll response missing user_id"));
   }
   const std::string user_id = *self->poll_resp_->user_id;
+  DeviceRegistrationRequestConfig config;
+  config.user_id = user_id;
+  if (have_registration_code) {
+    config.registration_code = registration_code;
+    config.include_cached_refresh_token = false;
+  } else {
+    if (!refresh_token.empty()) {
+      config.refresh_token = refresh_token;
+    }
+    config.include_cached_refresh_token = true;
+  }
+  config.endpoint_path = "/apiv1/device/registration";
 
+  return self->perform_device_registration(
+      std::move(config), self->poll_resp_ ? &*self->poll_resp_ : nullptr);
+}
+
+monad::IO<void>
+LoginHandler::register_device_with_api_key(const std::string &api_key) {
+  using namespace monad;
+  auto self = shared_from_this();
+
+  if (api_key.empty()) {
+    return IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::INVALID_ARGUMENT,
+        "--apikey value must not be empty"));
+  }
+
+  DeviceRegistrationRequestConfig config;
+  config.api_key = api_key;
+  config.include_cached_refresh_token = false;
+  config.endpoint_path = "/apiv1/me/devices";
+
+  return self->perform_device_registration(std::move(config), nullptr);
+}
+
+monad::IO<void> LoginHandler::perform_device_registration(
+    DeviceRegistrationRequestConfig config,
+    ::data::deviceauth::PollResp *poll_state) {
+  using namespace monad;
+
+  auto self = shared_from_this();
   const auto &base_url = self->certctrl_config_provider_.get().base_url;
+
+  std::string endpoint_path = config.endpoint_path;
+  if (endpoint_path.empty()) {
+    endpoint_path = "/apiv1/device/registration";
+  }
+  if (endpoint_path.front() != '/') {
+    endpoint_path.insert(endpoint_path.begin(), '/');
+  }
+  const auto devices_url = fmt::format("{}{}", base_url, endpoint_path);
+
   std::filesystem::path out_dir =
       self->runtime_dir_.value_or(std::filesystem::path{});
 
-  // Gather device info and fingerprint
   std::string user_agent = fmt::format("cert-ctrl/{}", MYAPP_VERSION);
   auto info = cjj365::device::gather_device_info(user_agent);
   auto derived_fp_hex = cjj365::device::generate_device_fingerprint_hex(info);
@@ -536,13 +609,12 @@ VoidPureIO LoginHandler::register_device() {
 
   auto device_ip = determine_device_ip(self->ioc_, base_url);
 
-  // Initialize libsodium
   try {
     cjj365::cryptutil::sodium_init_or_throw();
   } catch (const std::exception &e) {
-    return IO<void>::fail(
-        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
-                          std::string{"libsodium init failed: "} + e.what()));
+    return IO<void>::fail(monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT,
+        std::string{"libsodium init failed: "} + e.what()));
   }
 
   auto write_file_0600 = [](const std::filesystem::path &p,
@@ -583,7 +655,6 @@ VoidPureIO LoginHandler::register_device() {
     }
   }
 
-  // Load existing keys if present; otherwise generate a new pair
   cjj365::cryptutil::BoxKeyPair box_kp{};
   bool generated_new_keys = false;
   std::filesystem::path pk_path, sk_path;
@@ -655,36 +726,44 @@ VoidPureIO LoginHandler::register_device() {
       {"user_agent", info.user_agent},
       {"dev_pk", dev_pk_b64}};
 
-  try {
-    auto numeric_user_id = std::stoll(user_id);
-    payload["user_id"] = numeric_user_id;
-  } catch (...) {
-    payload["user_id"] = user_id;
-  }
-
-  if (have_registration_code) {
-    payload["registration_code"] = registration_code;
-  } else {
-    std::optional<std::string> refresh_for_payload;
-    if (!refresh_token.empty()) {
-      refresh_for_payload = refresh_token;
-    } else {
-      refresh_for_payload = self->state_store_.get_refresh_token();
-    }
-    if (refresh_for_payload) {
-      payload["refresh_token"] = *refresh_for_payload;
+  if (config.user_id && !config.user_id->empty()) {
+    try {
+      auto numeric_user_id = std::stoll(*config.user_id);
+      payload["user_id"] = numeric_user_id;
+    } catch (...) {
+      payload["user_id"] = *config.user_id;
     }
   }
 
-  auto devices_url = fmt::format("{}/apiv1/device/registration", base_url);
+  if (config.registration_code && !config.registration_code->empty()) {
+    payload["registration_code"] = *config.registration_code;
+  }
+
+  std::optional<std::string> refresh_for_payload;
+  if (config.refresh_token && !config.refresh_token->empty()) {
+    refresh_for_payload = config.refresh_token;
+  } else if (config.include_cached_refresh_token) {
+    auto cached_refresh = self->state_store_.get_refresh_token();
+    if (cached_refresh && !cached_refresh->empty()) {
+      refresh_for_payload = cached_refresh;
+    }
+  }
+  if (refresh_for_payload) {
+    payload["refresh_token"] = *refresh_for_payload;
+  }
 
   return http_io<PostJsonTag>(devices_url)
-      .map([payload = std::move(payload)](auto ex) mutable {
+      .map([payload = std::move(payload),
+             api_key = config.api_key](auto ex) mutable {
         ex->setRequestJsonBody(std::move(payload));
+        if (api_key && !api_key->empty()) {
+          ex->request.set(http::field::authorization,
+                          std::string("Bearer ") + *api_key);
+        }
         return ex;
       })
       .then(http_request_io<PostJsonTag>(self->http_client_))
-      .then([self, out_dir](auto ex) mutable {
+      .then([self, poll_state](auto ex) mutable {
         if (!ex->is_2xx()) {
           std::string error_msg = "Device registration failed";
           if (ex->response) {
@@ -756,16 +835,18 @@ VoidPureIO LoginHandler::register_device() {
           }
         }
 
-        if (new_access_token) {
-          self->poll_resp_->access_token = *new_access_token;
+        if (new_access_token && poll_state) {
+          poll_state->access_token = *new_access_token;
         }
-        if (new_refresh_token) {
-          self->poll_resp_->refresh_token = *new_refresh_token;
+        if (new_refresh_token && poll_state) {
+          poll_state->refresh_token = *new_refresh_token;
         }
-        if (new_expires_in) {
-          self->poll_resp_->expires_in = *new_expires_in;
+        if (new_expires_in && poll_state) {
+          poll_state->expires_in = *new_expires_in;
         }
-        self->poll_resp_->registration_code.reset();
+        if (poll_state) {
+          poll_state->registration_code.reset();
+        }
 
         auto decode_device_id =
             [](const std::string &token) -> std::optional<std::string> {
@@ -780,9 +861,15 @@ VoidPureIO LoginHandler::register_device() {
         };
 
         const std::string effective_access =
-            self->poll_resp_->access_token.value_or(std::string{});
+            new_access_token ? *new_access_token
+                             : (poll_state && poll_state->access_token
+                                    ? *poll_state->access_token
+                                    : std::string{});
         const std::string effective_refresh =
-            self->poll_resp_->refresh_token.value_or(std::string{});
+            new_refresh_token ? *new_refresh_token
+                              : (poll_state && poll_state->refresh_token
+                                     ? *poll_state->refresh_token
+                                     : std::string{});
 
         if (!device_id_str && !effective_access.empty()) {
           device_id_str = decode_device_id(effective_access);
@@ -796,9 +883,14 @@ VoidPureIO LoginHandler::register_device() {
         if (!effective_refresh.empty()) {
           refresh_opt = effective_refresh;
         }
-        if (access_opt || refresh_opt || self->poll_resp_->expires_in) {
-          if (auto err = self->state_store_.save_tokens(
-                  access_opt, refresh_opt, self->poll_resp_->expires_in)) {
+        std::optional<int> expires_opt = new_expires_in;
+        if (!expires_opt && poll_state && poll_state->expires_in) {
+          expires_opt = poll_state->expires_in;
+        }
+        if (access_opt || refresh_opt || expires_opt) {
+          if (auto err =
+                  self->state_store_.save_tokens(access_opt, refresh_opt,
+                                                 expires_opt)) {
             self->output_hub_.logger().warning()
                 << "Failed to persist device session tokens: " << *err
                 << std::endl;
