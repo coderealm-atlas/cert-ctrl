@@ -156,6 +156,35 @@ The backend control plane exposes a RESTful API that can be used to manage devic
       }'
   ```
 
+## Device automation subcommand
+
+When an integration only has access to scoped API keys, the CLI can execute a
+minimal automation flow via `cert-ctrl device`. The handler currently exposes a
+single action, `assign-cert`, which POSTs to `/apiv1/me/certificate-assign` with
+the supplied API key as a bearer token.
+
+```bash
+cert-ctrl device assign-cert --apikey ${CERT_CTRL_TEST_APIKEY}
+```
+
+Use this command to request a certificate assignment without performing the
+interactive device login flow. The API key must already encode whatever context
+the backend needs (device identity, certificate profile, etc.); the CLI simply
+submits the request and surfaces the backend status message.
+
+## Certificate authority inspection
+
+Staged trust anchors can be reviewed locally via `cert-ctrl cas`:
+
+```bash
+cert-ctrl ca list
+cert-ctrl ca show --id 6 --json
+```
+
+The handler reads cached CA bundles under `runtime_dir/resources/cas/<id>`—the
+same material the install workflow feeds into import-ca actions—so you can audit
+subjects, validity windows, and fingerprints without another server round trip.
+
 ## Releasing
 
 Follow the annotated process in `docs/RELEASE_WORKFLOW.md` when cutting a new version. The CMake build stamps binaries with `git describe`, so reconfigure after tagging to pick up the new version string.

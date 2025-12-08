@@ -348,8 +348,12 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
                 << std::endl
                 << "  certificates   Inspect staged certificate materials."
                 << std::endl
-                << "  info           Show device and environment diagnostics."
-                << std::endl
+                << "  ca             Inspect cached certificate authorities."
+             << std::endl
+             << "  info           Show device and environment diagnostics."
+             << std::endl
+             << "  device         API key automation actions (assign-cert)."
+             << std::endl
                 << std::endl;
       std::cerr << "Default behavior:" << std::endl;
       std::cerr << "  No subcommand -> agent update check followed by a device "
