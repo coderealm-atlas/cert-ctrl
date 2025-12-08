@@ -13,6 +13,7 @@
 #include <fmt/format.h>
 #include <jwt-cpp/jwt.h>
 
+#include "handlers/info_handler_tokens.hpp"
 #include "util/device_fingerprint.hpp"
 #include "version.h"
 
@@ -322,13 +323,10 @@ monad::IO<void> InfoHandler::start() {
   }
 
   printer.cyan() << "Session" << std::endl;
-  std::optional<std::string> access_token;
-  std::optional<std::string> refresh_token;
-  if (!runtime_dir.empty()) {
-    const fs::path state_dir = runtime_dir / "state";
-    access_token = read_trimmed(state_dir / "access_token.txt");
-    refresh_token = read_trimmed(state_dir / "refresh_token.txt");
-  }
+  auto session_tokens =
+      load_session_tokens_from_state(runtime_dir, state_store_);
+  const auto &access_token = session_tokens.access_token;
+  const auto &refresh_token = session_tokens.refresh_token;
 
   {
     auto proxy = printer.white();

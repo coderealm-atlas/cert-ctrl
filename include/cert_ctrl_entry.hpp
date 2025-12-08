@@ -370,9 +370,17 @@ public:
             << std::endl;
 
         auto update_checker = injector.template create<
-            std::shared_ptr<certctrl::AgentUpdateChecker>>();
+          std::shared_ptr<certctrl::AgentUpdateChecker>>();
         auto updates_handler = injector.template create<
-            std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+          std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+        auto &state_store =
+          injector.template create<certctrl::IDeviceStateStore &>();
+
+        auto cached_access = state_store.get_access_token();
+        auto cached_refresh = state_store.get_refresh_token();
+        const bool has_session =
+          (cached_access && !cached_access->empty()) ||
+          (cached_refresh && !cached_refresh->empty());
 
         auto workflow =
             update_checker->run_once(MYAPP_VERSION)
@@ -380,8 +388,18 @@ public:
                   self->output_hub_->logger().warning()
                       << "Agent update check failed: " << err.what << std::endl;
                   return monad::IO<void>::pure();
-                })
-                .then([updates_handler]() { return updates_handler->start(); });
+            })
+            .then([self, updates_handler,
+                 has_session]() -> monad::IO<void> {
+              if (!has_session) {
+              self->output_hub_->logger().warning()
+                << "Skipping device updates poll because no cached "
+                   "session tokens were found. Run 'cert-ctrl login' "
+                   "to authenticate this device." << std::endl;
+              return monad::IO<void>::pure();
+              }
+              return updates_handler->start();
+            });
 
         workflow.run([self, update_checker, updates_handler](auto r) {
           if (r.is_err()) {
