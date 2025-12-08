@@ -19,6 +19,8 @@
 #include "handlers/agent_update_checker.hpp"
 #include "handlers/conf_handler.hpp"
 #include "handlers/certificates_handler.hpp"
+#include "handlers/ca_handler.hpp"
+#include "handlers/device_automation_handler.hpp"
 #include "handlers/handler_dispatcher.hpp"
 #include "handlers/i_handler.hpp"
 #include "handlers/info_handler.hpp"
@@ -33,7 +35,6 @@
 #include "handlers/session_refresher.hpp"
 #include "handlers/install_config_apply_handler.hpp"
 #include "handlers/install_config_handler.hpp"
-#include "handlers/install_config_manager.hpp"
 #include "handlers/login_handler.hpp"
 #include "handlers/update_handler.hpp"
 #include "handlers/updates_polling_handler.hpp"
@@ -143,7 +144,9 @@ public:
           di::bind<certctrl::UpdatesPollingHandler>().in(di::unique),
           di::bind<certctrl::InfoHandler>().in(di::unique),
           di::bind<certctrl::CertificatesHandler>().in(di::unique),
+          di::bind<certctrl::CaHandler>().in(di::unique),
           di::bind<certctrl::InstallConfigApplyHandler>().in(di::unique),
+          di::bind<certctrl::DeviceAutomationHandler>().in(di::unique),
           di::bind<certctrl::IHandlerFactory>().to(
               [](const auto &inj) -> certctrl::IHandlerFactory & {
                 static certctrl::HandlerFactoryImpl factory(
@@ -170,9 +173,15 @@ public:
                       } else if (subcmd == "info") {
                         return inj.template create<
                             std::shared_ptr<certctrl::InfoHandler>>();
+                      } else if (subcmd == "ca" || subcmd == "cas") {
+                        return inj.template create<
+                            std::shared_ptr<certctrl::CaHandler>>();
                       } else if (subcmd == "install") {
                         return inj.template create<std::shared_ptr<
                             certctrl::InstallConfigApplyHandler>>();
+                      } else if (subcmd == "device") {
+                        return inj.template create<std::shared_ptr<
+                            certctrl::DeviceAutomationHandler>>();
                       } else {
                         throw std::runtime_error("Unsupported subcommand: " +
                                                  subcmd);
@@ -426,10 +435,9 @@ public:
         //   cmds += v[i];
         // }
         output_hub_->logger().error()
-            << "No valid subcommand provided. Available: "
-        // << "conf, install-config, login, update, updates-polling, certificates, info"
-        << " install-config, login, certificates, info"
-            << ". Also 'account' (TBD)." << std::endl;
+          << "No valid subcommand provided. Available: "
+          << " install-config, login, certificates, ca, info, device"
+          << "." << std::endl;
         return shutdown();
       }
     }

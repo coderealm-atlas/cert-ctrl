@@ -36,6 +36,16 @@ namespace certctrl {
 
 struct LoginHandlerOptions {
   bool force{false};
+  std::optional<std::string> api_key;
+};
+
+struct DeviceRegistrationRequestConfig {
+  std::optional<std::string> user_id;
+  std::optional<std::string> registration_code;
+  std::optional<std::string> refresh_token;
+  bool include_cached_refresh_token{true};
+  std::optional<std::string> api_key;
+  std::string endpoint_path;
 };
 
 class LoginHandler : public certctrl::IHandler,
@@ -86,7 +96,9 @@ public:
     create_opts.add_options()
         ("force",
          po::bool_switch(&options_.force)->default_value(false),
-         "Force device re-authorization; clears cached session tokens before login.");
+         "Force device re-authorization; clears cached session tokens before login.")
+        ("apikey", po::value<std::string>(),
+         "Direct device registration using an API key; skips the device authorization flow.");
     opt_desc_.add(create_opts);
     po::parsed_options parsed = po::command_line_parser(cli_ctx_.unrecognized)
                                     .options(opt_desc_)
@@ -94,6 +106,9 @@ public:
                                     .run();
     po::store(parsed, cli_ctx_.vm);
     po::notify(cli_ctx_.vm);
+    if (cli_ctx_.vm.count("apikey")) {
+      options_.api_key = cli_ctx_.vm["apikey"].as<std::string>();
+    }
     output_hub_.logger().trace()
         << "LoginHandler initialized with options: " << opt_desc_ << std::endl;
   }
@@ -119,6 +134,7 @@ public:
   monad::IO<void> start() override;
   monad::IO<void> poll();
   monad::IO<void> register_device();
+  monad::IO<void> register_device_with_api_key(const std::string &api_key);
 
   monad::IO<::data::deviceauth::StartResp> start_device_authorization();
   monad::IO<::data::deviceauth::PollResp> poll_device_once();
@@ -131,5 +147,8 @@ private:
   std::optional<std::filesystem::path> resolve_runtime_dir() const;
   static bool is_access_token_valid(const std::string &token,
                                     std::chrono::seconds skew);
+  monad::IO<void> perform_device_registration(
+      DeviceRegistrationRequestConfig config,
+      ::data::deviceauth::PollResp *poll_state);
 };
 } // namespace certctrl
