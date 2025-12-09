@@ -28,6 +28,13 @@ public:
   monad::IO<void> start() override;
 
 private:
+  struct ActionOptions {
+    bool requested_help{false};
+    std::optional<std::string> api_key;
+    std::optional<std::string> payload_inline;
+    std::optional<std::string> payload_file;
+  };
+
   CliCtx &cli_ctx_;
   customio::ConsoleOutput &output_;
   certctrl::ICertctrlConfigProvider &config_provider_;
@@ -36,11 +43,10 @@ private:
 
   monad::IO<void> show_usage(const std::string &error = "") const;
   monad::IO<void> handle_assign_certificate(const std::string &api_key);
+  monad::IO<void> handle_install_config_update(const ActionOptions &options);
   monad::IO<void> dispatch_action(const std::string &action,
-                                  const std::string &api_key);
-  std::optional<std::string>
-  parse_api_key_option(const std::string &action,
-                       bool &requested_help) const;
+                                  const ActionOptions &options);
+  ActionOptions parse_action_options(const std::string &action) const;
 };
 
 } // namespace certctrl
