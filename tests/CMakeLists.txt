@@ -106,6 +106,22 @@ target_link_libraries(test_info_handler PRIVATE
 
 gtest_discover_tests(test_info_handler DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
+add_executable(test_tunnel_messages
+  test_tunnel_messages.cpp
+  ${CMAKE_SOURCE_DIR}/src/tunnel/tunnel_messages.cpp
+)
+target_compile_features(test_tunnel_messages PRIVATE cxx_std_17)
+target_include_directories(test_tunnel_messages PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(test_tunnel_messages PRIVATE
+  GTest::gtest_main
+  Boost::json
+  fmt::fmt
+)
+
+gtest_discover_tests(test_tunnel_messages DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+
 add_executable(test_device_fingerprint
   test_device_fingerprint.cpp
   ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
