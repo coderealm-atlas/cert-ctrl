@@ -159,9 +159,13 @@ The backend control plane exposes a RESTful API that can be used to manage devic
 ## Device automation subcommand
 
 When an integration only has access to scoped API keys, the CLI can execute a
-minimal automation flow via `cert-ctrl device`. The handler currently exposes a
-single action, `assign-cert`, which POSTs to `/apiv1/me/certificate-assign` with
-the supplied API key as a bearer token.
+minimal automation flow via `cert-ctrl device`. The handler currently exposes
+two actions:
+
+- `assign-cert` POSTs to `/apiv1/me/certificate-assign` with the supplied API
+  key as a bearer token.
+- `install-config-update` POSTs JSON install-step overrides to
+  `/apiv1/me/install-config-update/:device_public_id`.
 
 ```bash
 cert-ctrl device assign-cert --apikey ${CERT_CTRL_TEST_APIKEY}
@@ -171,6 +175,33 @@ Use this command to request a certificate assignment without performing the
 interactive device login flow. The API key must already encode whatever context
 the backend needs (device identity, certificate profile, etc.); the CLI simply
 submits the request and surfaces the backend status message.
+
+The install-config update action accepts either inline JSON via `--payload` or
+a file via `--payload-file`. Device identity is derived from the local state
+store (or fingerprint fallback), so no additional flag is required.
+
+```bash
+cat > /tmp/install-steps.json <<'JSON'
+[
+  {
+    "ob_type": "install_steps",
+    "ob_id": 1,
+    "changes": {
+      "insert_steps": ["custom_script"],
+      "remove_steps": ["legacy_step"]
+    }
+  }
+]
+JSON
+
+cert-ctrl device install-config-update \
+  --apikey ${CERT_CTRL_TEST_APIKEY} \
+  --payload-file /tmp/install-steps.json
+```
+
+Every entry in the payload array must include `ob_type` and numeric `ob_id`.
+Optional `changes` / `details` objects will be forwarded verbatim so the server
+can merge them into the saved install configuration.
 
 ## Certificate authority inspection
 
