@@ -51,7 +51,11 @@ public:
     // (*it)->start().run(std::move(cont));
     // return true;
     try {
-      handler_factory_.create(subcmd)->start().run(std::move(cont));
+      auto handler = handler_factory_.create(subcmd);
+      handler->start().run([handler = std::move(handler), cont = std::move(cont)](
+                               monad::MyResult<void> &&result) mutable {
+        cont(std::move(result));
+      });
       return true;
     } catch (const std::exception &ex) {
       return false;

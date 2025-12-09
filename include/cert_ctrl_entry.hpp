@@ -15,6 +15,7 @@
 #include "boost/di.hpp"
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
+#include "conf/tunnel_config.hpp"
 #include "customio/console_output.hpp"
 #include "handlers/agent_update_checker.hpp"
 #include "handlers/conf_handler.hpp"
@@ -45,6 +46,7 @@
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
 #include "resource_fetcher.hpp"
+#include "tunnel/tunnel_client.hpp"
 #include "state/device_state_store.hpp"
 #include "version.h"
 
@@ -114,10 +116,13 @@ class App : public std::enable_shared_from_this<App<AppTag>> {
   cjj365::ConfigSources &config_sources_;
   cjj365::IoContextManager *io_context_manager_;
   const certctrl::CertctrlConfig *certctrl_config_;
+  const certctrl::TunnelConfig *tunnel_config_;
+  std::shared_ptr<certctrl::TunnelClient> tunnel_client_;
 
 public:
   App(cjj365::ConfigSources &config_sources, certctrl::CliCtx &cli_ctx)
-      : config_sources_(config_sources), cli_ctx_(cli_ctx) {}
+      : config_sources_(config_sources), cli_ctx_(cli_ctx),
+        tunnel_config_(nullptr) {}
 
   void print_error(const monad::Error &err) {
     if (err.code == my_errors::GENERAL::SHOW_OPT_DESC) {
@@ -147,6 +152,7 @@ public:
           di::bind<certctrl::CaHandler>().in(di::unique),
           di::bind<certctrl::InstallConfigApplyHandler>().in(di::unique),
           di::bind<certctrl::DeviceAutomationHandler>().in(di::unique),
+          di::bind<certctrl::TunnelClient>().in(di::singleton),
           di::bind<certctrl::IHandlerFactory>().to(
               [](const auto &inj) -> certctrl::IHandlerFactory & {
                 static certctrl::HandlerFactoryImpl factory(
@@ -197,6 +203,8 @@ public:
             .to<cjj365::IocConfigProviderFile>(),
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>(),
+        di::bind<certctrl::ITunnelConfigProvider>()
+          .to<certctrl::TunnelConfigProviderFile>(),
         di::bind<cjj365::IHttpclientConfigProvider>()
             .to<cjj365::HttpclientConfigProviderFile>(),
         di::bind<certctrl::install_actions::IAccessTokenLoader>()
@@ -272,6 +280,8 @@ public:
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
+    tunnel_config_ =
+      &injector.template create<certctrl::ITunnelConfigProvider &>().get();
 
     io_context_manager_ =
         &injector.template create<cjj365::IoContextManager &>();
@@ -305,6 +315,9 @@ public:
 
     detail::register_shutdown_handler([weak_self = std::weak_ptr<App>(self)] {
       if (auto shared = weak_self.lock()) {
+        if (shared->tunnel_client_) {
+          shared->tunnel_client_->Stop();
+        }
         shared->blocker_.stop();
       }
     });
@@ -356,6 +369,17 @@ public:
       }
     // clang-format on
 
+    if (tunnel_config_) {
+      if (tunnel_config_->enabled) {
+        output_hub_->logger().info()
+            << "Tunnel client enabled via tunnel_config.json" << std::endl;
+      } else {
+        output_hub_->logger().debug()
+            << "Tunnel client disabled (set config_dir/tunnel_config.json enabled=true to activate)"
+            << std::endl;
+      }
+    }
+
     // Use dispatcher injected with all handlers (as
     // vector<unique_ptr<IHandler>>)
     auto &dispatcher =
@@ -377,6 +401,12 @@ public:
         output_hub_->logger().info()
             << "No subcommand provided; running default update workflow."
             << std::endl;
+
+        if (tunnel_config_ && tunnel_config_->enabled && !tunnel_client_) {
+          tunnel_client_ = injector.template create<
+              std::shared_ptr<certctrl::TunnelClient>>();
+          tunnel_client_->Start();
+        }
 
         auto update_checker = injector.template create<
           std::shared_ptr<certctrl::AgentUpdateChecker>>();

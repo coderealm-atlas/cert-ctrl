@@ -656,6 +656,8 @@ list(APPEND APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/update_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_apply_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/state/device_state_store.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/tunnel/tunnel_client.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/tunnel/tunnel_messages.cpp
 )
 
 # Always use a stable target name; vary only the output file name per config

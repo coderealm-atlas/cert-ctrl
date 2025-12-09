@@ -6,6 +6,10 @@ namespace certctrl {
 using VoidPureIO = monad::IO<void>;
 
 VoidPureIO ConfHandler::start() {
+  auto normalize_tunnel_key = [](const std::string &key) {
+    return key == "tunnel_enabled" || key == "tunnel.enabled";
+  };
+
   if (auto setv_r = cli_ctx_.get_set_kv(); setv_r.is_ok()) {
     auto [key, value] = setv_r.value();
     if (key == "auto_apply_config") {
@@ -21,10 +25,19 @@ VoidPureIO ConfHandler::start() {
       certctrl_config_provider_.get().verbose = value;
       certctrl_config_provider_.save({{"verbose", value}});
       output_hub_.logger().info() << "Set verbose to " << value << std::endl;
+    } else if (normalize_tunnel_key(key)) {
+      bool bool_value = parse_bool(value);
+      if (bool_value != tunnel_config_provider_.get().enabled) {
+        tunnel_config_provider_.get().enabled = bool_value;
+        tunnel_config_provider_.save({{"enabled", bool_value}});
+      }
+      output_hub_.logger().info()
+          << "Set tunnel.enabled to " << (bool_value ? "true" : "false")
+          << std::endl;
     } else {
-    std::string msg =
-      fmt::format("Unknown configuration key: {}, supported keys are: auto_apply_config, verbose",
-            key);
+      std::string msg = fmt::format(
+          "Unknown configuration key: {}, supported keys are: auto_apply_config, verbose, tunnel.enabled",
+          key);
       return show_usage(msg);
     }
   } else if (auto getv_r = cli_ctx_.get_get_k(); getv_r.is_ok()) {
@@ -39,10 +52,15 @@ VoidPureIO ConfHandler::start() {
       output_hub_.logger().info()
           << "verbose = " << certctrl_config_provider_.get().verbose
           << std::endl;
+    } else if (normalize_tunnel_key(key)) {
+      output_hub_.logger().info()
+          << "tunnel.enabled = "
+          << (tunnel_config_provider_.get().enabled ? "true" : "false")
+          << std::endl;
     } else {
-    std::string msg =
-      fmt::format("Unknown configuration key: {}, supported keys are: auto_apply_config, verbose",
-            key);
+      std::string msg = fmt::format(
+          "Unknown configuration key: {}, supported keys are: auto_apply_config, verbose, tunnel.enabled",
+          key);
       return show_usage(msg);
     }
   } else {

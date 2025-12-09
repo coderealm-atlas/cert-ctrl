@@ -163,6 +163,9 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
                    {"log_file", "certctrl.log"},
                    {"rotation_size", 10 * 1024 * 1024}};
     write_json_if_missing(config_dir / "log_config.json", log);
+
+    js::object tunnel{{"enabled", false}};
+    write_json_if_missing(config_dir / "tunnel_config.json", tunnel);
   } catch (const std::exception &ex) {
     std::cerr << "Warning: failed to write default configuration files: "
               << ex.what() << std::endl;
