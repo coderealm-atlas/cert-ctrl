@@ -1,5 +1,6 @@
 #pragma once
 
+#include "backoff_utils.hpp"
 #include "conf/tunnel_config.hpp"
 #include "customio/console_output.hpp"
 #include "io_context_manager.hpp"
@@ -28,7 +29,8 @@ private:
   void HandleSessionClosed(bool should_retry);
   void HandleSessionConnected();
   void ScheduleReconnect();
-  int NextBackoffDelayMs(const TunnelConfig &config);
+  monad::ExponentialBackoffOptions
+  BuildBackoffOptions(const TunnelConfig &config) const;
 
   class Session;
 
@@ -39,7 +41,7 @@ private:
   bool stop_requested_{false};
   std::shared_ptr<Session> session_;
   boost::asio::steady_timer reconnect_timer_;
-  int current_backoff_ms_{0};
+  monad::JitteredExponentialBackoff backoff_;
   std::mt19937 rng_;
   src::severity_logger<trivial::severity_level> lg;
 };

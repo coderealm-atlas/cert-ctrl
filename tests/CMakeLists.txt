@@ -122,6 +122,34 @@ target_link_libraries(test_tunnel_messages PRIVATE
 
 gtest_discover_tests(test_tunnel_messages DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
+add_executable(test_tunnel_client
+  test_tunnel_client.cpp
+  ${CMAKE_SOURCE_DIR}/src/tunnel/tunnel_client.cpp
+  ${CMAKE_SOURCE_DIR}/src/tunnel/tunnel_messages.cpp
+)
+target_compile_features(test_tunnel_client PRIVATE cxx_std_17)
+target_include_directories(test_tunnel_client PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+)
+target_link_libraries(test_tunnel_client PRIVATE
+  GTest::gtest_main
+  Boost::asio
+  Boost::json
+  Boost::url
+  Boost::system
+  Boost::log
+  Boost::log_setup
+  fmt::fmt
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  certctrl_libatomic
+)
+
+certctrl_use_static_atomic(test_tunnel_client)
+
+gtest_discover_tests(test_tunnel_client DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
+
 add_executable(test_device_fingerprint
   test_device_fingerprint.cpp
   ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
@@ -356,6 +384,35 @@ endif()
 certctrl_use_static_atomic(test_install_config_manager)
 
 gtest_discover_tests(test_install_config_manager DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
+
+add_executable(test_session_refresher
+  test_session_refresher.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/session_refresher.cpp
+  ${HTTP_CLIENT_SRCS}
+)
+target_compile_features(test_session_refresher PRIVATE cxx_std_17)
+target_include_directories(test_session_refresher PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+  ${CMAKE_SOURCE_DIR}/tests/include
+)
+target_link_libraries(test_session_refresher PRIVATE
+  GTest::gtest_main
+  Boost::asio
+  Boost::json
+  Boost::system
+  Boost::url
+  Boost::log
+  Boost::log_setup
+  fmt::fmt
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  certctrl_libatomic
+)
+
+certctrl_use_static_atomic(test_session_refresher)
+
+gtest_discover_tests(test_session_refresher DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
 
 add_executable(test_exec_action
   test_exec_action.cpp
