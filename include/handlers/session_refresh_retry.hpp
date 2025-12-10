@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <chrono>
 #include <string_view>
 
@@ -34,18 +33,6 @@ inline bool is_retryable_error(const monad::Error &err) {
   }
 
   return true;
-}
-
-inline std::chrono::milliseconds next_delay(std::chrono::milliseconds current) {
-  if (current <= std::chrono::milliseconds::zero()) {
-    current = kInitialRetryDelay;
-  }
-  auto clamped = std::clamp(current, kInitialRetryDelay, kMaxRetryDelay);
-  auto doubled = clamped * 2;
-  if (doubled > kMaxRetryDelay) {
-    doubled = kMaxRetryDelay;
-  }
-  return doubled;
 }
 
 } // namespace certctrl::session_refresh

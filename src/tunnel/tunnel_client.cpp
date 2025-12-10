@@ -850,17 +850,19 @@ void TunnelClient::HandleSessionClosed(bool should_retry) {
 	ScheduleReconnect();
 }
 
-void TunnelClient::HandleSessionConnected() { current_backoff_ms_ = 0; }
+void TunnelClient::HandleSessionConnected() { backoff_.Reset(); }
 
 void TunnelClient::ScheduleReconnect() {
 	if (!running_) {
 		return;
 	}
 	TunnelConfig cfg = config_provider_.get();
-	int delay_ms = NextBackoffDelayMs(cfg);
+	backoff_.UpdateOptions(BuildBackoffOptions(cfg));
+	auto delay = backoff_.NextDelay(rng_);
 	output_.logger().warning()
-			<< fmt::format("Tunnel reconnect in {} ms", delay_ms) << std::endl;
-	reconnect_timer_.expires_after(std::chrono::milliseconds(delay_ms));
+			<< fmt::format("Tunnel reconnect in {} ms", delay.count())
+			<< std::endl;
+	reconnect_timer_.expires_after(delay);
 	reconnect_timer_.async_wait([this, cfg](const boost::system::error_code &ec) mutable {
 		if (ec || !running_) {
 			return;
@@ -869,20 +871,16 @@ void TunnelClient::ScheduleReconnect() {
 	});
 }
 
-int TunnelClient::NextBackoffDelayMs(const TunnelConfig &config) {
+monad::ExponentialBackoffOptions
+TunnelClient::BuildBackoffOptions(const TunnelConfig &config) const {
+	monad::ExponentialBackoffOptions opts;
 	const int initial = std::max(100, config.reconnect_initial_delay_ms);
 	const int maximum = std::max(initial, config.reconnect_max_delay_ms);
-	if (current_backoff_ms_ <= 0) {
-		current_backoff_ms_ = initial;
-	} else {
-		current_backoff_ms_ = std::min(maximum, current_backoff_ms_ * 2);
-	}
-	int jitter = 0;
-	if (config.reconnect_jitter_ms > 0) {
-		std::uniform_int_distribution<int> dist(0, config.reconnect_jitter_ms);
-		jitter = dist(rng_);
-	}
-	return current_backoff_ms_ + jitter;
+	const int jitter = std::max(0, config.reconnect_jitter_ms);
+	opts.initial_delay = std::chrono::milliseconds(initial);
+	opts.max_delay = std::chrono::milliseconds(maximum);
+	opts.jitter = std::chrono::milliseconds(jitter);
+	return opts;
 }
 
 } // namespace certctrl

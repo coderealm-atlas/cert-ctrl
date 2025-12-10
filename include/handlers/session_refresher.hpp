@@ -2,12 +2,15 @@
 
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 
+#include "backoff_utils.hpp"
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "http_client_manager.hpp"
@@ -26,11 +29,21 @@ public:
 class SessionRefresher : public ISessionRefresher,
                          public std::enable_shared_from_this<SessionRefresher> {
 public:
+  using RequestOverride =
+      std::function<monad::IO<void>(const std::string &refresh_token,
+                                    int attempt)>;
+  using DelayObserver =
+      std::function<void(std::chrono::milliseconds wait, int attempt)>;
+
   SessionRefresher(cjj365::IoContextManager &io_context_manager,
                    certctrl::ICertctrlConfigProvider &config_provider,
                    customio::ConsoleOutput &output,
                    client_async::HttpClientManager &http_client,
-                   IDeviceStateStore &state_store);
+                   IDeviceStateStore &state_store,
+                   std::optional<monad::ExponentialBackoffOptions>
+                       backoff_override = std::nullopt,
+                   RequestOverride request_override = {},
+                   DelayObserver delay_observer = {});
 
   monad::IO<void> refresh(std::string reason) override;
 
@@ -42,14 +55,14 @@ private:
     std::vector<std::string> joined_reasons;
     std::vector<RefreshCallback> callbacks;
     std::string refresh_token_snapshot;
+    monad::JitteredExponentialBackoff backoff;
   };
 
   void enqueue_refresh(std::string reason, RefreshCallback cb);
   void start_refresh(std::shared_ptr<RefreshState> state);
   monad::IO<void> build_refresh_io(std::shared_ptr<RefreshState> state);
   monad::IO<void> attempt_refresh(std::shared_ptr<RefreshState> state,
-                                  int attempt,
-                                  std::chrono::milliseconds delay);
+                                  int attempt);
     monad::IO<void> perform_refresh_request(
       std::shared_ptr<RefreshState> state, const std::string &refresh_token,
       int attempt);
@@ -72,6 +85,10 @@ private:
   client_async::HttpClientManager &http_client_;
   IDeviceStateStore &state_store_;
   std::filesystem::path runtime_dir_;
+  monad::ExponentialBackoffOptions refresh_backoff_options_;
+  std::mt19937 rng_;
+  RequestOverride request_override_;
+  DelayObserver delay_observer_;
 
   mutable std::mutex mutex_;
   std::shared_ptr<RefreshState> inflight_;

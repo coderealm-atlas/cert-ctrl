@@ -11,6 +11,7 @@
 #include <cctype>
 #include <chrono>
 #include <fstream>
+#include <random>
 
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -120,11 +121,22 @@ SessionRefresher::SessionRefresher(
     certctrl::ICertctrlConfigProvider &config_provider,
     customio::ConsoleOutput &output,
     client_async::HttpClientManager &http_client,
-    IDeviceStateStore &state_store)
+    IDeviceStateStore &state_store,
+    std::optional<monad::ExponentialBackoffOptions> backoff_override,
+    RequestOverride request_override,
+    DelayObserver delay_observer)
     : io_context_manager_(io_context_manager),
       config_provider_(config_provider), output_(output),
-      http_client_(http_client), state_store_(state_store) {
+      http_client_(http_client), state_store_(state_store),
+      refresh_backoff_options_{}, rng_(std::random_device{}()),
+      request_override_(std::move(request_override)),
+      delay_observer_(std::move(delay_observer)) {
   runtime_dir_ = config_provider_.get().runtime_dir;
+  monad::ExponentialBackoffOptions defaults;
+  defaults.initial_delay = session_refresh::kInitialRetryDelay;
+  defaults.max_delay = session_refresh::kMaxRetryDelay;
+  defaults.jitter = std::chrono::milliseconds::zero();
+  refresh_backoff_options_ = backoff_override.value_or(defaults);
 }
 
 monad::IO<void> SessionRefresher::refresh(std::string reason) {
@@ -143,6 +155,8 @@ void SessionRefresher::enqueue_refresh(std::string reason,
     if (!inflight_) {
       inflight_ = std::make_shared<RefreshState>();
       inflight_->primary_reason = std::move(reason);
+      inflight_->backoff.UpdateOptions(refresh_backoff_options_);
+      inflight_->backoff.Reset();
       to_start = inflight_;
     } else {
       inflight_->joined_reasons.push_back(std::move(reason));
@@ -175,21 +189,18 @@ SessionRefresher::build_refresh_io(std::shared_ptr<RefreshState> state) {
           "Refresh token not found. Run 'cert-ctrl login' to authenticate."));
     }
     state->refresh_token_snapshot = *refresh_token;
-    return self->attempt_refresh(state, /*attempt=*/1,
-                                 session_refresh::kInitialRetryDelay);
+    return self->attempt_refresh(state, /*attempt=*/1);
   });
 }
 
 monad::IO<void> SessionRefresher::attempt_refresh(
-    std::shared_ptr<RefreshState> state, int attempt,
-    std::chrono::milliseconds delay) {
+    std::shared_ptr<RefreshState> state, int attempt) {
   auto self = shared_from_this();
   const std::string &refresh_token = state->refresh_token_snapshot;
   return perform_refresh_request(state, refresh_token, attempt)
-      .catch_then([self, state, attempt, delay](monad::Error err) {
+      .catch_then([self, state, attempt](monad::Error err) {
         return self->handle_refresh_error(state, std::move(err))
-            .catch_then([self, state, attempt,
-                         delay](monad::Error retry_err) {
+            .catch_then([self, state, attempt](monad::Error retry_err) {
               if (is_rotation_error(retry_err)) {
                 self->output_.logger().warning()
                     << "Session refresh aborted because the server rotated "
@@ -206,19 +217,19 @@ monad::IO<void> SessionRefresher::attempt_refresh(
                 return monad::IO<void>::fail(std::move(retry_err));
               }
 
-              auto wait = std::clamp(delay, session_refresh::kInitialRetryDelay,
-                                     session_refresh::kMaxRetryDelay);
+              auto wait = state->backoff.NextDelay(self->rng_);
+              if (self->delay_observer_) {
+                self->delay_observer_(wait, attempt);
+              }
               self->output_.logger().warning()
                   << "Device session refresh attempt " << attempt
                   << " failed: " << retry_err.what << "; retrying in "
                   << wait.count() << "ms" << std::endl;
-              auto next_delay = session_refresh::next_delay(wait);
 
               return monad::delay_for<void>(self->io_context_manager_.ioc(),
                                             wait)
-                  .then([self, state, attempt, next_delay]() {
-                    return self->attempt_refresh(state, attempt + 1,
-                                                 next_delay);
+                  .then([self, state, attempt]() {
+                    return self->attempt_refresh(state, attempt + 1);
                   });
             });
       });
@@ -231,6 +242,10 @@ monad::IO<void> SessionRefresher::perform_refresh_request(
   using monad::PostJsonTag;
   using monad::http_io;
   using monad::http_request_io;
+
+  if (request_override_) {
+    return request_override_(refresh_token, attempt);
+  }
 
   const auto refresh_url =
       fmt::format("{}/auth/refresh", config_provider_.get().base_url);
