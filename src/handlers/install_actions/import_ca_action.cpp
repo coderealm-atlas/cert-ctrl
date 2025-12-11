@@ -838,7 +838,9 @@ std::optional<TrustStoreTarget> detect_system_trust_store() {
       {"/etc/pki/ca-trust/source/anchors", "update-ca-trust extract",
        "RHEL/Fedora trust store"},
       {"/usr/share/pki/trust/anchors", "update-ca-certificates",
-       "SUSE trust store"},
+      "SUSE trust store"},
+     {"/etc/ca-certificates/trust-source/anchors", "trust extract-compat",
+      "Arch Linux trust store"},
   };
 
   for (const auto &candidate : candidates) {
@@ -851,6 +853,12 @@ std::optional<TrustStoreTarget> detect_system_trust_store() {
       return target;
     }
   }
+#elif defined(__FreeBSD__)
+  TrustStoreTarget target;
+  target.directory = std::filesystem::path("/usr/local/share/certs");
+  target.update_command = "certctl rehash";
+  target.description = "FreeBSD trust store";
+  return target;
 #elif defined(_WIN32)
   if (auto override_target = trust_store_from_env()) {
     return override_target;

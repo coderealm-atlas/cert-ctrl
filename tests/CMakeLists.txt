@@ -46,6 +46,7 @@ target_link_libraries(test_program_options PRIVATE
   protobuf::libprotobuf
   certctrl_libatomic
   di_config
+ryml::ryml
 )
 if(APPLE)
   target_link_libraries(test_program_options PRIVATE c++abi)
@@ -144,6 +145,7 @@ target_link_libraries(test_tunnel_client PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   certctrl_libatomic
+ryml::ryml
 )
 
 certctrl_use_static_atomic(test_tunnel_client)
@@ -170,6 +172,7 @@ target_link_libraries(test_device_fingerprint PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   certctrl_libatomic
+ryml::ryml
 )
 
 certctrl_use_static_atomic(test_device_fingerprint)
@@ -213,6 +216,7 @@ target_link_libraries(test_login_handler_workflow PRIVATE
   OpenSSL::Crypto
   certctrl_libatomic
   di_config
+  ryml::ryml
 )
 if(APPLE)
   target_link_libraries(test_login_handler_workflow PRIVATE c++abi)
@@ -259,6 +263,7 @@ target_link_libraries(test_login_real_server PRIVATE
   unofficial::sqlite3::sqlite3
   certctrl_libatomic
   di_config
+  ryml::ryml
 )
 if(APPLE)
   target_link_libraries(test_login_real_server PRIVATE c++abi)
@@ -309,6 +314,7 @@ target_link_libraries(test_device_registration PRIVATE
   unofficial::sqlite3::sqlite3
   certctrl_libatomic
   di_config
+ryml::ryml
 )
 if(APPLE)
   target_link_libraries(test_device_registration PRIVATE c++abi)
@@ -369,6 +375,7 @@ target_link_libraries(test_install_config_manager PRIVATE
   unofficial::sqlite3::sqlite3
   certctrl_libatomic
   di_config
+ryml::ryml
 )
 if(WIN32)
   target_link_libraries(test_install_config_manager PRIVATE crypt32)
@@ -408,6 +415,7 @@ target_link_libraries(test_session_refresher PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   certctrl_libatomic
+ryml::ryml
 )
 
 certctrl_use_static_atomic(test_session_refresher)
@@ -436,6 +444,7 @@ target_link_libraries(test_exec_action PRIVATE
   fmt::fmt
   certctrl_libatomic
   di_config
+ryml::ryml
 )
 
 certctrl_use_static_atomic(test_exec_action)
@@ -479,6 +488,7 @@ target_link_libraries(test_import_ca_action PRIVATE
   fmt::fmt
   certctrl_libatomic
   di_config
+  ryml::ryml
 )
 if(WIN32)
   target_link_libraries(test_import_ca_action PRIVATE crypt32)
@@ -538,6 +548,7 @@ target_link_libraries(test_updates_polling_handler PRIVATE
   unofficial::sqlite3::sqlite3
   certctrl_libatomic
   di_config
+  ryml::ryml
 )
 if(WIN32)
   target_link_libraries(test_updates_polling_handler PRIVATE crypt32)

@@ -4,10 +4,12 @@
 #include <google/protobuf/repeated_field.h> // For RepeatedPtrField
 
 #include <algorithm>
+#include <array>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -170,6 +172,110 @@ inline bool parse_bool(const std::string &value) {
                  ::tolower);
   return (val_lower == "1" || val_lower == "true" || val_lower == "yes" ||
           val_lower == "on");
+}
+
+inline bool is_known_subcommand(std::string_view candidate) {
+  static constexpr std::array<std::string_view, 11> kKnown{
+      "login",          "install-config", "certificates",
+      "ca",             "cas",             "info",
+      "device",         "conf",            "update",
+      "updates-polling","install"};
+  return std::find(kKnown.begin(), kKnown.end(), candidate) != kKnown.end();
+}
+
+inline std::optional<size_t>
+find_subcommand_index(const std::vector<std::string> &tokens) {
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (is_known_subcommand(tokens[i])) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+inline void normalize_cli_subcommand(
+    std::string &subcmd, std::vector<std::string> &positionals,
+    const std::vector<std::string> &fallback_tokens = {}) {
+  auto looks_like_option = [](const std::string &token) {
+    return !token.empty() && token[0] == '-';
+  };
+
+  auto token_is_option_value = [&](const std::string &token) {
+    if (token.empty() || fallback_tokens.empty()) {
+      return false;
+    }
+    for (size_t i = 0; i + 1 < fallback_tokens.size(); ++i) {
+      if (!looks_like_option(fallback_tokens[i])) {
+        continue;
+      }
+      const auto &value = fallback_tokens[i + 1];
+      if (value.empty() || looks_like_option(value)) {
+        continue;
+      }
+      if (value == token) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto ensure_prefix = [&]() {
+    if (subcmd.empty()) {
+      return;
+    }
+    if (positionals.empty()) {
+      positionals.insert(positionals.begin(), subcmd);
+    } else if (positionals.front() != subcmd) {
+      positionals.insert(positionals.begin(), subcmd);
+    }
+  };
+
+  if (!subcmd.empty()) {
+    const bool known = is_known_subcommand(subcmd);
+    const bool looks_like_value = token_is_option_value(subcmd);
+    if (!known && looks_like_value) {
+      if (!positionals.empty() && positionals.front() == subcmd) {
+        positionals.erase(positionals.begin());
+      }
+      subcmd.clear();
+    } else {
+      ensure_prefix();
+      return;
+    }
+  }
+
+  if (!positionals.empty()) {
+    if (auto idx = find_subcommand_index(positionals)) {
+      subcmd = positionals[*idx];
+      if (*idx != 0) {
+        auto detected = positionals[*idx];
+        positionals.erase(positionals.begin() + *idx);
+        positionals.insert(positionals.begin(), std::move(detected));
+      }
+      ensure_prefix();
+      return;
+    }
+  }
+
+  if (fallback_tokens.empty()) {
+    return;
+  }
+
+  if (auto idx = find_subcommand_index(fallback_tokens)) {
+    subcmd = fallback_tokens[*idx];
+    if (positionals.empty()) {
+      positionals.push_back(subcmd);
+      for (size_t j = *idx + 1; j < fallback_tokens.size(); ++j) {
+        const auto &candidate = fallback_tokens[j];
+        if (!candidate.empty() && candidate[0] == '-') {
+          break;
+        }
+        positionals.push_back(candidate);
+      }
+    } else {
+      ensure_prefix();
+    }
+  }
 }
 
 } // namespace certctrl
