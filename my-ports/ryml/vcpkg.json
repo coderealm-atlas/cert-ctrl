@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "ryml",
+  "version": "0.10.0",
+  "description": "Rapid YAML parser/emitter",
+  "homepage": "https://github.com/biojppm/rapidyaml",
+  "license": "MIT",
+  "dependencies": [
+    {
+      "name": "c4core",
+      "default-features": false
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "default-features": [
+    "def-callbacks"
+  ],
+  "features": {
+    "dbg": {
+      "description": "Enable very verbose ryml debug prints"
+    },
+    "def-callbacks": {
+      "description": "Enable ryml default allocate/free/error callbacks"
+    }
+  }
+}
