@@ -453,7 +453,11 @@ BrowserTrustSync::sync_ca(const std::string &canonical_name,
   auto certutil_path = find_certutil();
   if (!certutil_path) {
     output_.logger().warning()
-        << "certutil not found in PATH; skipping browser trust sync"
+        << "certutil (from nss-tools) not found in PATH; install the"
+           " NSS tooling suits first, e.g. 'sudo apt install"
+           " libnss3-tools', 'sudo dnf install nss-tools', 'sudo zypper"
+           " install mozilla-nss-tools', 'sudo pacman -S nss', or 'sudo"
+           " apk add nss' to enable browser trust sync"
         << std::endl;
     return std::nullopt;
   }
@@ -536,7 +540,11 @@ BrowserTrustSync::remove_ca_alias(const std::string &alias) {
   auto certutil_path = find_certutil();
   if (!certutil_path) {
     output_.logger().warning()
-        << "certutil not found in PATH; skipping browser trust removal"
+        << "certutil (from nss-tools) not found in PATH; install the"
+           " NSS tooling suits first, e.g. 'sudo apt install"
+           " libnss3-tools', 'sudo dnf install nss-tools', 'sudo zypper"
+           " install mozilla-nss-tools', 'sudo pacman -S nss', or 'sudo"
+           " apk add nss' to enable browser trust removal"
         << std::endl;
     return std::nullopt;
   }

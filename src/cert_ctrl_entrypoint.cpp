@@ -2,6 +2,7 @@
 
 #include "cert_ctrl_entry.hpp"
 #include "certctrl_common.hpp"
+#include "common_macros.hpp"
 #include "util/my_logging.hpp"
 #include "version.h"
 #include <boost/program_options.hpp>
@@ -164,7 +165,21 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
                    {"rotation_size", 10 * 1024 * 1024}};
     write_json_if_missing(config_dir / "log_config.json", log);
 
-    js::object tunnel{{"enabled", false}};
+    js::array tunnel_allowlist{"content-type", "user-agent",
+                                "stripe-signature"};
+    js::object tunnel{{"enabled", false},
+                      {"remote_endpoint", "wss://api.cjj365.cc/api/tunnel"},
+                      {"webhook_base_url", "https://hook.cjj365.cc/hooks"},
+                      {"local_base_url", "http://127.0.0.1:9000"},
+                      {"verify_tls", true},
+                      {"request_timeout_seconds", 45},
+                      {"ping_interval_seconds", 20},
+                      {"max_concurrent_requests", 12},
+                      {"max_payload_bytes", 5 * 1024 * 1024},
+                      {"reconnect_initial_delay_ms", 1000},
+                      {"reconnect_max_delay_ms", 30000},
+                      {"reconnect_jitter_ms", 250},
+                      {"header_allowlist", tunnel_allowlist}};
     write_json_if_missing(config_dir / "tunnel_config.json", tunnel);
   } catch (const std::exception &ex) {
     std::cerr << "Warning: failed to write default configuration files: "
@@ -341,6 +356,9 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
     std::vector<std::string> unrecognized = po::collect_unrecognized(
         parsed.options, po::collect_unrecognized_mode::include_positional);
 
+    certctrl::normalize_cli_subcommand(cli_params.subcmd, positionals,
+                                       unrecognized);
+
     auto showUsage = [&]() {
       std::cerr << generic_desc << std::endl;
       std::cerr << "Subcommands:" << std::endl;
@@ -449,6 +467,7 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
                   << std::endl;
         return EXIT_FAILURE;
       }
+      DEBUG_PRINT("log config: " << log_config_result.value());
       cjj365::LoggingConfig logging_config =
           json::value_to<cjj365::LoggingConfig>(log_config_result.value());
 

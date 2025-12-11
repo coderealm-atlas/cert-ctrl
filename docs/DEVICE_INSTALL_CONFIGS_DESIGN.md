@@ -162,19 +162,19 @@ Import CA
 
 ### Platform-specific behavior
 
-- **Linux (Debian/Ubuntu, RHEL/Fedora, SUSE)** – the handler looks for the
+- **Linux (Debian/Ubuntu, RHEL/Fedora, SUSE, Arch)** – the handler looks for the
   distribution trust anchor directory under `/usr/local/share/ca-certificates`,
-  `/etc/pki/ca-trust/source/anchors`, or `/usr/share/pki/trust/anchors`, writes
-  the PEM there, and executes the matching update command (`update-ca-certificates`
-  or `update-ca-trust extract`). Operators can override both pieces via
+  `/etc/pki/ca-trust/source/anchors`, `/usr/share/pki/trust/anchors`, or
+  `/etc/ca-certificates/trust-source/anchors` (Arch), writes the PEM there, and
+  executes the matching update command (respectively `update-ca-certificates`,
+  `update-ca-trust extract`, `update-ca-certificates`, or `trust extract-compat`).
+  Operators can override both pieces via
   `CERTCTRL_CA_IMPORT_DIR` and `CERTCTRL_CA_UPDATE_COMMAND` when running on
   derivatives with different layouts.
-- **FreeBSD** – auto-detection is not implemented yet. To reuse the same flow,
-  set `CERTCTRL_CA_IMPORT_DIR` (for example `/usr/local/share/certs`) and
-  `CERTCTRL_CA_UPDATE_COMMAND` (for example `certctl rehash`) in the service
-  environment so the handler knows where to stage trust anchors and which
-  command to run after writes. Without the override `import_ca` items will skip
-  with a warning.
+- **FreeBSD** – the handler stages anchors under `/usr/local/share/certs` and
+  runs `certctl rehash` automatically. Operators can still override this via
+  `CERTCTRL_CA_IMPORT_DIR` and `CERTCTRL_CA_UPDATE_COMMAND` if they keep trust
+  stores elsewhere.
 - **macOS** – files are staged under `/Library/Caches/certctrl/trust-anchors`
   and then imported into the system keychain via the Security framework
   (`SecItemAdd` + trust settings). This uses the admin trust domain so the CA is

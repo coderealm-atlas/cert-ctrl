@@ -143,3 +143,55 @@ TEST(CliCtxTest, IsSpecifiedByUserDetection) {
   EXPECT_TRUE(ctx3.is_specified_by_user("limit"));
   EXPECT_TRUE(ctx3.is_specified_by_user("silent"));
 }
+
+TEST(CliCtxTest, NormalizesSubcommandFromUnrecognizedTokens) {
+  std::vector<std::string> positionals;
+  std::vector<std::string> unrecognized{"--apikey", "token-value", "login"};
+  std::string subcmd;
+
+  certctrl::normalize_cli_subcommand(subcmd, positionals, unrecognized);
+
+  EXPECT_EQ(subcmd, "login");
+  ASSERT_EQ(positionals.size(), 1u);
+  EXPECT_EQ(positionals.front(), "login");
+}
+
+TEST(CliCtxTest, NormalizesSubcommandAndTrailingArgs) {
+  std::vector<std::string> positionals;
+  std::vector<std::string> unrecognized{"--apikey", "token-value",
+                                        "install-config", "show",
+                                        "--raw"};
+  std::string subcmd;
+
+  certctrl::normalize_cli_subcommand(subcmd, positionals, unrecognized);
+
+  EXPECT_EQ(subcmd, "install-config");
+  ASSERT_EQ(positionals.size(), 2u);
+  EXPECT_EQ(positionals[0], "install-config");
+  EXPECT_EQ(positionals[1], "show");
+}
+
+TEST(CliCtxTest, IgnoresUnknownOptionValuesAsDefaultSubcommand) {
+  std::vector<std::string> positionals{"ak_token"};
+  std::vector<std::string> unrecognized{"--apikey", "ak_token",
+                                        "--verbose", "trace"};
+  std::string subcmd = positionals.front();
+
+  certctrl::normalize_cli_subcommand(subcmd, positionals, unrecognized);
+
+  EXPECT_TRUE(subcmd.empty());
+  EXPECT_TRUE(positionals.empty());
+}
+
+TEST(CliCtxTest, RescuesSubcommandAfterUnknownOptionValue) {
+  std::vector<std::string> positionals{"ak_token", "login"};
+  std::vector<std::string> unrecognized{"--apikey", "ak_token", "login",
+                                        "--force"};
+  std::string subcmd = positionals.front();
+
+  certctrl::normalize_cli_subcommand(subcmd, positionals, unrecognized);
+
+  EXPECT_EQ(subcmd, "login");
+  ASSERT_EQ(positionals.size(), 1u);
+  EXPECT_EQ(positionals.front(), "login");
+}
