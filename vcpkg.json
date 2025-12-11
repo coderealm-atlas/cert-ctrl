@@ -30,7 +30,8 @@
       ]
     },
     {
-      "name": "ryml"
+      "name": "ryml",
+      "version>=": "0.10.0"
     },
     "minizip-ng",
     "libsodium",
