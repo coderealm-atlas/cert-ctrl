@@ -1,0 +1,22 @@
+diff --git a/src/c4/yml/common.hpp b/src/c4/yml/common.hpp
+index e85666e..0f50c99 100644
+--- a/src/c4/yml/common.hpp
++++ b/src/c4/yml/common.hpp
+@@ -10,11 +10,11 @@
+ #include <c4/dump.hpp>
+ #include <c4/yml/export.hpp>
+ 
+-#if defined(C4_MSVC) || defined(C4_MINGW)
+-#include <malloc.h>
+-#else
+-#include <alloca.h>
+-#endif
++#if defined(C4_MSVC) || defined(C4_MINGW)
++#include <malloc.h>
++#else
++#include <stdlib.h>
++#endif
+ 
+ 
+ 
+ //-----------------------------------------------------------------------------
