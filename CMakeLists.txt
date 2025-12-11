@@ -693,6 +693,7 @@ find_package(minizip-ng CONFIG REQUIRED)
 find_package(unofficial-sodium CONFIG REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
+find_package(ryml CONFIG REQUIRED)
 
 if(ENABLE_ASAN)
     if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU"))
@@ -739,6 +740,8 @@ set_target_properties(${CERT_CTRL_APP_NAME} PROPERTIES
     OUTPUT_NAME_RELEASE "cert_ctrl"
 )
 
+add_compile_definitions(RYML_DEFAULT_CALLBACK_USES_EXCEPTIONS=1)
+
 target_include_directories(${CERT_CTRL_APP_NAME} 
     PRIVATE include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/http_client/include
@@ -766,6 +769,7 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE fmt::fmt
     PRIVATE certctrl_libatomic
     PRIVATE di_config
+    PRIVATE ryml::ryml
     )
 
 if(WIN32)
