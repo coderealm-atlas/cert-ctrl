@@ -4,6 +4,7 @@
 #include <boost/json.hpp>
 #include <fmt/format.h>
 
+#include "certctrl_common.hpp"
 #include "handlers/session_refresh_retry.hpp"
 #include "http_client_monad.hpp"
 
@@ -15,6 +16,7 @@
 
 #ifndef _WIN32
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace certctrl {
@@ -119,6 +121,7 @@ bool iequals(std::string_view haystack, std::string_view needle) {
 SessionRefresher::SessionRefresher(
     cjj365::IoContextManager &io_context_manager,
     certctrl::ICertctrlConfigProvider &config_provider,
+    const certctrl::CliCtx &cli_ctx,
     customio::ConsoleOutput &output,
     client_async::HttpClientManager &http_client,
     IDeviceStateStore &state_store,
@@ -127,11 +130,17 @@ SessionRefresher::SessionRefresher(
     DelayObserver delay_observer)
     : io_context_manager_(io_context_manager),
       config_provider_(config_provider), output_(output),
+      keep_running_(cli_ctx.params.keep_running),
       http_client_(http_client), state_store_(state_store),
       refresh_backoff_options_{}, rng_(std::random_device{}()),
       request_override_(std::move(request_override)),
       delay_observer_(std::move(delay_observer)) {
   runtime_dir_ = config_provider_.get().runtime_dir;
+#ifdef _WIN32
+  refresh_lock_owner_ = "winproc";
+#else
+  refresh_lock_owner_ = fmt::format("pid:{}", static_cast<long long>(::getpid()));
+#endif
   monad::ExponentialBackoffOptions defaults;
   defaults.initial_delay = session_refresh::kInitialRetryDelay;
   defaults.max_delay = session_refresh::kMaxRetryDelay;
@@ -182,14 +191,51 @@ monad::IO<void>
 SessionRefresher::build_refresh_io(std::shared_ptr<RefreshState> state) {
   return monad::IO<void>::pure().then([self = shared_from_this(),
                                        state]() -> monad::IO<void> {
+    // Acquire a cross-process lease lock to prevent concurrent refresh requests
+    // (refresh token rotation races) between service + interactive instances.
+    constexpr std::chrono::milliseconds kRefreshLockTtl{std::chrono::seconds(120)};
+    auto [acquired, lock_err] = self->state_store_.try_acquire_refresh_lock(
+        self->refresh_lock_owner_, kRefreshLockTtl);
+    if (lock_err) {
+      return monad::IO<void>::fail(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "Failed to acquire refresh coordination lock: " + *lock_err));
+    }
+    if (!acquired) {
+      if (self->keep_running_) {
+        self->output_.logger().info()
+            << "Another instance is refreshing session tokens; skipping refresh"
+            << std::endl;
+        return monad::IO<void>::pure();
+      }
+
+      self->output_.printer().yellow()
+          << "Another cert-ctrl instance is currently refreshing session tokens."
+          << std::endl
+          << "If you have the service running, please retry in a few seconds."
+          << std::endl;
+      return monad::IO<void>::fail(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "Refresh already in progress in another instance"));
+    }
+
     auto refresh_token = self->load_refresh_token();
     if (!refresh_token || refresh_token->empty()) {
+      (void)self->state_store_.release_refresh_lock(self->refresh_lock_owner_);
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::INVALID_ARGUMENT,
           "Refresh token not found. Run 'cert-ctrl login' to authenticate."));
     }
     state->refresh_token_snapshot = *refresh_token;
-    return self->attempt_refresh(state, /*attempt=*/1);
+    return self->attempt_refresh(state, /*attempt=*/1)
+        .catch_then([self](monad::Error err) {
+          (void)self->state_store_.release_refresh_lock(self->refresh_lock_owner_);
+          return monad::IO<void>::fail(std::move(err));
+        })
+        .then([self]() {
+          (void)self->state_store_.release_refresh_lock(self->refresh_lock_owner_);
+          return monad::IO<void>::pure();
+        });
   });
 }
 

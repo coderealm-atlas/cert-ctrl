@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <functional> // IWYU pragma: keep
 #include <filesystem> // IWYU pragma: keep
 #include <mutex> // IWYU pragma: keep
@@ -58,6 +59,15 @@ public:
   virtual std::optional<std::string>
   clear_imported_ca_name(std::int64_t ca_id) = 0;
 
+  // Cross-process refresh coordination.
+  // Returns (acquired, error). When acquired==false and error==nullopt,
+  // another process currently holds the lock.
+  virtual std::pair<bool, std::optional<std::string>>
+  try_acquire_refresh_lock(const std::string &owner,
+                           std::chrono::milliseconds ttl) = 0;
+  virtual std::optional<std::string>
+  release_refresh_lock(const std::string &owner) = 0;
+
   virtual bool available() const = 0;
 };
 
@@ -99,6 +109,12 @@ public:
                        const std::optional<std::string> &canonical_name) override;
   std::optional<std::string>
   clear_imported_ca_name(std::int64_t ca_id) override;
+
+  std::pair<bool, std::optional<std::string>>
+  try_acquire_refresh_lock(const std::string &owner,
+                           std::chrono::milliseconds ttl) override;
+  std::optional<std::string>
+  release_refresh_lock(const std::string &owner) override;
   bool available() const override;
 
 private:
