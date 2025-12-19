@@ -5,6 +5,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <chrono>
 #include <system_error>
 
 namespace {
@@ -28,6 +29,14 @@ CREATE TABLE IF NOT EXISTS kv_store (
 );
 )SQL";
 
+constexpr const char kCreateLocksTableSql[] = R"SQL(
+CREATE TABLE IF NOT EXISTS locks (
+  name TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  expires_at_ms INTEGER NOT NULL
+);
+)SQL";
+
 constexpr const char kUpsertSql[] = R"SQL(
 INSERT INTO kv_store(key, value, updated_at)
 VALUES(?1, ?2, strftime('%s','now'))
@@ -43,6 +52,21 @@ DELETE FROM kv_store WHERE key = ?1;
 constexpr const char kSelectSql[] = R"SQL(
 SELECT value FROM kv_store WHERE key = ?1 LIMIT 1;
 )SQL";
+
+constexpr const char kTryAcquireLockSql[] = R"SQL(
+INSERT INTO locks(name, owner, expires_at_ms)
+VALUES(?1, ?2, ?3)
+ON CONFLICT(name) DO UPDATE SET
+  owner = excluded.owner,
+  expires_at_ms = excluded.expires_at_ms
+WHERE locks.expires_at_ms <= ?4;
+)SQL";
+
+constexpr const char kReleaseLockSql[] = R"SQL(
+DELETE FROM locks WHERE name = ?1 AND owner = ?2;
+)SQL";
+
+constexpr const char kRefreshLockName[] = "refresh_session";
 } // namespace
 
 namespace certctrl {
@@ -434,9 +458,86 @@ bool SqliteDeviceStateStore::ensure_initialized() const {
     return false;
   }
 
+  if (sqlite3_exec(db_, kCreateLocksTableSql, nullptr, nullptr, &errmsg) !=
+      SQLITE_OK) {
+    output_.logger().error() << "Failed to initialize locks table: "
+                             << (errmsg ? errmsg : "unknown") << std::endl;
+    sqlite3_free(errmsg);
+    close_db();
+    initialized_ = true;
+    return false;
+  }
+
   migrate_legacy_state_if_present();
   initialized_ = true;
   return true;
+}
+
+std::pair<bool, std::optional<std::string>>
+SqliteDeviceStateStore::try_acquire_refresh_lock(const std::string &owner,
+                                                 std::chrono::milliseconds ttl) {
+  std::scoped_lock lock(mutex_);
+  if (!ensure_initialized()) {
+    return {false, std::string{"State database unavailable"}};
+  }
+
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
+  const auto expires_ms = now_ms + static_cast<std::int64_t>(ttl.count());
+
+  bool acquired = false;
+  auto body = [&]() -> std::optional<std::string> {
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kTryAcquireLockSql, -1, &stmt, nullptr) !=
+        SQLITE_OK) {
+      return std::string{"Failed to prepare lock acquire statement"};
+    }
+    sqlite3_bind_text(stmt, 1, kRefreshLockName, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, owner.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(expires_ms));
+    sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(now_ms));
+    const int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+      return std::string{"Failed to execute lock acquire statement"};
+    }
+
+    acquired = sqlite3_changes(db_) > 0;
+    return std::nullopt;
+  };
+
+  if (auto err = with_transaction(body)) {
+    return {false, err};
+  }
+
+  return {acquired, std::nullopt};
+}
+
+std::optional<std::string>
+SqliteDeviceStateStore::release_refresh_lock(const std::string &owner) {
+  std::scoped_lock lock(mutex_);
+  if (!ensure_initialized()) {
+    return std::string{"State database unavailable"};
+  }
+
+  auto body = [&]() -> std::optional<std::string> {
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kReleaseLockSql, -1, &stmt, nullptr) !=
+        SQLITE_OK) {
+      return std::string{"Failed to prepare lock release statement"};
+    }
+    sqlite3_bind_text(stmt, 1, kRefreshLockName, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, owner.c_str(), -1, SQLITE_TRANSIENT);
+    const int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+      return std::string{"Failed to execute lock release statement"};
+    }
+    return std::nullopt;
+  };
+
+  return with_transaction(body);
 }
 
 void SqliteDeviceStateStore::migrate_legacy_state_if_present() const {

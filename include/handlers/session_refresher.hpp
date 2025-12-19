@@ -20,6 +20,8 @@
 
 namespace certctrl {
 
+struct CliCtx;
+
 class ISessionRefresher {
 public:
   virtual ~ISessionRefresher() = default;
@@ -37,6 +39,7 @@ public:
 
   SessionRefresher(cjj365::IoContextManager &io_context_manager,
                    certctrl::ICertctrlConfigProvider &config_provider,
+             const certctrl::CliCtx &cli_ctx,
                    customio::ConsoleOutput &output,
                    client_async::HttpClientManager &http_client,
                    IDeviceStateStore &state_store,
@@ -81,6 +84,7 @@ private:
 
   cjj365::IoContextManager &io_context_manager_;
   certctrl::ICertctrlConfigProvider &config_provider_;
+  bool keep_running_{false};
   customio::ConsoleOutput &output_;
   client_async::HttpClientManager &http_client_;
   IDeviceStateStore &state_store_;
@@ -89,6 +93,8 @@ private:
   std::mt19937 rng_;
   RequestOverride request_override_;
   DelayObserver delay_observer_;
+
+  std::string refresh_lock_owner_;
 
   mutable std::mutex mutex_;
   std::shared_ptr<RefreshState> inflight_;

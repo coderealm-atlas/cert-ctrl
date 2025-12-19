@@ -15,6 +15,7 @@
 #include "backoff_utils.hpp"
 #include "client_ssl_ctx.hpp"
 #include "conf/certctrl_config.hpp"
+#include "certctrl_common.hpp"
 #include "customio/console_output.hpp"
 #include "handlers/session_refresher.hpp"
 #include "http_client_config_provider.hpp"
@@ -142,6 +143,25 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
     return std::nullopt;
   }
 
+  std::pair<bool, std::optional<std::string>>
+  try_acquire_refresh_lock(const std::string &owner,
+                           std::chrono::milliseconds ttl) override {
+    (void)ttl;
+    if (!refresh_lock_owner_) {
+      refresh_lock_owner_ = owner;
+      return {true, std::nullopt};
+    }
+    return {false, std::nullopt};
+  }
+
+  std::optional<std::string>
+  release_refresh_lock(const std::string &owner) override {
+    if (refresh_lock_owner_ && *refresh_lock_owner_ == owner) {
+      refresh_lock_owner_.reset();
+    }
+    return std::nullopt;
+  }
+
   bool available() const override { return true; }
 
  private:
@@ -156,6 +176,7 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
   std::optional<std::string> processed_signals_;
   std::unordered_map<std::int64_t, std::optional<std::string>>
       imported_ca_names_;
+  std::optional<std::string> refresh_lock_owner_;
 };
 
 class SessionRefresherTest : public ::testing::Test {
@@ -233,8 +254,11 @@ class SessionRefresherTest : public ::testing::Test {
       std::optional<monad::ExponentialBackoffOptions> options = std::nullopt,
       certctrl::SessionRefresher::RequestOverride request_override = {},
       certctrl::SessionRefresher::DelayObserver delay_observer = {}) {
+    certctrl::CliParams cli_params;
+    cli_params.keep_running = false;
+    certctrl::CliCtx cli_ctx(po::variables_map{}, {}, {}, std::move(cli_params));
     return std::make_shared<certctrl::SessionRefresher>(
-        *io_context_manager_, *cert_config_provider_, *console_output_,
+      *io_context_manager_, *cert_config_provider_, cli_ctx, *console_output_,
         *http_client_manager_, *state_store_, std::move(options),
         std::move(request_override), std::move(delay_observer));
   }

@@ -500,3 +500,62 @@ TEST(TunnelClientIntegrationTest, ReportsTimeoutWhenLocalEndpointHangs) {
   tunnel_server.Join();
   local_server.Stop();
 }
+
+  TEST(TunnelClientIntegrationTest, RoutesMatchStrippedButFallbackKeepsIngressPrefix) {
+    const auto tunnel_port = PickFreePort();
+    const auto local_port = PickFreePort();
+
+    TestLocalHttpServer local_server(local_port);
+    local_server.set_response(http::status::ok, "ok");
+    local_server.Start();
+
+    std::vector<certctrl::TunnelRequest> requests;
+    requests.emplace_back(
+      MakeRequest("req-route", "/hooks/integration-test/stripe/any/depth?x=1"));
+    requests.emplace_back(
+      MakeRequest("req-fallback", "/hooks/integration-test/unmatched?y=2"));
+    FakeTunnelServer tunnel_server(tunnel_port, requests);
+    tunnel_server.Start();
+
+    auto cfg = MakeBaseConfig(tunnel_port, local_port);
+    cfg.local_base_url =
+      "http://127.0.0.1:" + std::to_string(local_port) + "/fallback";
+
+    certctrl::TunnelConfig::RouteRule rule;
+    rule.match_prefix = "/stripe";
+    rule.local_base_url =
+      "http://127.0.0.1:" + std::to_string(local_port) + "/routed";
+    rule.rewrite_prefix = "";
+    cfg.routes.push_back(std::move(rule));
+
+    StaticTunnelConfigProvider config_provider(cfg);
+    TestIocConfigProvider ioc_provider(1);
+    customio::ConsoleOutputWithColor logger(5);
+    customio::ConsoleOutput console(logger);
+    cjj365::IoContextManager io_manager(ioc_provider, logger);
+    certctrl::TunnelClient client(io_manager, config_provider, console);
+    client.Start();
+
+    auto rec1 = local_server.WaitForRequest(3s);
+    ASSERT_TRUE(rec1.has_value()) << "first local webhook missing";
+    auto rec2 = local_server.WaitForRequest(3s);
+    ASSERT_TRUE(rec2.has_value()) << "second local webhook missing";
+
+    const std::string t1 = rec1->target;
+    const std::string t2 = rec2->target;
+
+    const bool saw_routed =
+      (t1 == "/routed/any/depth?x=1") || (t2 == "/routed/any/depth?x=1");
+    const bool saw_fallback = (t1 == "/fallback/hooks/integration-test/unmatched?y=2") ||
+                (t2 == "/fallback/hooks/integration-test/unmatched?y=2");
+
+    EXPECT_TRUE(saw_routed) << "did not observe routed target";
+    EXPECT_TRUE(saw_fallback) << "did not observe fallback target";
+
+    auto responses = tunnel_server.WaitForResponses(5s);
+    ASSERT_EQ(responses.size(), 2u);
+
+    client.Stop();
+    tunnel_server.Join();
+    local_server.Stop();
+  }

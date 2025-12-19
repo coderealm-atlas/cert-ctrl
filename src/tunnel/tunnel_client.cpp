@@ -24,6 +24,7 @@
 #include <fmt/format.h>
 #include <openssl/err.h>
 #include <random>
+#include <string_view>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -53,6 +54,24 @@ struct LocalEndpointParts {
   std::string base_path{"/"};
   std::string host_header;
 };
+
+std::string ParseIngressPath(const std::string &webhook_base_url) {
+  auto parsed = urls::parse_uri(webhook_base_url);
+  if (!parsed) {
+    throw std::runtime_error(
+        fmt::format("invalid webhook_base_url '{}': {}", webhook_base_url,
+                    parsed.error().message()));
+  }
+  const auto &url = parsed.value();
+  std::string path = std::string(url.encoded_path());
+  if (path.empty()) {
+    path = "/";
+  }
+  while (path.size() > 1 && path.back() == '/') {
+    path.pop_back();
+  }
+  return path;
+}
 
 EndpointParts ParseEndpoint(const std::string &endpoint) {
   auto parsed = urls::parse_uri(endpoint);
@@ -144,6 +163,24 @@ std::string NormalizeIncomingPath(const std::string &path) {
   return path;
 }
 
+bool StartsWith(std::string_view value, std::string_view prefix) {
+  return value.size() >= prefix.size() &&
+         value.substr(0, prefix.size()) == prefix;
+}
+
+struct PathAndQuery {
+  std::string_view path;
+  std::string_view query; // includes leading '?', or empty
+};
+
+PathAndQuery SplitPathAndQuery(std::string_view incoming) {
+  const auto pos = incoming.find('?');
+  if (pos == std::string_view::npos) {
+    return PathAndQuery{incoming, std::string_view{}};
+  }
+  return PathAndQuery{incoming.substr(0, pos), incoming.substr(pos)};
+}
+
 std::string JoinLocalPath(const std::string &base_path,
                           const std::string &incoming) {
   const std::string normalized = NormalizeIncomingPath(incoming);
@@ -178,6 +215,8 @@ public:
       : client_(client), config_(std::move(config)),
         endpoint_(std::move(endpoint)),
         local_endpoint_(std::move(local_endpoint)),
+    webhook_ingress_path_(ParseIngressPath(config_.webhook_base_url)),
+    compiled_routes_(CompileRoutes(config_, local_endpoint_)),
         header_allowlist_(BuildHeaderAllowlist(config_.header_allowlist)),
         max_payload_bytes_(
             static_cast<std::size_t>(std::max(0, config_.max_payload_bytes))),
@@ -205,11 +244,113 @@ public:
   }
 
 private:
+  struct CompiledRoute {
+    std::string match_prefix;
+    bool has_override_endpoint{false};
+    LocalEndpointParts endpoint;
+    bool has_rewrite{false};
+    std::string rewrite_prefix;
+  };
+
+  struct ResolvedLocalTarget {
+    LocalEndpointParts endpoint;
+    std::string target;
+  };
+
+  static std::vector<CompiledRoute>
+  CompileRoutes(const TunnelConfig &config,
+                const LocalEndpointParts &default_endpoint) {
+    std::vector<CompiledRoute> compiled;
+    compiled.reserve(config.routes.size());
+    for (const auto &rule : config.routes) {
+      if (rule.match_prefix.empty()) {
+        continue;
+      }
+      CompiledRoute out;
+      out.match_prefix = NormalizeIncomingPath(rule.match_prefix);
+      out.endpoint = default_endpoint;
+      if (rule.local_base_url.has_value() && !rule.local_base_url->empty()) {
+        out.endpoint = ParseLocalEndpoint(*rule.local_base_url);
+        out.has_override_endpoint = true;
+      }
+      if (rule.rewrite_prefix.has_value()) {
+        out.has_rewrite = true;
+        if (rule.rewrite_prefix->empty()) {
+          out.rewrite_prefix.clear();
+        } else {
+          out.rewrite_prefix = NormalizeIncomingPath(*rule.rewrite_prefix);
+        }
+      }
+      compiled.push_back(std::move(out));
+    }
+    return compiled;
+  }
+
+  ResolvedLocalTarget ResolveLocalTarget(const std::string &incoming) const {
+    std::string normalized = NormalizeIncomingPath(incoming);
+    const auto parts = SplitPathAndQuery(std::string_view(normalized));
+    const std::string original_path_only(parts.path);
+    std::string effective_path_only = original_path_only;
+
+    if (!tunnel_id_.empty() && !webhook_ingress_path_.empty()) {
+      const std::string prefix =
+          JoinLocalPath(webhook_ingress_path_, "/" + tunnel_id_);
+      if (StartsWith(std::string_view(effective_path_only), prefix)) {
+        const auto next_pos = prefix.size();
+        if (effective_path_only.size() == next_pos) {
+          effective_path_only = "/";
+        } else if (effective_path_only[next_pos] == '/') {
+          effective_path_only = effective_path_only.substr(next_pos);
+        }
+      }
+    }
+
+    const std::string_view path_only = std::string_view(effective_path_only);
+
+    for (const auto &route : compiled_routes_) {
+      if (!StartsWith(path_only, route.match_prefix)) {
+        continue;
+      }
+
+      std::string effective_path;
+      if (!route.has_rewrite) {
+        effective_path.assign(path_only);
+      } else {
+        std::string_view remainder = path_only.substr(route.match_prefix.size());
+        if (remainder.empty()) {
+          remainder = "/";
+        }
+        if (route.rewrite_prefix.empty()) {
+          effective_path.assign(remainder);
+        } else {
+          effective_path = JoinLocalPath(route.rewrite_prefix,
+                                         std::string(remainder));
+        }
+      }
+
+      std::string target =
+          JoinLocalPath(route.endpoint.base_path, effective_path);
+      if (!parts.query.empty()) {
+        target += std::string(parts.query);
+      }
+
+      return ResolvedLocalTarget{route.endpoint, std::move(target)};
+    }
+
+    std::string target = JoinLocalPath(local_endpoint_.base_path, original_path_only);
+    if (!parts.query.empty()) {
+      target += std::string(parts.query);
+    }
+    return ResolvedLocalTarget{local_endpoint_, std::move(target)};
+  }
+
   class LocalCall : public std::enable_shared_from_this<LocalCall> {
   public:
-    LocalCall(std::shared_ptr<Session> session, TunnelRequest request)
+    LocalCall(std::shared_ptr<Session> session, TunnelRequest request,
+              LocalEndpointParts local_endpoint, std::string local_target)
         : session_(session), request_(std::move(request)),
-          local_endpoint_(session->local_endpoint_),
+          local_endpoint_(std::move(local_endpoint)),
+          local_target_(std::move(local_target)),
           max_payload_bytes_(session->max_payload_bytes_),
           request_timeout_seconds_(
               std::max(1, session->config_.request_timeout_seconds)),
@@ -253,7 +394,7 @@ private:
       } else {
         http_request_.method(verb);
       }
-      http_request_.target(session.BuildLocalTarget(request_.path));
+      http_request_.target(local_target_);
       http_request_.body() = request_.body;
       http_request_.prepare_payload();
       const std::string host_value = local_endpoint_.host_header.empty()
@@ -353,6 +494,7 @@ private:
     std::weak_ptr<Session> session_;
     TunnelRequest request_;
     LocalEndpointParts local_endpoint_;
+    std::string local_target_;
     std::size_t max_payload_bytes_{0};
     int request_timeout_seconds_{0};
     tcp::resolver resolver_;
@@ -550,8 +692,11 @@ private:
       return;
     }
 
+    auto resolved = ResolveLocalTarget(req.path);
     auto self = shared_from_this();
-    auto call = std::make_shared<LocalCall>(self, std::move(req));
+    auto call = std::make_shared<LocalCall>(self, std::move(req),
+                                            std::move(resolved.endpoint),
+                                            std::move(resolved.target));
     local_calls_.emplace(call->Id(), call);
     ++in_flight_requests_;
     call->Start();
@@ -695,10 +840,6 @@ private:
     }
   }
 
-  std::string BuildLocalTarget(const std::string &incoming_path) const {
-    return JoinLocalPath(local_endpoint_.base_path, incoming_path);
-  }
-
   void OnClose(const beast::error_code &ec) {
     if (ec && ec != net::error::operation_aborted) {
       client_.output_.logger().warning()
@@ -732,6 +873,7 @@ private:
   TunnelConfig config_;
   EndpointParts endpoint_;
   LocalEndpointParts local_endpoint_;
+  std::vector<CompiledRoute> compiled_routes_;
   std::shared_ptr<std::unordered_set<std::string>> header_allowlist_;
   std::unordered_map<std::string, std::shared_ptr<LocalCall>> local_calls_;
   std::size_t max_payload_bytes_{0};
@@ -746,6 +888,7 @@ private:
   bool notified_close_{false};
   bool hello_received_{false};
   std::string tunnel_id_;
+  std::string webhook_ingress_path_;
 };
 
 TunnelClient::TunnelClient(cjj365::IoContextManager &io_context_manager,
@@ -760,8 +903,7 @@ void TunnelClient::Start() {
   const auto &config = config_provider_.get();
   BOOST_LOG_SEV(lg, trivial::trace)
       << "TunnelClient::Start invoked (enabled=" << std::boolalpha
-      << config.enabled << ", running=" << running_ << std::noboolalpha
-      << ")";
+      << config.enabled << ", running=" << running_ << std::noboolalpha << ")";
   if (!config.enabled) {
     output_.logger().debug()
         << "Tunnel client start skipped: feature disabled" << std::endl;
@@ -813,12 +955,11 @@ void TunnelClient::LogConfiguration(const TunnelConfig &config) {
                                           config.max_concurrent_requests,
                                           config.max_payload_bytes)
                            << std::endl;
-  BOOST_LOG_SEV(lg, trivial::trace)
-      << fmt::format(
-             "cfg ping={} timeout={} concurrent={} payload={}B verify_tls={}",
-             config.ping_interval_seconds, config.request_timeout_seconds,
-             config.max_concurrent_requests, config.max_payload_bytes,
-             config.verify_tls);
+  BOOST_LOG_SEV(lg, trivial::trace) << fmt::format(
+      "cfg ping={} timeout={} concurrent={} payload={}B verify_tls={}",
+      config.ping_interval_seconds, config.request_timeout_seconds,
+      config.max_concurrent_requests, config.max_payload_bytes,
+      config.verify_tls);
 }
 
 void TunnelClient::StartSession(TunnelConfig config) {

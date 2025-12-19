@@ -407,6 +407,7 @@ target_link_libraries(test_session_refresher PRIVATE
   GTest::gtest_main
   Boost::asio
   Boost::json
+  Boost::program_options
   Boost::system
   Boost::url
   Boost::log
