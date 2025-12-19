@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -20,6 +21,47 @@ namespace certctrl {
 namespace fs = std::filesystem;
 
 struct TunnelConfig {
+  struct RouteRule {
+    std::string match_prefix;
+    std::optional<std::string> local_base_url;
+    std::optional<std::string> rewrite_prefix;
+
+    friend RouteRule tag_invoke(
+        const boost::json::value_to_tag<RouteRule> &,
+        const boost::json::value &jv) {
+      if (!jv.is_object()) {
+        throw std::runtime_error("TunnelConfig.RouteRule is not an object");
+      }
+      const auto &obj = jv.as_object();
+      RouteRule rule{};
+      if (auto *p = obj.if_contains("match_prefix"); p && p->is_string()) {
+        rule.match_prefix = std::string(p->as_string().c_str());
+      } else {
+        throw std::runtime_error("RouteRule missing string field 'match_prefix'");
+      }
+      if (auto *p = obj.if_contains("local_base_url"); p && p->is_string()) {
+        rule.local_base_url = std::string(p->as_string().c_str());
+      }
+      if (auto *p = obj.if_contains("rewrite_prefix"); p && p->is_string()) {
+        rule.rewrite_prefix = std::string(p->as_string().c_str());
+      }
+      return rule;
+    }
+
+    friend void tag_invoke(const boost::json::value_from_tag &,
+                           boost::json::value &jv, const RouteRule &rule) {
+      boost::json::object obj;
+      obj["match_prefix"] = rule.match_prefix;
+      if (rule.local_base_url.has_value()) {
+        obj["local_base_url"] = *rule.local_base_url;
+      }
+      if (rule.rewrite_prefix.has_value()) {
+        obj["rewrite_prefix"] = *rule.rewrite_prefix;
+      }
+      jv = std::move(obj);
+    }
+  };
+
   bool enabled{false};
   std::string remote_endpoint{"wss://api.cjj365.cc/api/tunnel"};
   std::string webhook_base_url{"https://hook.cjj365.cc/hooks"};
@@ -34,6 +76,7 @@ struct TunnelConfig {
   int reconnect_jitter_ms{250};
   std::vector<std::string> header_allowlist{
       "content-type", "user-agent", "stripe-signature"};
+  std::vector<RouteRule> routes{};
 
   friend TunnelConfig tag_invoke(const boost::json::value_to_tag<TunnelConfig> &,
                                  const boost::json::value &jv) {
@@ -78,6 +121,9 @@ struct TunnelConfig {
       if (auto *p = obj->if_contains("header_allowlist"); p && p->is_array()) {
         cfg.header_allowlist = boost::json::value_to<std::vector<std::string>>(*p);
       }
+      if (auto *p = obj->if_contains("routes"); p && p->is_array()) {
+        cfg.routes = boost::json::value_to<std::vector<RouteRule>>(*p);
+      }
       return cfg;
     }
     throw std::runtime_error("TunnelConfig is not an object");
@@ -97,7 +143,8 @@ struct TunnelConfig {
                              {"reconnect_initial_delay_ms", cfg.reconnect_initial_delay_ms},
                              {"reconnect_max_delay_ms", cfg.reconnect_max_delay_ms},
                              {"reconnect_jitter_ms", cfg.reconnect_jitter_ms},
-                             {"header_allowlist", boost::json::value_from(cfg.header_allowlist)}};
+                             {"header_allowlist", boost::json::value_from(cfg.header_allowlist)},
+                             {"routes", boost::json::value_from(cfg.routes)}};
   }
 };
 

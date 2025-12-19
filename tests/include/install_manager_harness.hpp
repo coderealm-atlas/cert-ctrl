@@ -5,6 +5,8 @@
 #include <optional>
 #include <unordered_map>
 
+#include <boost/program_options.hpp>
+
 #include "customio/console_output.hpp"
 #include "data/install_config_dto.hpp"
 #include "handlers/install_actions/copy_action.hpp"
@@ -16,6 +18,7 @@
 #include "handlers/install_config_manager.hpp"
 #include "handlers/session_refresher.hpp"
 #include "install_config_manager_test_utils.hpp"
+#include "certctrl_common.hpp"
 #include "state/device_state_store.hpp"
 #include "test_config_utils.hpp"
 
@@ -45,12 +48,22 @@ struct InstallManagerDiHarness {
     config_sources_holder_ = testinfra::make_config_sources({config_dir_}, {});
     config_sources_ = config_sources_holder_.get();
 
+    // SessionRefresher depends on CliCtx; provide a minimal default for tests
+    // that don't care about CLI options.
+    certctrl::CliParams cli_params{};
+    cli_params.subcmd = "install";
+    cli_params.config_dirs = {config_dir_};
+    cli_ctx_storage_ = std::make_unique<certctrl::CliCtx>(
+      boost::program_options::variables_map{}, std::vector<std::string>{},
+      std::vector<std::string>{}, std::move(cli_params));
+
     auto injector = di::make_injector(
-        testinfra::build_base_injector(*config_sources_),
-        di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>.to(
-            fetcher),
-        di::bind<certctrl::install_actions::IResourceFetcher>.to(
-            resource_fetcher));
+      testinfra::build_base_injector(*config_sources_),
+      di::bind<certctrl::CliCtx>().to(*cli_ctx_storage_),
+      di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>.to(
+        fetcher),
+      di::bind<certctrl::install_actions::IResourceFetcher>.to(
+        resource_fetcher));
 
     auto inj_holder = std::make_shared<decltype(injector)>(std::move(injector));
     injector_holder_ = inj_holder;
@@ -162,6 +175,7 @@ struct InstallManagerDiHarness {
   void disable_runtime_cleanup() { cleanup_runtime_ = false; }
 
 private:
+  std::unique_ptr<certctrl::CliCtx> cli_ctx_storage_;
   certctrl::install_actions::IResourceMaterializer::Factory
   make_resource_factory() {
     return certctrl::install_actions::IResourceMaterializer::Factory([this]() {

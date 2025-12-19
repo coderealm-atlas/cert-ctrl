@@ -15,5 +15,6 @@
         "content-type",
         "user-agent",
         "stripe-signature"
-    ]
+    ],
+    "routes": []
 }

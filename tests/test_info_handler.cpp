@@ -108,6 +108,20 @@ public:
     return std::nullopt;
   }
   bool available() const override { return true; }
+
+  std::pair<bool, std::optional<std::string>>
+  try_acquire_refresh_lock(const std::string &owner,
+                           std::chrono::milliseconds ttl) override {
+    (void)owner;
+    (void)ttl;
+    return {true, std::nullopt};
+  }
+
+  std::optional<std::string>
+  release_refresh_lock(const std::string &owner) override {
+    (void)owner;
+    return std::nullopt;
+  }
 };
 
 TEST(InfoHandlerTokensTest, UsesStoreTokensWhenPresent) {
