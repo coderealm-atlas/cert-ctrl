@@ -44,18 +44,27 @@ if(MSVC)
     # Use static runtime for standalone executable (matches x64-windows triplet)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
-    foreach(flag_var CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_DEBUG
-                     CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_RELWITHDEBINFO)
-        if(DEFINED ${flag_var})
-            string(REPLACE "/Zi" "/Z7" ${flag_var} "${${flag_var}}")
-        endif()
-    endforeach()
 endif()
 
 project(bbserver LANGUAGES CXX)
 
 if(MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
+
+    # vcpkg's Windows toolchain favors /Z7, while CMake defaults may include /Zi.
+    # Ensure we don't pass both and trigger cl.exe warning D9025.
+    foreach(flag_var CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_DEBUG
+                     CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+        if(DEFINED ${flag_var})
+            set(_certctrl_old_flags "${${flag_var}}")
+            string(REPLACE "/Zi" "/Z7" _certctrl_new_flags "${_certctrl_old_flags}")
+            if(NOT _certctrl_new_flags STREQUAL _certctrl_old_flags)
+                set(${flag_var} "${_certctrl_new_flags}" CACHE STRING "" FORCE)
+            endif()
+        endif()
+    endforeach()
+    unset(_certctrl_old_flags)
+    unset(_certctrl_new_flags)
 endif()
 
 include(GNUInstallDirs)
