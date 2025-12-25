@@ -33,6 +33,7 @@
 #include "handlers/signal_handlers/ca_unassigned_handler.hpp"
 #include "handlers/signal_handlers/cert_updated_handler.hpp"
 #include "handlers/signal_handlers/cert_unassigned_handler.hpp"
+#include "handlers/signal_handlers/config_updated_handler.hpp"
 #include "handlers/signal_handlers/install_updated_handler.hpp"
 #include "http_client_manager.hpp"
 #include "http_client_monad.hpp"
@@ -158,6 +159,10 @@ public:
     signal_dispatcher_ =
       std::make_unique<SignalDispatcher>(runtime_dir, &state_store_);
 
+    signal_dispatcher_->register_handler(
+        std::make_shared<signal_handlers::ConfigUpdatedHandler>(
+        certctrl_config_provider_, output_hub_, nullptr));
+
     if (!install_config_manager_) {
       BOOST_LOG_SEV(lg, trivial::warning)
           << "InstallConfigManager dependency missing; install/update signals "
@@ -205,6 +210,40 @@ public:
     // Continuous loop
     return poll_loop(0);
   }
+
+  // Report agent version to the server via HTTP notify endpoint.
+  // This is the same mechanism used by the polling workflow, but exposed so
+  // WebSocket-first deployments can still report versions without enabling
+  // updates polling.
+  monad::IO<void> report_agent_version_once(bool allow_refresh_retry = true) {
+    using namespace monad;
+
+    if (notify_sent_this_run_) {
+      return IO<void>::pure();
+    }
+
+    auto access_token_opt = load_access_token_from_state();
+    if ((!access_token_opt || access_token_opt->empty()) && allow_refresh_retry) {
+      output_hub_.logger().trace()
+          << "Access token missing; attempting refresh before device notify."
+          << std::endl;
+      auto self = shared_from_this();
+      return refresh_access_token("device notify bootstrap").then([self]() {
+        return self->report_agent_version_once(false);
+      });
+    }
+
+    if (!access_token_opt || access_token_opt->empty()) {
+      output_hub_.logger().warning()
+          << "Skipping agent version notify: no cached session tokens were found. "
+             "Run 'cert-ctrl login' to authenticate this device."
+          << std::endl;
+      return IO<void>::pure();
+    }
+
+    return maybe_send_startup_notification(*access_token_opt);
+  }
+
   monad::IO<void> poll_loop(int iter) {
     // perform one poll, swallow/log error, then schedule next (async delay if
     // needed)
@@ -749,9 +788,19 @@ private:
         .then([self](auto ex) -> monad::IO<void> {
           if (!ex->is_2xx()) {
             int status = ex->response ? ex->response->result_int() : 0;
-            self->output_hub_.logger().warning()
-                << "Device notify endpoint returned HTTP " << status
-                << "; will retry next iteration." << std::endl;
+            if (status == 401 || status == 403) {
+              self->output_hub_.logger().warning()
+                  << "Device notify endpoint authorization failed via "
+                  << self->notify_endpoint_ << " (HTTP " << status
+                  << "). Token may be expired or the device is not onboarded. "
+                     "Re-run the device onboarding/registration flow to refresh credentials. "
+                     "Will retry next iteration." << std::endl;
+            } else {
+              self->output_hub_.logger().warning()
+                  << "Device notify endpoint returned HTTP " << status
+                  << " via " << self->notify_endpoint_
+                  << "; will retry next iteration." << std::endl;
+            }
             return monad::IO<void>::pure();
           }
           self->notify_sent_this_run_ = true;

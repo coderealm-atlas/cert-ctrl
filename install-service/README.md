@@ -106,7 +106,7 @@ curl -fsSL "https://install.lets-script.com/install.sh?no-sandbox=1" | sudo bash
 sudo bash install.sh --no-sandbox
 ```
 
-The installer keeps `ProtectSystem=strict` by default. Supplying `writable-dirs` (via query
+The installer keeps `ProtectSystem=yes` by default. Supplying `writable-dirs` (via query
 string or `--writable-dirs` CLI flag) appends those absolute paths to the systemd unit's
 `ReadWritePaths=` list so cert-ctrl can copy certificates directly into application-specific
 locations while leaving the rest of the filesystem read-only.

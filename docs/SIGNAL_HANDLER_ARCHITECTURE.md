@@ -2,7 +2,9 @@
 
 ## Overview
 
-The `cert-ctrl` agent processes device update signals emitted by the polling endpoint through a synchronous dispatcher/handler pipeline. This document reflects the implementation on `main` (October 2025) and aligns with `docs/CLIENT_AGENT_POLLING.md`.
+The `cert-ctrl` agent processes device update signals through a synchronous dispatcher/handler pipeline. Signals may be delivered either via the legacy polling endpoint or via the WebSocket `updates.signal` stream.
+
+This document reflects the implementation on `main` (October 2025). Operator-facing runtime behavior is described in `docs/AGENT_RUNTIME_BEHAVIOR.md`.
 
 Goals:
 - Keep the updates poller straightforward and single-threaded.
@@ -27,8 +29,10 @@ include/handlers/
 
 ## Runtime Flow
 
-1. `poll_once()` issues `GET {base_url}/apiv1/devices/self/updates` with the cached access token.
-2. A `200 OK` response is parsed into `DeviceUpdatesResponse`; the cursor is written to `state/last_cursor.txt` and each signal is forwarded to the dispatcher.
+1. Updates arrive either by:
+    - polling: `poll_once()` issues `GET {base_url}/apiv1/devices/self/updates`, or
+    - WebSocket: the client receives `updates.signal` and extracts its payload.
+2. The payload signals are parsed and forwarded to the dispatcher. In polling mode the cursor is written to `state/last_cursor.txt`.
 3. `SignalDispatcher::dispatch()` generates a deduplication ID (`type:ts_ms`), checks it against the in-memory set, and skips duplicates. Unknown types are logged and ignored.
 4. When a handler returns successfully, the dispatcher records the ID in `state/processed_signals.json` (keeping the newest 1000 entries within a seven-day window). Failures are logged but not persisted, enabling retry if the cursor rewinds.
 
@@ -47,7 +51,7 @@ Because deduplication relies on the backend timestamp, identical `type`/`ts_ms` 
 - Calls `InstallConfigManager::ensure_config_version(expected_version, expected_hash)` which fetches `/apiv1/devices/self/install-config` when the version/hash does not match the cached copy.
 - Persists the payload to `state/install_config.json` and updates `state/install_version.txt` atomically.
 - When `auto_apply_config` is `true`, immediately invokes `apply_copy_actions()` to execute all copy/import directives and materialise resources under `runtime_dir/resources/{certs|cas}/<id>/current/`.
-- When `auto_apply_config` is `false` (default), logs that the new plan has been staged and returns without executing actions. Operators promote staged configs via `cert-ctrl install-config apply`.
+- When `auto_apply_config` is `false`, logs that the new plan has been staged and returns without executing actions. Operators promote staged configs via `cert-ctrl install-config apply`.
 
 ### CertUpdatedHandler
 
@@ -81,10 +85,6 @@ Removing these files clears local state; the next poll will refetch and rebuild 
 
 - The dispatcher always stages the latest install plan, overwriting any previous version.
 - With `auto_apply_config=false`, the handler logs that the plan is ready for manual promotion. Operators can:
-## Manual Approval Workflow
-
-- The dispatcher always stages the latest install plan, overwriting any previous version.
-- With `auto_apply_config=false`, the handler logs that the plan is ready for manual promotion. Operators can:
     - Run `cert-ctrl install-config pull` to refresh the staged plan on demand (without waiting for another `install.updated` signal).
     - Run `cert-ctrl install-config apply` to load the staged JSON, execute copy/import actions, and report results per target.
     - Use `cert-ctrl install-config show [--raw]` to inspect the cached plan before applying and `cert-ctrl install-config clear-cache` to reset the local state if corruption is suspected.
@@ -112,4 +112,4 @@ Current automated coverage is minimal. Recommended additions:
 
 ## Documentation Alignment
 
-Whenever handler behaviour changes (new signals, resource paths, manual promotion semantics), update this note alongside `docs/CLIENT_AGENT_POLLING.md` so operator-facing instructions remain accurate.
+Whenever handler behaviour changes (new signals, resource paths, manual promotion semantics), update this note alongside `docs/AGENT_RUNTIME_BEHAVIOR.md` so operator-facing instructions remain accurate.

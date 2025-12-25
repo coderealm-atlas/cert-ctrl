@@ -47,6 +47,13 @@ public:
   virtual std::optional<std::string>
   save_updates_cursor(const std::optional<std::string> &cursor) = 0;
 
+  // Websocket resume token for server-push updates (monotonic delivery cursor).
+  // Separate from the HTTP polling cursor to allow safe fallback between
+  // polling and websocket without corrupting either cursor.
+  virtual std::optional<std::string> get_websocket_resume_token() const = 0;
+  virtual std::optional<std::string> save_websocket_resume_token(
+      const std::optional<std::string> &token) = 0;
+
   virtual std::optional<std::string> get_processed_signals_json() const = 0;
   virtual std::optional<std::string> save_processed_signals_json(
       const std::optional<std::string> &serialized_json) = 0;
@@ -99,6 +106,9 @@ public:
   std::optional<std::string> get_updates_cursor() const override;
   std::optional<std::string>
   save_updates_cursor(const std::optional<std::string> &cursor) override;
+  std::optional<std::string> get_websocket_resume_token() const override;
+  std::optional<std::string> save_websocket_resume_token(
+      const std::optional<std::string> &token) override;
   std::optional<std::string> get_processed_signals_json() const override;
   std::optional<std::string> save_processed_signals_json(
       const std::optional<std::string> &serialized_json) override;

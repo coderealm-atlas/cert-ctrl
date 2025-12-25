@@ -91,6 +91,10 @@ public:
     return monad::MyVoidResult::Ok();
   }
 
+  monad::MyVoidResult save_replace(const json::object &) override {
+    return monad::MyVoidResult::Ok();
+  }
+
 private:
   certctrl::CertctrlConfig config_{};
 };

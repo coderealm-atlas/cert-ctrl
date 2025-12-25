@@ -111,6 +111,16 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
     return std::nullopt;
   }
 
+  std::optional<std::string> get_websocket_resume_token() const override {
+    return websocket_resume_token_;
+  }
+
+  std::optional<std::string> save_websocket_resume_token(
+      const std::optional<std::string> &resume_token) override {
+    websocket_resume_token_ = resume_token;
+    return std::nullopt;
+  }
+
   std::optional<std::string> get_processed_signals_json() const override {
     return processed_signals_;
   }
@@ -173,6 +183,7 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
   std::optional<std::string> install_config_json_;
   std::optional<std::int64_t> install_config_version_;
   std::optional<std::string> updates_cursor_;
+  std::optional<std::string> websocket_resume_token_;
   std::optional<std::string> processed_signals_;
   std::unordered_map<std::int64_t, std::optional<std::string>>
       imported_ca_names_;

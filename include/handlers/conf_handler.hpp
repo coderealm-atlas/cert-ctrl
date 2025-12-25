@@ -15,7 +15,7 @@
 
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
-#include "conf/tunnel_config.hpp"
+#include "conf/websocket_config.hpp"
 #include "handlers/i_handler.hpp"
 #include "io_context_manager.hpp"
 #include "io_monad.hpp"
@@ -32,7 +32,7 @@ class ConfHandler : public certctrl::IHandler,
                     public std::enable_shared_from_this<ConfHandler> {
   asio::io_context &ioc_;
   certctrl::ICertctrlConfigProvider &certctrl_config_provider_;
-  certctrl::ITunnelConfigProvider &tunnel_config_provider_;
+  certctrl::IWebsocketConfigProvider &websocket_config_provider_;
   customio::ConsoleOutput &output_hub_;
   CliCtx &cli_ctx_;
   src::severity_logger<trivial::severity_level> lg;
@@ -43,12 +43,12 @@ class ConfHandler : public certctrl::IHandler,
 public:
   ConfHandler(cjj365::IoContextManager &io_context_manager,
               certctrl::ICertctrlConfigProvider &certctrl_config_provider,
-        certctrl::ITunnelConfigProvider &tunnel_config_provider,
+        certctrl::IWebsocketConfigProvider &websocket_config_provider,
               CliCtx &cli_ctx, //
               customio::ConsoleOutput &output_hub)
       : ioc_(io_context_manager.ioc()),
       certctrl_config_provider_(certctrl_config_provider),
-      tunnel_config_provider_(tunnel_config_provider),
+      websocket_config_provider_(websocket_config_provider),
         output_hub_(output_hub), cli_ctx_(cli_ctx),
         opt_desc_("misc subcommand options") {
     boost::program_options::options_description create_opts("Conf Options");

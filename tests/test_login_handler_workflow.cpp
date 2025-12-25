@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -92,7 +93,7 @@ public:
 
   TestDeviceServer(cjj365::IIoContextManager &io_manager)
       : acceptor_(io_manager.ioc()),
-        access_token_(issue_access_token("12345", device_code_)),
+        access_token_(issue_access_token("12345", 4242)),
         refresh_token_(issue_refresh_token("12345")) {
     using tcp = asio::ip::tcp;
     tcp::endpoint ep(asio::ip::make_address("127.0.0.1"), 0);
@@ -177,11 +178,14 @@ public:
 
 private:
   static std::string issue_access_token(const std::string &sub,
-                                        const std::string &device_id) {
+                                        std::int64_t device_id) {
     return jwt::create()
         .set_type("JWT")
         .set_payload_claim("sub", jwt::claim(sub))
-        .set_payload_claim("device_id", jwt::claim(device_id))
+      .set_payload_claim(
+        "device_id",
+        jwt::claim(jwt::traits::kazuho_picojson::value_type(
+          static_cast<double>(device_id))))
         .sign(jwt::algorithm::hs256{"secret"});
   }
 
@@ -373,12 +377,12 @@ private:
 
   unsigned short port_{0};
   std::string device_code_{"device-code-xyz"};
-  std::string access_token_;
+    std::string access_token_;
   std::string refresh_token_;
   std::string registration_code_{"mock-registration-code"};
   std::string device_numeric_id_{"4242"};
   std::string refreshed_access_token_{
-      issue_access_token("12345", device_code_ + "-refresh")};
+      issue_access_token("12345", 4242)};
   std::string refreshed_refresh_token_{issue_refresh_token("12345-refresh")};
 };
 

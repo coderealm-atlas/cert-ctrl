@@ -6,8 +6,8 @@ namespace certctrl {
 using VoidPureIO = monad::IO<void>;
 
 VoidPureIO ConfHandler::start() {
-  auto normalize_tunnel_key = [](const std::string &key) {
-    return key == "tunnel_enabled" || key == "tunnel.enabled";
+  auto normalize_websocket_key = [](const std::string &key) {
+    return key == "websocket_enabled" || key == "websocket.enabled";
   };
 
   if (auto setv_r = cli_ctx_.get_set_kv(); setv_r.is_ok()) {
@@ -25,18 +25,18 @@ VoidPureIO ConfHandler::start() {
       certctrl_config_provider_.get().verbose = value;
       certctrl_config_provider_.save({{"verbose", value}});
       output_hub_.logger().info() << "Set verbose to " << value << std::endl;
-    } else if (normalize_tunnel_key(key)) {
+    } else if (normalize_websocket_key(key)) {
       bool bool_value = parse_bool(value);
-      if (bool_value != tunnel_config_provider_.get().enabled) {
-        tunnel_config_provider_.get().enabled = bool_value;
-        tunnel_config_provider_.save({{"enabled", bool_value}});
+      if (bool_value != websocket_config_provider_.get().enabled) {
+        websocket_config_provider_.get().enabled = bool_value;
+        websocket_config_provider_.save({{"enabled", bool_value}});
       }
       output_hub_.logger().info()
-          << "Set tunnel.enabled to " << (bool_value ? "true" : "false")
+          << "Set websocket.enabled to " << (bool_value ? "true" : "false")
           << std::endl;
     } else {
       std::string msg = fmt::format(
-          "Unknown configuration key: {}, supported keys are: auto_apply_config, verbose, tunnel.enabled",
+          "Unknown configuration key: {}, supported keys are: auto_apply_config, verbose, websocket.enabled",
           key);
       return show_usage(msg);
     }
@@ -52,14 +52,14 @@ VoidPureIO ConfHandler::start() {
       output_hub_.logger().info()
           << "verbose = " << certctrl_config_provider_.get().verbose
           << std::endl;
-    } else if (normalize_tunnel_key(key)) {
+    } else if (normalize_websocket_key(key)) {
       output_hub_.logger().info()
-          << "tunnel.enabled = "
-          << (tunnel_config_provider_.get().enabled ? "true" : "false")
+          << "websocket.enabled = "
+          << (websocket_config_provider_.get().enabled ? "true" : "false")
           << std::endl;
     } else {
       std::string msg = fmt::format(
-          "Unknown configuration key: {}, supported keys are: auto_apply_config, verbose, tunnel.enabled",
+          "Unknown configuration key: {}, supported keys are: auto_apply_config, verbose, websocket.enabled",
           key);
       return show_usage(msg);
     }

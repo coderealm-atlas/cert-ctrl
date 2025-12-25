@@ -70,6 +70,10 @@ struct TestConfigProvider : certctrl::ICertctrlConfigProvider {
     return monad::MyVoidResult::Ok();
   }
 
+  monad::MyVoidResult save_replace(const boost::json::object &) override {
+    return monad::MyVoidResult::Ok();
+  }
+
   certctrl::CertctrlConfig config;
 };
 

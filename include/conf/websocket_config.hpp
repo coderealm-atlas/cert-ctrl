@@ -20,17 +20,16 @@
 namespace certctrl {
 namespace fs = std::filesystem;
 
-struct TunnelConfig {
+struct WebsocketConfig {
   struct RouteRule {
     std::string match_prefix;
     std::optional<std::string> local_base_url;
     std::optional<std::string> rewrite_prefix;
 
-    friend RouteRule tag_invoke(
-        const boost::json::value_to_tag<RouteRule> &,
-        const boost::json::value &jv) {
+    friend RouteRule tag_invoke(const boost::json::value_to_tag<RouteRule> &,
+                                const boost::json::value &jv) {
       if (!jv.is_object()) {
-        throw std::runtime_error("TunnelConfig.RouteRule is not an object");
+        throw std::runtime_error("WebsocketConfig.RouteRule is not an object");
       }
       const auto &obj = jv.as_object();
       RouteRule rule{};
@@ -62,10 +61,44 @@ struct TunnelConfig {
     }
   };
 
-  bool enabled{false};
-  std::string remote_endpoint{"wss://api.cjj365.cc/api/tunnel"};
-  std::string webhook_base_url{"https://hook.cjj365.cc/hooks"};
-  std::string local_base_url{"http://127.0.0.1:9000"};
+  struct Tunnel {
+    std::string local_base_url{"http://127.0.0.1:9000"};
+    std::vector<std::string> header_allowlist{
+        "content-type", "user-agent", "stripe-signature"};
+    std::vector<RouteRule> routes{};
+
+    friend Tunnel tag_invoke(const boost::json::value_to_tag<Tunnel> &,
+                             const boost::json::value &jv) {
+      if (!jv.is_object()) {
+        throw std::runtime_error("WebsocketConfig.Tunnel is not an object");
+      }
+      const auto &obj = jv.as_object();
+      Tunnel tunnel{};
+      if (auto *p = obj.if_contains("local_base_url"); p && p->is_string()) {
+        tunnel.local_base_url = std::string(p->as_string().c_str());
+      }
+      if (auto *p = obj.if_contains("header_allowlist"); p && p->is_array()) {
+        tunnel.header_allowlist =
+            boost::json::value_to<std::vector<std::string>>(*p);
+      }
+      if (auto *p = obj.if_contains("routes"); p && p->is_array()) {
+        tunnel.routes = boost::json::value_to<std::vector<RouteRule>>(*p);
+      }
+      return tunnel;
+    }
+
+    friend void tag_invoke(const boost::json::value_from_tag &,
+                           boost::json::value &jv, const Tunnel &tunnel) {
+      jv = boost::json::object{
+          {"local_base_url", tunnel.local_base_url},
+          {"header_allowlist", boost::json::value_from(tunnel.header_allowlist)},
+          {"routes", boost::json::value_from(tunnel.routes)}};
+    }
+  };
+
+  bool enabled{true};
+  std::string remote_endpoint{"wss://api.cjj365.cc/api/websocket"};
+  std::string webhook_base_url{"https://api.cjj365.cc/hooks"};
   bool verify_tls{true};
   int request_timeout_seconds{45};
   int ping_interval_seconds{20};
@@ -74,13 +107,12 @@ struct TunnelConfig {
   int reconnect_initial_delay_ms{1000};
   int reconnect_max_delay_ms{30000};
   int reconnect_jitter_ms{250};
-  std::vector<std::string> header_allowlist{
-      "content-type", "user-agent", "stripe-signature"};
-  std::vector<RouteRule> routes{};
+  Tunnel tunnel{};
 
-  friend TunnelConfig tag_invoke(const boost::json::value_to_tag<TunnelConfig> &,
-                                 const boost::json::value &jv) {
-    TunnelConfig cfg{};
+  friend WebsocketConfig
+  tag_invoke(const boost::json::value_to_tag<WebsocketConfig> &,
+             const boost::json::value &jv) {
+    WebsocketConfig cfg{};
     if (auto *obj = jv.if_object()) {
       if (auto *p = obj->if_contains("enabled")) {
         cfg.enabled = p->as_bool();
@@ -90,9 +122,6 @@ struct TunnelConfig {
       }
       if (auto *p = obj->if_contains("webhook_base_url"); p && p->is_string()) {
         cfg.webhook_base_url = std::string(p->as_string().c_str());
-      }
-      if (auto *p = obj->if_contains("local_base_url"); p && p->is_string()) {
-        cfg.local_base_url = std::string(p->as_string().c_str());
       }
       if (auto *p = obj->if_contains("verify_tls")) {
         cfg.verify_tls = p->as_bool();
@@ -118,23 +147,34 @@ struct TunnelConfig {
       if (auto *p = obj->if_contains("reconnect_jitter_ms")) {
         cfg.reconnect_jitter_ms = p->to_number<int>();
       }
-      if (auto *p = obj->if_contains("header_allowlist"); p && p->is_array()) {
-        cfg.header_allowlist = boost::json::value_to<std::vector<std::string>>(*p);
-      }
-      if (auto *p = obj->if_contains("routes"); p && p->is_array()) {
-        cfg.routes = boost::json::value_to<std::vector<RouteRule>>(*p);
+      if (auto *p = obj->if_contains("tunnel"); p && p->is_object()) {
+        cfg.tunnel = boost::json::value_to<Tunnel>(*p);
+      } else {
+        // Legacy top-level fields fallback
+        Tunnel tunnel{};
+        if (auto *p = obj->if_contains("local_base_url");
+            p && p->is_string()) {
+          tunnel.local_base_url = std::string(p->as_string().c_str());
+        }
+        if (auto *p = obj->if_contains("header_allowlist"); p && p->is_array()) {
+          tunnel.header_allowlist =
+              boost::json::value_to<std::vector<std::string>>(*p);
+        }
+        if (auto *p = obj->if_contains("routes"); p && p->is_array()) {
+          tunnel.routes = boost::json::value_to<std::vector<RouteRule>>(*p);
+        }
+        cfg.tunnel = std::move(tunnel);
       }
       return cfg;
     }
-    throw std::runtime_error("TunnelConfig is not an object");
+    throw std::runtime_error("WebsocketConfig is not an object");
   }
 
-  friend void tag_invoke(const boost::json::value_from_tag &, boost::json::value &jv,
-                         const TunnelConfig &cfg) {
+  friend void tag_invoke(const boost::json::value_from_tag &,
+                         boost::json::value &jv, const WebsocketConfig &cfg) {
     jv = boost::json::object{{"enabled", cfg.enabled},
                              {"remote_endpoint", cfg.remote_endpoint},
                              {"webhook_base_url", cfg.webhook_base_url},
-                             {"local_base_url", cfg.local_base_url},
                              {"verify_tls", cfg.verify_tls},
                              {"request_timeout_seconds", cfg.request_timeout_seconds},
                              {"ping_interval_seconds", cfg.ping_interval_seconds},
@@ -143,43 +183,46 @@ struct TunnelConfig {
                              {"reconnect_initial_delay_ms", cfg.reconnect_initial_delay_ms},
                              {"reconnect_max_delay_ms", cfg.reconnect_max_delay_ms},
                              {"reconnect_jitter_ms", cfg.reconnect_jitter_ms},
-                             {"header_allowlist", boost::json::value_from(cfg.header_allowlist)},
-                             {"routes", boost::json::value_from(cfg.routes)}};
+                             {"tunnel", boost::json::value_from(cfg.tunnel)}};
   }
 };
 
-class ITunnelConfigProvider {
+class IWebsocketConfigProvider {
  public:
-  virtual ~ITunnelConfigProvider() = default;
-  virtual const TunnelConfig &get() const = 0;
-  virtual TunnelConfig &get() = 0;
+  virtual ~IWebsocketConfigProvider() = default;
+  virtual const WebsocketConfig &get() const = 0;
+  virtual WebsocketConfig &get() = 0;
   virtual monad::MyVoidResult save(const boost::json::object &content) = 0;
+
+  // Persist a complete override snapshot (replace semantics).
+  // Callers should prefer save() for partial patches.
+  virtual monad::MyVoidResult save_replace(const boost::json::object &content) = 0;
 };
 
-class TunnelConfigProviderFile : public ITunnelConfigProvider {
+class WebsocketConfigProviderFile : public IWebsocketConfigProvider {
  public:
-  TunnelConfigProviderFile(cjj365::AppProperties &app_properties,
-                           cjj365::ConfigSources &config_sources,
-                           customio::IOutput &output)
+  WebsocketConfigProviderFile(cjj365::AppProperties &app_properties,
+                              cjj365::ConfigSources &config_sources,
+                              customio::IOutput &output)
       : config_sources_(config_sources), output_(output) {
-    auto result = config_sources_.json_content("tunnel_config");
+    auto result = config_sources_.json_content("websocket_config");
     if (result.is_err()) {
-      output_.info() << "tunnel_config.json not found; using defaults"
+      output_.info() << "websocket_config.json not found; using defaults"
                      << std::endl;
-      config_ = TunnelConfig{};
+      config_ = WebsocketConfig{};
       return;
     }
     auto jv = result.value();
     jsonutil::substitue_envs(jv, config_sources_.cli_overrides(),
                              app_properties.properties);
-    config_ = boost::json::value_to<TunnelConfig>(jv);
+    config_ = boost::json::value_to<WebsocketConfig>(jv);
   }
 
-  const TunnelConfig &get() const override { return config_; }
-  TunnelConfig &get() override { return config_; }
+  const WebsocketConfig &get() const override { return config_; }
+  WebsocketConfig &get() override { return config_; }
 
   monad::MyVoidResult save(const boost::json::object &content) override {
-    auto file_path = config_sources_.paths_.back() / "tunnel_config.override.json";
+    auto file_path = config_sources_.paths_.back() / "websocket_config.override.json";
     boost::json::value merged = content;
     if (fs::exists(file_path)) {
       std::ifstream ifs(file_path);
@@ -212,6 +255,18 @@ class TunnelConfigProviderFile : public ITunnelConfigProvider {
     return monad::MyVoidResult::Ok();
   }
 
+  monad::MyVoidResult save_replace(const boost::json::object &content) override {
+    auto file_path =
+        config_sources_.paths_.back() / "websocket_config.override.json";
+    std::ofstream ofs(file_path);
+    if (!ofs) {
+      return make_io_error(file_path, "open for writing");
+    }
+    ofs << boost::json::serialize(content);
+    ofs.close();
+    return monad::MyVoidResult::Ok();
+  }
+
  private:
   static monad::MyVoidResult make_io_error(const fs::path &file, const char *action) {
     monad::Error err{};
@@ -228,7 +283,7 @@ class TunnelConfigProviderFile : public ITunnelConfigProvider {
     return monad::MyVoidResult::Err(std::move(err));
   }
 
-  TunnelConfig config_{};
+  WebsocketConfig config_{};
   cjj365::ConfigSources &config_sources_;
   customio::IOutput &output_;
 };

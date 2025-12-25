@@ -121,7 +121,7 @@ Currently, CI does not upload built binaries as release assets. To publish downl
 
 ## Notable changes (unreleased)
 
-- Install-config execution semantics: the agent now executes `cmd` (shell) or `cmd_argv` (argv) present on install plan items after resources are materialised. Command stdout/stderr are captured and emitted to the agent logs. Operators should keep `auto_apply_config=false` (recommended) and use `cert-ctrl install-config show --raw` to inspect staged plans before running `cert-ctrl install-config apply`. See `docs/DEVICE_INSTALL_CONFIGS_DESIGN.md` and `docs/CLIENT_AGENT_POLLING.md` for examples and guidance.
+- Install-config execution semantics: the agent now executes `cmd` (shell) or `cmd_argv` (argv) present on install plan items after resources are materialised. Command stdout/stderr are captured and emitted to the agent logs. For safer rollouts, set `auto_apply_config=false` and use `cert-ctrl install-config show --raw` to inspect staged plans before running `cert-ctrl install-config apply`. See `docs/DEVICE_INSTALL_CONFIGS_DESIGN.md` and `docs/CLIENT_AGENT_POLLING.md` for examples and guidance.
 
 ---
 

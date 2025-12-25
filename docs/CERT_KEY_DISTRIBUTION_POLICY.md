@@ -68,7 +68,7 @@ In all modes: no eager wrap on GET; endpoints return only what is already stored
 
 ## Device Polling Signal
 
-- `cert.updated` is emitted whenever a device’s certificate payload changes (including when `cert_record_devices.enc_data_key` transitions from sentinel to a real wrap). See `ai_docs/DEVICE_POLLING_UPDATES.md`.
+- `cert.updated` is emitted whenever a device’s certificate payload changes (including when `cert_record_devices.enc_data_key` transitions from sentinel to a real wrap). See `docs/DEVICE_POLLING_UPDATES.md` (legacy polling contract) and `docs/WEBSOCKET_POLLING_MIGRATION_COMBINED.md` (WebSocket delivery).
 
 ## Security Guardrails for Server-Decrypted Export
 
