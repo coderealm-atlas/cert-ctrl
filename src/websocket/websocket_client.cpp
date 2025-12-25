@@ -12,6 +12,8 @@
 #include "handlers/signal_handlers/cert_unassigned_handler.hpp"
 #include "handlers/signal_handlers/config_updated_handler.hpp"
 #include "handlers/signal_handlers/install_updated_handler.hpp"
+#include "handlers/signal_handlers/acme_http01_challenge_handler.hpp"
+#include "handlers/signal_handlers/acme_http01_stop_handler.hpp"
 
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -1190,6 +1192,15 @@ WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
   signal_dispatcher_->register_handler(
       std::make_shared<certctrl::signal_handlers::ConfigUpdatedHandler>(
           certctrl_config_provider_, output_, &config_provider_, on_ws_config_updated));
+
+    auto acme_http01_mgr =
+      std::make_shared<certctrl::acme::AcmeHttp01Manager>(output_);
+    signal_dispatcher_->register_handler(
+      std::make_shared<certctrl::signal_handlers::AcmeHttp01ChallengeHandler>(
+        acme_http01_mgr));
+    signal_dispatcher_->register_handler(
+      std::make_shared<certctrl::signal_handlers::AcmeHttp01StopHandler>(
+        acme_http01_mgr));
 
   if (!install_config_manager_) {
   output_.logger().warning()
