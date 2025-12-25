@@ -200,6 +200,30 @@ target_link_libraries(test_acme_http01_server PRIVATE
 
 gtest_discover_tests(test_acme_http01_server DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
+add_executable(test_acme_tlsalpn01_server
+  test_acme_tlsalpn01_server.cpp
+)
+target_compile_features(test_acme_tlsalpn01_server PRIVATE cxx_std_17)
+target_include_directories(test_acme_tlsalpn01_server PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+)
+target_link_libraries(test_acme_tlsalpn01_server PRIVATE
+  GTest::gtest_main
+  Boost::asio
+  Boost::json
+  Boost::system
+  Boost::thread
+  Boost::chrono
+  Boost::date_time
+  Boost::log
+  Boost::log_setup
+  OpenSSL::SSL
+  OpenSSL::Crypto
+)
+
+gtest_discover_tests(test_acme_tlsalpn01_server DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+
 add_executable(test_device_fingerprint
   test_device_fingerprint.cpp
   ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp

@@ -209,62 +209,65 @@ unsigned short PickFreePort() {
   return acceptor.local_endpoint().port();
 }
 
+static const char kTestServerCertPem[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIDCTCCAfGgAwIBAgIUO6Y9upZo8346IaHlxA1DY2zBZncwDQYJKoZIhvcNAQEL\n"
+    "BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI1MTIxMDAwMjk1MloXDTI2MTIx\n"
+    "MDAwMjk1MlowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\n"
+    "AAOCAQ8AMIIBCgKCAQEAnYGuglbkiT697EA61trcYoSxNM0X7Wjt0i7vgtpDwoWy\n"
+    "vawvwetrBM68me1z4Wm/GJOm7NjtrjmvDww44bH5ZMXzo/NIV2PoWvDd9EOJAZxf\n"
+    "NrSkoQS6DU8iLzWdyLjWCpi35toJKz1PDSFL/X5u5k+5HLMKKC0nbcuepIg/MmqS\n"
+    "iNaCZ1nhpSo/YM91JLMlhpFZoT3AMExGUS6KwmRbeJuDwgiSkKYBK4r5ioC9gDOD\n"
+    "OxpXayOkp00Yw2pHjl6F3i2Edf8BaRmoECodJhvQ4A071sT+Lz++RFvIr7813N8b\n"
+    "1WoDjih4630YzNxPn/m73+XkEc610vEy67i1n85huwIDAQABo1MwUTAdBgNVHQ4E\n"
+    "FgQUgxvvqfaUCuS/E1QfYUCqer1W++EwHwYDVR0jBBgwFoAUgxvvqfaUCuS/E1Qf\n"
+    "YUCqer1W++EwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAA9lZ\n"
+    "EGFyYwYZpZnpy+d9OCO4uvZQkG4CLjcq72mNJAxpAdDuv/6mPbzGiaoA1ZEeMYBJ\n"
+    "Pz8bXfd8NibioJh6RU+qjE/MVG6ZbS8hIpW1OyvjToXgzFCSGnn9Kx2j1HkBcgvM\n"
+    "R+MHnSzgFdvRe6Mmugdnwk8vn6aTXgBYaoXP8j/8AxuMJnN53NDGeylxjQPMaV4v\n"
+    "+znO817Ekuq/FR+IATtRttKC20BkjdIDR/l7JGxEQ1QArBvwW+8OTvGd4lg5V0YQ\n"
+    "9b2WyqUieG3gV6BTkBIVdcDqTWlvHoXOvQipQ8MVlMl++di0ajHJXrPu3M5GV9FF\n"
+    "0vFwbcQdLJn31g9Jdw==\n"
+    "-----END CERTIFICATE-----\n";
+
+static const char kTestServerKeyPem[] =
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCdga6CVuSJPr3s\n"
+    "QDrW2txihLE0zRftaO3SLu+C2kPChbK9rC/B62sEzryZ7XPhab8Yk6bs2O2uOa8\n"
+    "PDDjhsflkxfOj80hXY+ha8N30Q4kBnF82tKShBLoNTyIvNZ3IuNYKmLfm2gkrPU8\n"
+    "NIUv9fm7mT7kcswooLSdty56kiD8yapKI1oJnWeGlKj9gz3UksyWGkVmhPcAwTEZ\n"
+    "RLorCZFt4m4PCCJKQpgErivmKgL2AM4M7GldrI6SnTRjDakeOXoXeLYR1/wFpGag\n"
+    "QKh0mG9DgDTvWxP4vP75EW8ivvzXc3xvVagOOKHjrfRjM3E+f+bvf5eQRzrXS8TL\n"
+    "ruLWfzmG7AgMBAAECggEAKwdylUkHxjbNy+0AJhJEguWdQ7+D+efgkLsh062tNUc\n"
+    "xPX/8zA10fyu7epHURpCNFDnCMJJS3HYFzSaZo47rgwxRM0kTSkyQ/ccv27tXgok\n"
+    "ludw/3X1dFqW3wQ30vRFB6EMwenC2cImfPwcJq4cO5PyCpcSD0dYEH4qxHGHcYfkt\n"
+    "hJhaP5kOjlIVz1CqaL9NJ69tRYTH1kGnGnnk63fHlZydYHaF2k1H4dktMM5veotJ\n"
+    "ZX80Ncn8gHZ1W49/UWBh3tSHuGNlO97IJO0WAwioTzfcOpvH0HfW3Bv3UpEVuMoE\n"
+    "vzOK+4WLGP11P7VHsfqLQfuYXWt6n1PS6e6/dyM8gQKBgQC9CTzxLsKMJ/y3Wtt2\n"
+    "3gPM8E0LpIoKsRrH9W8kGVJuY8uj+Q/Z/n35kxij6Q2v+S0ZI5sXmVIkh3g0zB0B\n"
+    "EUA1L9icdLbO/TdZ07XZyAyMuztFD7JZK5Ggoa85TuYG0KjMwpfLmgVgLiOUHq9w\n"
+    "obUiYfE3vGKWGK2ob2O4x5iGXwKBgQDVTS9uj++q8hK0nU9dT+0H9UHyLWbgznFc\n"
+    "GO5PBRXFile5ZHu4GgEbSFwoMLm9jmu0qVU+mrWOndg9KOBzi4kbYzOj37jJ4aVk\n"
+    "1PkGgulbIzdgb8t18LJbk8NjeW+ZhBglTfSeOtI+gjQGNTstlpm+X+Nd9qd9mZI1\n"
+    "LzX39MTKJQKBgDWtFtnhDirf+9lQejqxZeDeZvIkYXIRwen/XfShIA/qVFuWEBM1\n"
+    "OS4Rv5BjT5ilJ1IZEyPLTFDFCrPrNV0lOdcgY+BhH7t8mSfvfpZ9QFsBmx3MDDdX\n"
+    "sL0sy+V46sYKn7OsmY+dh2M9FqsrX2Oa9yTxLJ5H5rJ6BW1rW6SPQFb/AoGAO2rU\n"
+    "26ecy7HDJCzt/sBU9vKK/DtJfTYEvfLz728rMWvoI+ypyg70X/U4NrncA8G4nwrM\n"
+    "hDP0f1XY9rB8VbN47fgkWnHnt9TzjbMF65psBsc4ldSOiLwT8w6mTv905v60+y9M\n"
+    "BQe9qUv70f7iDUD2cuGjJHmhDovI/qe4EOpOJ0ECgYAOiSC6noNOSP9ZA+VT7FBy\n"
+    "+s7GIXK/86eYlWxRWGlo5dhccplwnb/MRbSd/sB+OvfqWeEkA7Yz7As6zqd/mjli\n"
+    "Q9wAhZMcQk4pAxhdMBvc9bYyPZQh1X/UrK6RFK1oT/Wb/DMEjDg3wmQ0RBBtB/oh\n"
+    "2dhlPdOSE4nKCxX+9b83mA==\n"
+    "-----END PRIVATE KEY-----\n";
+
+static std::string TestServerCertPem() { return std::string(kTestServerCertPem); }
+static std::string TestServerKeyPem() { return std::string(kTestServerKeyPem); }
+
 void LoadServerCertificate(ssl::context &ctx) {
-  static const char kCert[] =
-      "-----BEGIN CERTIFICATE-----\n"
-      "MIIDCTCCAfGgAwIBAgIUO6Y9upZo8346IaHlxA1DY2zBZncwDQYJKoZIhvcNAQEL\n"
-      "BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI1MTIxMDAwMjk1MloXDTI2MTIx\n"
-      "MDAwMjk1MlowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\n"
-      "AAOCAQ8AMIIBCgKCAQEAnYGuglbkiT697EA61trcYoSxNM0X7Wjt0i7vgtpDwoWy\n"
-      "vawvwetrBM68me1z4Wm/GJOm7NjtrjmvDww44bH5ZMXzo/NIV2PoWvDd9EOJAZxf\n"
-      "NrSkoQS6DU8iLzWdyLjWCpi35toJKz1PDSFL/X5u5k+5HLMKKC0nbcuepIg/MmqS\n"
-      "iNaCZ1nhpSo/YM91JLMlhpFZoT3AMExGUS6KwmRbeJuDwgiSkKYBK4r5ioC9gDOD\n"
-      "OxpXayOkp00Yw2pHjl6F3i2Edf8BaRmoECodJhvQ4A071sT+Lz++RFvIr7813N8b\n"
-      "1WoDjih4630YzNxPn/m73+XkEc610vEy67i1n85huwIDAQABo1MwUTAdBgNVHQ4E\n"
-      "FgQUgxvvqfaUCuS/E1QfYUCqer1W++EwHwYDVR0jBBgwFoAUgxvvqfaUCuS/E1Qf\n"
-      "YUCqer1W++EwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAA9lZ\n"
-      "EGFyYwYZpZnpy+d9OCO4uvZQkG4CLjcq72mNJAxpAdDuv/6mPbzGiaoA1ZEeMYBJ\n"
-      "Pz8bXfd8NibioJh6RU+qjE/MVG6ZbS8hIpW1OyvjToXgzFCSGnn9Kx2j1HkBcgvM\n"
-      "R+MHnSzgFdvRe6Mmugdnwk8vn6aTXgBYaoXP8j/8AxuMJnN53NDGeylxjQPMaV4v\n"
-      "+znO817Ekuq/FR+IATtRttKC20BkjdIDR/l7JGxEQ1QArBvwW+8OTvGd4lg5V0YQ\n"
-      "9b2WyqUieG3gV6BTkBIVdcDqTWlvHoXOvQipQ8MVlMl++di0ajHJXrPu3M5GV9FF\n"
-      "0vFwbcQdLJn31g9Jdw==\n"
-      "-----END CERTIFICATE-----\n";
-
-  static const char kKey[] =
-      "-----BEGIN PRIVATE KEY-----\n"
-      "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCdga6CVuSJPr3s\n"
-      "QDrW2txihLE0zRftaO3SLu+C2kPChbK9rC/B62sEzryZ7XPhab8Yk6bs2O2uOa8\n"
-      "PDDjhsflkxfOj80hXY+ha8N30Q4kBnF82tKShBLoNTyIvNZ3IuNYKmLfm2gkrPU8\n"
-      "NIUv9fm7mT7kcswooLSdty56kiD8yapKI1oJnWeGlKj9gz3UksyWGkVmhPcAwTEZ\n"
-      "RLorCZFt4m4PCCJKQpgErivmKgL2AM4M7GldrI6SnTRjDakeOXoXeLYR1/wFpGag\n"
-      "QKh0mG9DgDTvWxP4vP75EW8ivvzXc3xvVagOOKHjrfRjM3E+f+bvf5eQRzrXS8TL\n"
-      "ruLWfzmG7AgMBAAECggEAKwdylUkHxjbNy+0AJhJEguWdQ7+D+efgkLsh062tNUc\n"
-      "xPX/8zA10fyu7epHURpCNFDnCMJJS3HYFzSaZo47rgwxRM0kTSkyQ/ccv27tXgok\n"
-      "ludw/3X1dFqW3wQ30vRFB6EMwenC2cImfPwcJq4cO5PyCpcSD0dYEH4qxHGHcYfkt\n"
-      "hJhaP5kOjlIVz1CqaL9NJ69tRYTH1kGnGnnk63fHlZydYHaF2k1H4dktMM5veotJ\n"
-      "ZX80Ncn8gHZ1W49/UWBh3tSHuGNlO97IJO0WAwioTzfcOpvH0HfW3Bv3UpEVuMoE\n"
-      "vzOK+4WLGP11P7VHsfqLQfuYXWt6n1PS6e6/dyM8gQKBgQC9CTzxLsKMJ/y3Wtt2\n"
-      "3gPM8E0LpIoKsRrH9W8kGVJuY8uj+Q/Z/n35kxij6Q2v+S0ZI5sXmVIkh3g0zB0B\n"
-      "EUA1L9icdLbO/TdZ07XZyAyMuztFD7JZK5Ggoa85TuYG0KjMwpfLmgVgLiOUHq9w\n"
-      "obUiYfE3vGKWGK2ob2O4x5iGXwKBgQDVTS9uj++q8hK0nU9dT+0H9UHyLWbgznFc\n"
-      "GO5PBRXFile5ZHu4GgEbSFwoMLm9jmu0qVU+mrWOndg9KOBzi4kbYzOj37jJ4aVk\n"
-      "1PkGgulbIzdgb8t18LJbk8NjeW+ZhBglTfSeOtI+gjQGNTstlpm+X+Nd9qd9mZI1\n"
-      "LzX39MTKJQKBgDWtFtnhDirf+9lQejqxZeDeZvIkYXIRwen/XfShIA/qVFuWEBM1\n"
-      "OS4Rv5BjT5ilJ1IZEyPLTFDFCrPrNV0lOdcgY+BhH7t8mSfvfpZ9QFsBmx3MDDdX\n"
-      "sL0sy+V46sYKn7OsmY+dh2M9FqsrX2Oa9yTxLJ5H5rJ6BW1rW6SPQFb/AoGAO2rU\n"
-      "26ecy7HDJCzt/sBU9vKK/DtJfTYEvfLz728rMWvoI+ypyg70X/U4NrncA8G4nwrM\n"
-      "hDP0f1XY9rB8VbN47fgkWnHnt9TzjbMF65psBsc4ldSOiLwT8w6mTv905v60+y9M\n"
-      "BQe9qUv70f7iDUD2cuGjJHmhDovI/qe4EOpOJ0ECgYAOiSC6noNOSP9ZA+VT7FBy\n"
-      "+s7GIXK/86eYlWxRWGlo5dhccplwnb/MRbSd/sB+OvfqWeEkA7Yz7As6zqd/mjli\n"
-      "Q9wAhZMcQk4pAxhdMBvc9bYyPZQh1X/UrK6RFK1oT/Wb/DMEjDg3wmQ0RBBtB/oh\n"
-      "2dhlPdOSE4nKCxX+9b83mA==\n"
-      "-----END PRIVATE KEY-----\n";
-
   ctx.set_options(ssl::context::default_workarounds | ssl::context::no_sslv2 |
                   ssl::context::single_dh_use);
-  ctx.use_certificate_chain(net::buffer(kCert, sizeof(kCert)));
-  ctx.use_private_key(net::buffer(kKey, sizeof(kKey)),
+  ctx.use_certificate_chain(net::buffer(kTestServerCertPem, sizeof(kTestServerCertPem)));
+  ctx.use_private_key(net::buffer(kTestServerKeyPem, sizeof(kTestServerKeyPem)),
                       ssl::context::file_format::pem);
 }
 
@@ -1347,6 +1350,183 @@ TEST(WebsocketClientIntegrationTest, AcksUnknownUpdateSignalAndPersistsResumeTok
   EXPECT_TRUE(saw_updates_ack) << "did not observe updates.ack";
   EXPECT_EQ(state_store.get_websocket_resume_token(),
             std::optional<std::string>("rt-unknown"));
+
+  client.Stop();
+  websocket_server.Join();
+}
+
+TEST(WebsocketClientIntegrationTest,
+     DoesNotAckTlsAlpn01ChallengeWhenHandlerValidationFails) {
+  const auto websocket_port = PickFreePort();
+  const auto local_port = PickFreePort();
+
+  std::vector<certctrl::WebsocketRequest> requests;
+  FakeWebsocketServer websocket_server(websocket_port, requests, 0);
+  websocket_server.set_expected_message_count(10);
+
+  certctrl::WebsocketEventEnvelope signal;
+  signal.name = "updates.signal";
+  signal.id = "acme-bad";
+  signal.resume_token = "rt-bad";
+  signal.payload = json::object{
+      {"type", "acme.tlsalpn01.challenge"},
+      {"ts_ms", 1736900125001},
+      {"ref",
+       json::object{{"challenge_id", "ch-bad"},
+                    {"domain", "example.com"},
+                    {"token", "tok"},
+                    {"key_authorization", "tok.thumb"},
+                    {"listen",
+                     json::object{{"bind", "127.0.0.1"},
+                                  {"port", "not-a-number"}}},
+                    {"certificate",
+                     json::object{{"cert_pem", TestServerCertPem()},
+                                  {"key_pem", TestServerKeyPem()}}}}}};
+
+  websocket_server.set_deferred_messages_after_hello_ack({json::value_from(signal)});
+  websocket_server.Start();
+
+  auto cfg = MakeBaseConfig(websocket_port, local_port);
+  cfg.ping_interval_seconds = 60;
+  StaticWebsocketConfigProvider config_provider(cfg);
+  StaticCertctrlConfigProvider certctrl_config_provider;
+  TestIocConfigProvider ioc_provider(1);
+  customio::ConsoleOutputWithColor logger(5);
+  customio::ConsoleOutput console(logger);
+  cjj365::IoContextManager io_manager(ioc_provider, logger);
+  InMemoryDeviceStateStore state_store;
+  state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
+  ASSERT_FALSE(state_store.save_websocket_resume_token(std::string("rt-seed")));
+  std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
+
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
+  client.Start();
+
+  const auto messages = websocket_server.WaitForMessages(1500ms);
+
+  bool saw_updates_ack_for_bad = false;
+  for (const auto& msg : messages) {
+    const auto* obj = msg.if_object();
+    if (!obj) {
+      continue;
+    }
+    const auto* type_field = obj->if_contains("type");
+    if (!type_field || !type_field->is_string() ||
+        type_field->as_string() != "event") {
+      continue;
+    }
+    const auto* name_field = obj->if_contains("name");
+    if (!name_field || !name_field->is_string()) {
+      continue;
+    }
+    if (std::string(name_field->as_string().c_str()) != "updates.ack") {
+      continue;
+    }
+    const auto* id_field = obj->if_contains("id");
+    if (id_field && id_field->is_string() &&
+        std::string(id_field->as_string().c_str()) == "acme-bad") {
+      saw_updates_ack_for_bad = true;
+      break;
+    }
+  }
+
+  EXPECT_FALSE(saw_updates_ack_for_bad)
+      << "should not ack when acme.tlsalpn01.challenge handler fails";
+  EXPECT_EQ(state_store.get_websocket_resume_token(),
+            std::optional<std::string>("rt-seed"));
+
+  client.Stop();
+  websocket_server.Join();
+}
+
+TEST(WebsocketClientIntegrationTest, AcksTlsAlpn01ChallengeAndPersistsResumeToken) {
+  const auto websocket_port = PickFreePort();
+  const auto local_port = PickFreePort();
+
+  std::vector<certctrl::WebsocketRequest> requests;
+  FakeWebsocketServer websocket_server(websocket_port, requests, 0);
+  websocket_server.set_expected_message_count(10);
+
+  certctrl::WebsocketEventEnvelope signal;
+  signal.name = "updates.signal";
+  signal.id = "acme-1";
+  signal.resume_token = "rt-acme-1";
+  signal.payload = json::object{
+      {"type", "acme.tlsalpn01.challenge"},
+      {"ts_ms", 1736900125002},
+      {"ref",
+       json::object{{"challenge_id", "ch-1"},
+                    {"domain", "example.com"},
+                    {"token", "tok"},
+                    {"key_authorization", "tok.thumb"},
+                    {"ttl_seconds", 1},
+                    {"listen",
+                     json::object{{"bind", "127.0.0.1"}, {"port", 0}}},
+                    {"certificate",
+                     json::object{{"cert_pem", TestServerCertPem()},
+                                  {"key_pem", TestServerKeyPem()}}}}}};
+
+  websocket_server.set_deferred_messages_after_hello_ack({json::value_from(signal)});
+  websocket_server.Start();
+
+  auto cfg = MakeBaseConfig(websocket_port, local_port);
+  cfg.ping_interval_seconds = 60;
+  StaticWebsocketConfigProvider config_provider(cfg);
+  StaticCertctrlConfigProvider certctrl_config_provider;
+  TestIocConfigProvider ioc_provider(1);
+  customio::ConsoleOutputWithColor logger(5);
+  customio::ConsoleOutput console(logger);
+  cjj365::IoContextManager io_manager(ioc_provider, logger);
+  InMemoryDeviceStateStore state_store;
+  state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
+  std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
+
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
+  client.Start();
+
+  const auto messages = websocket_server.WaitForMessages(1500ms);
+
+  bool saw_updates_ack = false;
+  for (const auto& msg : messages) {
+    const auto* obj = msg.if_object();
+    if (!obj) {
+      continue;
+    }
+    const auto* type_field = obj->if_contains("type");
+    if (!type_field || !type_field->is_string() ||
+        type_field->as_string() != "event") {
+      continue;
+    }
+    const auto* name_field = obj->if_contains("name");
+    if (!name_field || !name_field->is_string()) {
+      continue;
+    }
+    if (std::string(name_field->as_string().c_str()) != "updates.ack") {
+      continue;
+    }
+
+    const auto* id_field = obj->if_contains("id");
+    const auto* token_field = obj->if_contains("resume_token");
+    if (!id_field || !id_field->is_string() || !token_field ||
+        !token_field->is_string()) {
+      continue;
+    }
+    if (std::string(id_field->as_string().c_str()) == "acme-1") {
+      saw_updates_ack = true;
+      EXPECT_EQ(std::string(token_field->as_string().c_str()), "rt-acme-1");
+      break;
+    }
+  }
+
+  EXPECT_TRUE(saw_updates_ack) << "did not observe updates.ack for acme-1";
+  EXPECT_EQ(state_store.get_websocket_resume_token(),
+            std::optional<std::string>("rt-acme-1"));
 
   client.Stop();
   websocket_server.Join();
