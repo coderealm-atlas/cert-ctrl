@@ -53,7 +53,9 @@ public:
      * Dispatch signal to appropriate handler.
      * Handles deduplication, unknown types, and error recovery.
      * @param signal The signal to dispatch
-     * @return IO<void> monad that logs errors and continues
+        * @return IO<void> monad. Unknown signal types are treated as successful
+        *         (forward compatibility). Real handler failures are propagated as
+        *         errors so callers can decide whether to ack/advance cursors.
      */
     monad::IO<void> dispatch(const ::data::DeviceUpdateSignal& signal) {
         // Generate unique signal ID for deduplication
@@ -72,6 +74,8 @@ public:
             // Unknown signal type - log and ignore (forward compatibility)
             BOOST_LOG_SEV(lg_, trivial::warning)
                 << "Unknown signal type: " << signal.type << " (ignored)";
+            // Treat as successfully processed for delivery progress.
+            mark_as_processed(signal_id);
             return monad::IO<void>::pure();
         }
         
@@ -92,13 +96,12 @@ public:
                     << "Signal processed successfully: " << type;
                 return monad::IO<void>::pure();
             })
-            .catch_then([this, signal_id, type = signal.type](monad::Error e) {
-                // Log error and continue (don't block polling)
+            .catch_then([this, type = signal.type](monad::Error e) {
+                // Don't mark as processed - allow retry/redelivery.
                 BOOST_LOG_SEV(lg_, trivial::error)
                     << "Signal handler failed: type=" << type
                     << " error=" << e.what;
-                // Don't mark as processed - might retry later if cursor resets
-                return monad::IO<void>::pure();
+                return monad::IO<void>::fail(std::move(e));
             });
     }
     

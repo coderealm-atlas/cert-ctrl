@@ -19,6 +19,7 @@ constexpr const char kInstallConfigVersionKey[] = "install_config_version";
 constexpr const char kImportCaPrefix[] = "import_ca/ca-";
 constexpr const char kImportCaSuffix[] = ".name";
 constexpr const char kUpdatesCursorKey[] = "updates_cursor";
+constexpr const char kWebsocketResumeTokenKey[] = "websocket_resume_token";
 constexpr const char kProcessedSignalsKey[] = "processed_signals_json";
 
 constexpr const char kCreateTableSql[] = R"SQL(
@@ -329,6 +330,32 @@ std::optional<std::string> SqliteDeviceStateStore::save_updates_cursor(
       return upsert_value(kUpdatesCursorKey, *cursor);
     }
     return erase_value(kUpdatesCursorKey);
+  };
+
+  return with_transaction(body);
+}
+
+std::optional<std::string>
+SqliteDeviceStateStore::get_websocket_resume_token() const {
+  std::scoped_lock lock(mutex_);
+  if (!ensure_initialized()) {
+    return std::nullopt;
+  }
+  return get_value(kWebsocketResumeTokenKey);
+}
+
+std::optional<std::string> SqliteDeviceStateStore::save_websocket_resume_token(
+    const std::optional<std::string> &resume_token) {
+  std::scoped_lock lock(mutex_);
+  if (!ensure_initialized()) {
+    return std::string{"State database unavailable"};
+  }
+
+  auto body = [&]() -> std::optional<std::string> {
+    if (resume_token && !resume_token->empty()) {
+      return upsert_value(kWebsocketResumeTokenKey, *resume_token);
+    }
+    return erase_value(kWebsocketResumeTokenKey);
   };
 
   return with_transaction(body);

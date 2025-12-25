@@ -90,8 +90,21 @@ std::optional<std::string> write_text_0600(const fs::path &path,
 std::optional<std::string> decode_device_id(const std::string &token) {
   try {
     auto decoded = jwt::decode(token);
-    if (decoded.has_payload_claim("device_id")) {
-      return decoded.get_payload_claim("device_id").as_string();
+    boost::system::error_code ec;
+    auto jv = boost::json::parse(decoded.get_payload(), ec);
+    if (!ec && jv.is_object()) {
+      const auto &obj = jv.as_object();
+      if (auto *did = obj.if_contains("device_id")) {
+        if (did->is_int64()) {
+          return std::to_string(did->as_int64());
+        }
+        if (did->is_uint64()) {
+          return std::to_string(did->as_uint64());
+        }
+        if (did->is_string()) {
+          return std::string(did->as_string().c_str());
+        }
+      }
     }
     if (decoded.has_payload_claim("sub")) {
       return decoded.get_payload_claim("sub").as_string();

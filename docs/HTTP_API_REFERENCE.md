@@ -12,12 +12,9 @@ This document consolidates all HTTP endpoints registered by the server handlers 
 
 Links to related docs:
 - Login & session: LOGIN_WORKFLOW.md
-- Device OAuth-like flow: DEVICE_AUTH_TESTING.md
-- Device updates long-poll: DEVICE_POLLING_UPDATES.md
-- Refresh token: REFRESH_TOKEN_SYSTEM.md
-- Device registration overview: USER_DEVICE_REGISTRATION_WORKFLOW.md
-- Device certificate assignment: DEVICE_CERTIFICATE_ASSIGNMENT.md
-- Payments domain plan: PAYMENT_WORKFLOW.md
+- Device onboarding & auth (device flow overview): DEVICE_ONBOARDING_AND_AUTH.md
+- Device updates (legacy long-poll): DEVICE_POLLING_UPDATES.md
+- WebSocket updates protocol: WEBSOCKET_POLLING_MIGRATION_COMBINED.md
 
 Note: Schemas below reflect current server behavior and conventions. Some domains (payments) are being built out; treat those as stable path contracts with evolving payloads.
 
@@ -41,7 +38,7 @@ Notes:
 Auth:
 - Most endpoints work with or without a session to report status; logout/profile/bindings require a session.
 
-See: ai_docs/LOGIN_WORKFLOW.md for request/response examples of /auth/general and /auth/status.
+See: LOGIN_WORKFLOW.md for request/response examples of /auth/general and /auth/status.
 
 ### WebAuthn (WebAuthnHandler)
 Paths:
@@ -72,13 +69,14 @@ Auth: Unauthenticated; establishes user session upon successful OAuth.
 Path:
 - POST /auth/refresh — Issue new access token/cookie session
 
-See: ai_docs/REFRESH_TOKEN_SYSTEM.md
+Notes:
+- Rotates refresh token and returns a new access token.
 
 ### Device Flow (DeviceAuthHandler)
 Path:
 - POST /auth/device — Start/poll/verify device login sequence
 
-See: ai_docs/DEVICE_AUTH_TESTING.md
+See: DEVICE_ONBOARDING_AND_AUTH.md
 
 ## Health
 
@@ -86,7 +84,8 @@ See: ai_docs/DEVICE_AUTH_TESTING.md
 Path:
 - GET /health — Liveness/readiness probe
 
-See: ai_docs/DOCKER_TEST_ENVIRONMENT.md for examples.
+Notes:
+- Used by load balancers and container orchestrators.
 
 ## Devices (DevicesHandler)
 Base paths under user scope:
@@ -291,7 +290,8 @@ Notes:
 - The copy item uses array `from`/`to`; one item per resource.
 - Restore returns the restored version in the response data.
 
-Related: ai_docs/DEVICE_CERTIFICATE_ASSIGNMENT.md
+Related:
+- Device certificate assignment workflow: DEVICE_ONBOARDING_AND_AUTH.md (and UI docs where applicable)
 
 ## Device Updates (DeviceUpdatesHandler)
 Path:
@@ -300,7 +300,7 @@ Path:
 Auth:
 - Device-authenticated requests (see DEVICE_AUTH_TESTING.md). Supports long-poll with `wait` query and `If-None-Match` ETag.
 
-See: ai_docs/DEVICE_POLLING_UPDATES.md for complete protocol.
+See: DEVICE_POLLING_UPDATES.md for complete protocol.
 
 ### Device Notifications (DeviceNotifyHandler)
 Path:
@@ -629,7 +629,7 @@ Paths:
 - /apiv1/users/:user_id/payments
 - /apiv1/users/:user_id/payments/:payment_id
 
-Status: Initial vertical slice in progress; path contracts are stable. See ai_docs/PAYMENT_WORKFLOW.md for domain flow.
+Status: Initial vertical slice in progress; path contracts are stable.
 
 Typical methods:
 - GET /.../wallets — List wallets; GET /.../wallets/:id — Detail

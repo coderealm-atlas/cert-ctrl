@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -8,19 +7,18 @@
 #include <mutex>
 #include <stdexcept>
 #include <utility>
-#include <vector>
 
 #include <fmt/format.h>
 
 #include "boost/di.hpp"
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
-#include "conf/tunnel_config.hpp"
+#include "conf/websocket_config.hpp"
 #include "customio/console_output.hpp"
 #include "handlers/agent_update_checker.hpp"
-#include "handlers/conf_handler.hpp"
-#include "handlers/certificates_handler.hpp"
 #include "handlers/ca_handler.hpp"
+#include "handlers/certificates_handler.hpp"
+#include "handlers/conf_handler.hpp"
 #include "handlers/device_automation_handler.hpp"
 #include "handlers/handler_dispatcher.hpp"
 #include "handlers/i_handler.hpp"
@@ -33,10 +31,11 @@
 #include "handlers/install_actions/install_resource_materializer.hpp"
 #include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
-#include "handlers/session_refresher.hpp"
 #include "handlers/install_config_apply_handler.hpp"
 #include "handlers/install_config_handler.hpp"
 #include "handlers/login_handler.hpp"
+#include "handlers/session_refresher.hpp"
+// #include "handlers/short_poll_runner.hpp"
 #include "handlers/update_handler.hpp"
 #include "handlers/updates_polling_handler.hpp"
 #include "http_client_manager.hpp"
@@ -46,8 +45,8 @@
 #include "misc_util.hpp"
 #include "my_error_codes.hpp"
 #include "resource_fetcher.hpp"
-#include "tunnel/tunnel_client.hpp"
 #include "state/device_state_store.hpp"
+#include "websocket/websocket_client.hpp"
 #include "version.h"
 
 #ifdef to
@@ -116,13 +115,13 @@ class App : public std::enable_shared_from_this<App<AppTag>> {
   cjj365::ConfigSources &config_sources_;
   cjj365::IoContextManager *io_context_manager_;
   const certctrl::CertctrlConfig *certctrl_config_;
-  const certctrl::TunnelConfig *tunnel_config_;
-  std::shared_ptr<certctrl::TunnelClient> tunnel_client_;
+  const certctrl::WebsocketConfig *websocket_config_;
+  std::shared_ptr<certctrl::WebsocketClient> websocket_client_;
 
 public:
   App(cjj365::ConfigSources &config_sources, certctrl::CliCtx &cli_ctx)
       : config_sources_(config_sources), cli_ctx_(cli_ctx),
-        tunnel_config_(nullptr) {}
+        websocket_config_(nullptr) {}
 
   void print_error(const monad::Error &err) {
     if (err.code == my_errors::GENERAL::SHOW_OPT_DESC) {
@@ -152,7 +151,7 @@ public:
           di::bind<certctrl::CaHandler>().in(di::unique),
           di::bind<certctrl::InstallConfigApplyHandler>().in(di::unique),
           di::bind<certctrl::DeviceAutomationHandler>().in(di::unique),
-          di::bind<certctrl::TunnelClient>().in(di::singleton),
+          di::bind<certctrl::WebsocketClient>().in(di::singleton),
           di::bind<certctrl::IHandlerFactory>().to(
               [](const auto &inj) -> certctrl::IHandlerFactory & {
                 static certctrl::HandlerFactoryImpl factory(
@@ -203,22 +202,22 @@ public:
             .to<cjj365::IocConfigProviderFile>(),
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>(),
-        di::bind<certctrl::ITunnelConfigProvider>()
-          .to<certctrl::TunnelConfigProviderFile>(),
+        di::bind<certctrl::IWebsocketConfigProvider>()
+          .to<certctrl::WebsocketConfigProviderFile>(),
         di::bind<cjj365::IHttpclientConfigProvider>()
             .to<cjj365::HttpclientConfigProviderFile>(),
         di::bind<certctrl::install_actions::IAccessTokenLoader>()
             .to<certctrl::install_actions::AccessTokenLoaderFile>(),
         di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>()
             .to<certctrl::install_actions::DeviceInstallConfigFetcher>(),
-        di::bind<certctrl::install_actions::IResourceFetcher>().to<
-            certctrl::install_actions::ResourceFetcher>(),
+        di::bind<certctrl::install_actions::IResourceFetcher>()
+            .to<certctrl::install_actions::ResourceFetcher>(),
         di::bind<certctrl::IDeviceStateStore>()
-          .to<certctrl::SqliteDeviceStateStore>()
-          .in(di::singleton),
-    di::bind<certctrl::install_actions::IMaterializePasswordManager>()
-      .to<certctrl::install_actions::MaterializePasswordManager>()
-      .in(di::singleton),
+            .to<certctrl::SqliteDeviceStateStore>()
+            .in(di::singleton),
+        di::bind<certctrl::install_actions::IMaterializePasswordManager>()
+            .to<certctrl::install_actions::MaterializePasswordManager>()
+            .in(di::singleton),
         di::bind<certctrl::install_actions::InstallResourceMaterializer>().in(
             di::unique),
         di::bind<certctrl::install_actions::IResourceMaterializer::Factory>()
@@ -267,7 +266,9 @@ public:
                         certctrl::install_actions::ImportCaActionHandler>>();
                   }};
             }),
-        di::bind<certctrl::ISessionRefresher>().to<certctrl::SessionRefresher>().in(di::singleton),
+        di::bind<certctrl::ISessionRefresher>()
+            .to<certctrl::SessionRefresher>()
+            .in(di::singleton),
         di::bind<customio::IOutput>().to(output_hub),
         di::bind<certctrl::CliCtx>().to(cli_ctx_));
     // Register all handlers for aggregate injection; DI will convert to
@@ -280,8 +281,12 @@ public:
 
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
-    tunnel_config_ =
-      &injector.template create<certctrl::ITunnelConfigProvider &>().get();
+    websocket_config_ =
+      &injector.template create<certctrl::IWebsocketConfigProvider &>().get();
+    
+    // auto short_poll_runner =
+    //     injector.template create<std::shared_ptr<certctrl::ShortPollRunner>>();
+    // short_poll_runner->start();
 
     io_context_manager_ =
         &injector.template create<cjj365::IoContextManager &>();
@@ -315,8 +320,8 @@ public:
 
     detail::register_shutdown_handler([weak_self = std::weak_ptr<App>(self)] {
       if (auto shared = weak_self.lock()) {
-        if (shared->tunnel_client_) {
-          shared->tunnel_client_->Stop();
+        if (shared->websocket_client_) {
+          shared->websocket_client_->Stop();
         }
         shared->blocker_.stop();
       }
@@ -339,7 +344,7 @@ public:
           << " - " << config_sources_.logging_config().value().log_dir
           << std::endl;
     }
-    // If auto_apply_config is disabled (the default), make a conspicuous
+    // If auto_apply_config is disabled, make a conspicuous
     // reminder on stdout so operators running the tool interactively
     // immediately notice that staged install configs are not automatically
     // applied.
@@ -348,15 +353,16 @@ public:
         std::cerr << "\n";
         std::cerr << "/**************************************************************" << std::endl;
         std::cerr << "* IMPORTANT: auto_apply_config = true                         *" << std::endl;
-        std::cerr << "* Server side configurations are applied automatically.       *" << std::endl;
-        std::cerr << "* Include the cmd and cmd_args,they could do arbitrary things.*" << std::endl;
-        std::cerr << "* If you don't change install-config frequently,              *" << std::endl;
-        std::cerr << "* BETTER to set it to false                                   *" << std::endl;
+        std::cerr << "* install.updated is applied automatically.                   *" << std::endl;
+        std::cerr << "* Plans may include cmd/cmd_args; treat as privileged input.  *" << std::endl;
+        std::cerr << "* To stage only (manual apply):                               *" << std::endl;
+        std::cerr << "*    cert-ctrl conf set auto_apply_config false               *" << std::endl;
+        std::cerr << "*    cert-ctrl install-config show --raw                      *" << std::endl;
         std::cerr << "**************************************************************/" << std::endl;
       } else {
         std::cerr << "\n";
         std::cerr << "/**************************************************************" << std::endl;
-        std::cerr << "* IMPORTANT: auto_apply_config = false (default)              *" << std::endl;
+        std::cerr << "* IMPORTANT: auto_apply_config = false                        *" << std::endl;
         std::cerr << "* Staged install configurations are NOT applied automatically.*" << std::endl;
         std::cerr << "* To apply staged changes run:                                *" << std::endl;
         std::cerr << "*                                                             *" << std::endl;
@@ -364,18 +370,21 @@ public:
         std::cerr << "*                                                             *" << std::endl;
         std::cerr << "* Inspect staged plan before applying:                        *" << std::endl;
         std::cerr << "*    cert-ctrl install-config show --raw                      *" << std::endl;
+        std::cerr << "* Enable auto-apply (automatic):                              *" << std::endl;
+        std::cerr << "*    cert-ctrl conf set auto_apply_config true                *" << std::endl;
         std::cerr << "**************************************************************/" << std::endl;
 
       }
     // clang-format on
 
-    if (tunnel_config_) {
-      if (tunnel_config_->enabled) {
+    if (websocket_config_) {
+      if (websocket_config_->enabled) {
         output_hub_->logger().info()
-            << "Tunnel client enabled via tunnel_config.json" << std::endl;
+            << "WebSocket client enabled via websocket_config.json" << std::endl;
       } else {
         output_hub_->logger().debug()
-            << "Tunnel client disabled (set config_dir/tunnel_config.json enabled=true to activate)"
+            << "WebSocket client disabled (set config_dir/websocket_config.json "
+               "enabled=true to activate)"
             << std::endl;
       }
     }
@@ -390,8 +399,8 @@ public:
           if (r.is_err()) {
             self->print_error(r.error());
           } else {
-            self->output_hub_->logger().debug() << "Handler completed successfully."
-                                                << std::endl;
+            self->output_hub_->logger().debug()
+                << "Handler completed successfully." << std::endl;
           }
           return self->blocker_.stop();
         });
@@ -402,24 +411,23 @@ public:
             << "No subcommand provided; running default update workflow."
             << std::endl;
 
-        if (tunnel_config_ && tunnel_config_->enabled && !tunnel_client_) {
-          tunnel_client_ = injector.template create<
-              std::shared_ptr<certctrl::TunnelClient>>();
-          tunnel_client_->Start();
+        const bool websocket_enabled = (websocket_config_ && websocket_config_->enabled);
+        if (websocket_enabled && !websocket_client_) {
+          websocket_client_ =
+              injector
+                  .template create<std::shared_ptr<certctrl::WebsocketClient>>();
+          websocket_client_->Start();
         }
 
         auto update_checker = injector.template create<
-          std::shared_ptr<certctrl::AgentUpdateChecker>>();
-        auto updates_handler = injector.template create<
-          std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+            std::shared_ptr<certctrl::AgentUpdateChecker>>();
         auto &state_store =
-          injector.template create<certctrl::IDeviceStateStore &>();
+            injector.template create<certctrl::IDeviceStateStore &>();
 
         auto cached_access = state_store.get_access_token();
         auto cached_refresh = state_store.get_refresh_token();
-        const bool has_session =
-          (cached_access && !cached_access->empty()) ||
-          (cached_refresh && !cached_refresh->empty());
+        const bool has_session = (cached_access && !cached_access->empty()) ||
+                                 (cached_refresh && !cached_refresh->empty());
 
         auto workflow =
             update_checker->run_once(MYAPP_VERSION)
@@ -427,30 +435,60 @@ public:
                   self->output_hub_->logger().warning()
                       << "Agent update check failed: " << err.what << std::endl;
                   return monad::IO<void>::pure();
-            })
-            .then([self, updates_handler,
-                 has_session]() -> monad::IO<void> {
-              if (!has_session) {
-              self->output_hub_->logger().warning()
-                << "Skipping device updates poll because no cached "
-                   "session tokens were found. Run 'cert-ctrl login' "
-                   "to authenticate this device." << std::endl;
-              return monad::IO<void>::pure();
-              }
-              return updates_handler->start();
-            });
+                })
+                .then([self, &injector, websocket_enabled,
+                       has_session]() -> monad::IO<void> {
+                  if (websocket_enabled) {
+                    self->output_hub_->logger().info()
+                        << "WebSocket is enabled; skipping HTTP device updates polling."
+                        << std::endl;
+                    if (!has_session) {
+                      self->output_hub_->logger().warning()
+                          << "Skipping agent version notify because no cached "
+                             "session tokens were found. Run 'cert-ctrl login' "
+                             "to authenticate this device."
+                          << std::endl;
+                      return monad::IO<void>::pure();
+                    }
 
-        workflow.run([self, update_checker, updates_handler](auto r) {
+                    auto updates_handler = injector.template create<
+                        std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+                    return updates_handler->report_agent_version_once();
+                  }
+                  if (!has_session) {
+                    self->output_hub_->logger().warning()
+                        << "Skipping device updates poll because no cached "
+                           "session tokens were found. Run 'cert-ctrl login' "
+                           "to authenticate this device."
+                        << std::endl;
+                    return monad::IO<void>::pure();
+                  }
+                  auto updates_handler = injector.template create<
+                      std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+                  return updates_handler->start();
+                });
+
+        workflow.run([self, update_checker](auto r) {
           if (r.is_err()) {
             self->print_error(r.error());
           } else {
             if (self->cli_ctx_.params.keep_running) {
-              self->info("Default updates polling loop active.");
+              if (self->websocket_config_ && self->websocket_config_->enabled) {
+                self->info("WebSocket mode active.");
+              } else {
+                self->info("Default updates polling loop active.");
+              }
             } else {
               self->info("Default update workflow completed.");
             }
           }
-          return self->blocker_.stop();
+
+          // In keep-running mode the app lifetime is governed by the signal
+          // handler / shutdown request. Stopping the blocker here would exit
+          // immediately in WebSocket mode (which only does a one-shot notify).
+          if (!self->cli_ctx_.params.keep_running) {
+            self->blocker_.stop();
+          }
         });
       } else if (cli_ctx_.params.keep_running) {
         output_hub_->logger().info()
@@ -465,9 +503,9 @@ public:
         //   cmds += v[i];
         // }
         output_hub_->logger().error()
-          << "No valid subcommand provided. Available: "
-          << " install-config, login, certificates, ca, info, device"
-          << "." << std::endl;
+            << "No valid subcommand provided. Available: "
+            << " install-config, login, certificates, ca, info, device"
+            << "." << std::endl;
         return shutdown();
       }
     }

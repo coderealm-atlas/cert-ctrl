@@ -87,6 +87,14 @@ public:
   save_updates_cursor(const std::optional<std::string> &) override {
     return std::nullopt;
   }
+
+  std::optional<std::string> get_websocket_resume_token() const override {
+    return std::nullopt;
+  }
+  std::optional<std::string> save_websocket_resume_token(
+      const std::optional<std::string> &) override {
+    return std::nullopt;
+  }
   std::optional<std::string> get_processed_signals_json() const override {
     return std::nullopt;
   }

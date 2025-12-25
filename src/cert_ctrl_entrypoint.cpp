@@ -19,8 +19,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
 #include <securitybaseapi.h>
+#include <windows.h>
 #endif
 
 namespace po = boost::program_options;
@@ -138,10 +138,17 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
 
   try {
     js::object application{
-        {"auto_apply_config", false},
+      {"auto_apply_config", true},
         {"verbose", "info"},
-        {"interval_seconds", 300},
+        {"interval_seconds", 30},
         {"url_base", "https://api.cjj365.cc"},
+        {"short_poll", js::object{{"enabled", false},
+                                  {"poll_url", js::value(nullptr)},
+                                  {"idle_interval_seconds", 30},
+                                  {"interval_seconds", 5},
+                                  {"jitter_seconds", 1},
+                                  {"backoff_seconds", 30},
+                                  {"fast_mode_ttl_seconds", 120}}},
         {"update_check_url",
          "https://install.lets-script.com/api/version/check"},
         {"runtime_dir", runtime_dir.string()}};
@@ -165,22 +172,25 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
                    {"rotation_size", 10 * 1024 * 1024}};
     write_json_if_missing(config_dir / "log_config.json", log);
 
-    js::array tunnel_allowlist{"content-type", "user-agent",
-                                "stripe-signature"};
-    js::object tunnel{{"enabled", false},
-                      {"remote_endpoint", "wss://api.cjj365.cc/api/tunnel"},
-                      {"webhook_base_url", "https://hook.cjj365.cc/hooks"},
-                      {"local_base_url", "http://127.0.0.1:9000"},
-                      {"verify_tls", true},
-                      {"request_timeout_seconds", 45},
-                      {"ping_interval_seconds", 20},
-                      {"max_concurrent_requests", 12},
-                      {"max_payload_bytes", 5 * 1024 * 1024},
-                      {"reconnect_initial_delay_ms", 1000},
-                      {"reconnect_max_delay_ms", 30000},
-                      {"reconnect_jitter_ms", 250},
-                      {"header_allowlist", tunnel_allowlist}};
-    write_json_if_missing(config_dir / "tunnel_config.json", tunnel);
+    js::array websocket_allowlist{"content-type", "user-agent",
+                    "stripe-signature"};
+    js::object websocket{{"enabled", true},
+               {"remote_endpoint",
+                "wss://api.cjj365.cc/api/websocket"},
+               {"webhook_base_url", "https://api.cjj365.cc/hooks"},
+               {"verify_tls", true},
+               {"request_timeout_seconds", 45},
+               {"ping_interval_seconds", 20},
+               {"max_concurrent_requests", 12},
+               {"max_payload_bytes", 5 * 1024 * 1024},
+               {"reconnect_initial_delay_ms", 1000},
+               {"reconnect_max_delay_ms", 30000},
+               {"reconnect_jitter_ms", 250},
+               {"tunnel",
+                js::object{{"local_base_url", "http://127.0.0.1:9000"},
+                     {"header_allowlist", websocket_allowlist},
+                     {"routes", js::array{}}}}};
+    write_json_if_missing(config_dir / "websocket_config.json", websocket);
   } catch (const std::exception &ex) {
     std::cerr << "Warning: failed to write default configuration files: "
               << ex.what() << std::endl;
@@ -193,6 +203,9 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
 std::optional<fs::path>
 find_runtime_dir_override(const std::vector<fs::path> &config_dirs,
                           const std::vector<std::string> &profiles) {
+  // Look through resolved config directories (profile-aware) to see if any
+  // application*.json sets runtime_dir. This lets a user pin runtime_dir in
+  // config instead of env/CLI; the first hit wins.
   std::optional<fs::path> runtime_dir;
   auto apply_file = [&](const fs::path &file) {
     if (!fs::exists(file)) {
@@ -263,6 +276,19 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
     if (arg == "-v" || arg == "--version" || arg == "version" || arg == "v") {
       std::cout << MYAPP_VERSION << std::endl;
       return EXIT_SUCCESS;
+    }
+  }
+
+  // Fail fast on common flag typos. We keep allow_unregistered() so subcommands
+  // can parse their own flags later, but we don't want global typos to be
+  // silently ignored.
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg = argv[i] ? std::string_view(argv[i])
+                                         : std::string_view{};
+    if (arg == "--base-url" || arg.rfind("--base-url=", 0) == 0) {
+      std::cerr << "Unknown option '--base-url'. Did you mean '--url-base'?"
+                << std::endl;
+      return EXIT_FAILURE;
     }
   }
 
@@ -370,11 +396,11 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
                 << "  certificates   Inspect staged certificate materials."
                 << std::endl
                 << "  ca             Inspect cached certificate authorities."
-             << std::endl
-             << "  info           Show device and environment diagnostics."
-             << std::endl
-             << "  device         API key automation actions (assign-cert)."
-             << std::endl
+                << std::endl
+                << "  info           Show device and environment diagnostics."
+                << std::endl
+                << "  device         API key automation actions (assign-cert)."
+                << std::endl
                 << std::endl;
       std::cerr << "Default behavior:" << std::endl;
       std::cerr << "  No subcommand -> agent update check followed by a device "
@@ -400,15 +426,13 @@ int RunCertCtrlApplication(int argc, char *argv[]) {
           "For full functionality, re-run as administrator";
 #else
       const char *required_privilege = "root";
-      const char *rerun_instruction =
-          "For full functionality, re-run as root";
+      const char *rerun_instruction = "For full functionality, re-run as root";
 #endif
-      std::cerr
-          << "Warning: cert-ctrl is not running with " << required_privilege
-          << " privileges. " << rerun_instruction
-          << " or pass --no-root to acknowledge running without elevated "
-             "privileges."
-          << std::endl;
+      std::cerr << "Warning: cert-ctrl is not running with "
+                << required_privilege << " privileges. " << rerun_instruction
+                << " or pass --no-root to acknowledge running without elevated "
+                   "privileges."
+                << std::endl;
       return EXIT_FAILURE;
     }
 
