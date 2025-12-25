@@ -22,6 +22,9 @@ The macOS installer template (`../install-service/templates/install-macos.sh.js`
 4. **Binary installation** – The tarball is unpacked, `cert-ctrl` is copied into the install dir with mode 755, and ownership inherits from the user running the installer (lines 183-200).
 5. **Directory preparation** – Config/state folders are created with `0755` permissions and log files are created with `0644` (lines 203-214).
 6. **LaunchDaemon emission** – A plist is emitted to `/Library/LaunchDaemons`, invoking `cert-ctrl --config-dirs <config> --keep-running`, setting `CERTCTRL_STATE_DIR`, and wiring stdout/stderr to the log files. The plist is owned by `root:wheel` (lines 216-251).
+
+	- If `websocket_config.json` is present in the config dir and `enabled=true`, the service will run **WebSocket-first** and will **not** run the legacy HTTP updates polling loop.
+	- If WebSocket is disabled, the agent falls back to HTTP polling for updates.
 7. **Service activation** – Any prior daemon with the same label is unloaded, then `launchctl bootstrap system ...` is used to load+kick the service. Legacy `launchctl load` is used as a fallback (lines 254-269). The script finally prints operational hints (lines 271-279).
 
 ### Security & Correctness Notes

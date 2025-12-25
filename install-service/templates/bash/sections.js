@@ -1094,7 +1094,7 @@ SyslogIdentifier=cert-ctrl
 # Security settings
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
+ProtectSystem=yes
 ProtectHome=true
 ReadWritePaths=@@CONFIG_DIR@@
 ReadWritePaths=@@STATE_DIR@@

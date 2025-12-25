@@ -1,6 +1,17 @@
-#include "tunnel/tunnel_client.hpp"
+#include "websocket/websocket_client.hpp"
 
-#include "tunnel/tunnel_messages.hpp"
+#include "websocket/websocket_messages.hpp"
+
+#include "data/data_shape.hpp"
+#include "simple_data.hpp"
+#include "handlers/install_config_manager.hpp"
+#include "handlers/signal_dispatcher.hpp"
+#include "handlers/signal_handlers/ca_assigned_handler.hpp"
+#include "handlers/signal_handlers/ca_unassigned_handler.hpp"
+#include "handlers/signal_handlers/cert_updated_handler.hpp"
+#include "handlers/signal_handlers/cert_unassigned_handler.hpp"
+#include "handlers/signal_handlers/config_updated_handler.hpp"
+#include "handlers/signal_handlers/install_updated_handler.hpp"
 
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -21,6 +32,8 @@
 #include <cctype>
 #include <chrono>
 #include <deque>
+#include <fstream>
+#include <filesystem>
 #include <fmt/format.h>
 #include <openssl/err.h>
 #include <random>
@@ -28,6 +41,10 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+
+#include <jwt-cpp/jwt.h>
+
+#include "handlers/session_refresher.hpp"
 
 namespace certctrl {
 namespace beast = boost::beast;
@@ -55,6 +72,105 @@ struct LocalEndpointParts {
   std::string host_header;
 };
 
+std::optional<std::string> DecodeDeviceIdFromJwt(const std::string &token) {
+  try {
+    auto decoded = jwt::decode(token);
+    boost::system::error_code ec;
+    auto jv = boost::json::parse(decoded.get_payload(), ec);
+    if (!ec && jv.is_object()) {
+      const auto &obj = jv.as_object();
+      if (auto *did = obj.if_contains("device_id")) {
+        if (did->is_int64()) {
+          return std::to_string(did->as_int64());
+        }
+        if (did->is_uint64()) {
+          return std::to_string(did->as_uint64());
+        }
+        if (did->is_string()) {
+          return std::string(did->as_string().c_str());
+        }
+      }
+    }
+  } catch (...) {
+  }
+  return std::nullopt;
+}
+
+bool IsJwtExpiringSoon(const std::string &token, std::chrono::seconds skew) {
+  try {
+    auto decoded = jwt::decode(token);
+    if (!decoded.has_payload_claim("exp")) {
+      return false;
+    }
+    const auto exp_time = decoded.get_payload_claim("exp").as_date();
+    const auto now = std::chrono::system_clock::now();
+    return exp_time <= now + skew;
+  } catch (...) {
+    // If token cannot be decoded, treat it as unusable and attempt refresh.
+    return true;
+  }
+}
+
+bool QueryHasKey(std::string_view query, std::string_view key) {
+  while (!query.empty()) {
+    const auto amp = query.find('&');
+    std::string_view part = (amp == std::string_view::npos)
+                                ? query
+                                : query.substr(0, amp);
+    const auto eq = part.find('=');
+    std::string_view k = (eq == std::string_view::npos) ? part : part.substr(0, eq);
+    if (k == key) {
+      return true;
+    }
+    if (amp == std::string_view::npos) {
+      break;
+    }
+    query.remove_prefix(amp + 1);
+  }
+  return false;
+}
+
+std::string EnsureQueryParam(std::string target, std::string_view key,
+                             std::string_view value) {
+  const auto qm = target.find('?');
+  std::string_view query = (qm == std::string::npos)
+                               ? std::string_view{}
+                               : std::string_view(target).substr(qm + 1);
+  if (!query.empty() && QueryHasKey(query, key)) {
+    return target;
+  }
+  if (qm == std::string::npos) {
+    target.append("?");
+  } else if (qm + 1 != target.size()) {
+    target.append("&");
+  }
+  target.append(key);
+  target.append("=");
+  target.append(value);
+  return target;
+}
+
+std::string EnsureDeviceIdPath(std::string target, std::string_view device_id) {
+  const auto qm = target.find('?');
+  const std::string query = (qm == std::string::npos) ? std::string{}
+                                                      : target.substr(qm);
+  std::string path = (qm == std::string::npos) ? target : target.substr(0, qm);
+  if (path.empty()) {
+    path = "/";
+  }
+  // Avoid double-appending if already present.
+  const std::string suffix = std::string("/") + std::string(device_id);
+  if (path.size() >= suffix.size() &&
+      path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0) {
+    return path + query;
+  }
+  if (!path.empty() && path.back() != '/') {
+    path.push_back('/');
+  }
+  path.append(device_id);
+  return path + query;
+}
+
 std::string ParseIngressPath(const std::string &webhook_base_url) {
   auto parsed = urls::parse_uri(webhook_base_url);
   if (!parsed) {
@@ -76,20 +192,20 @@ std::string ParseIngressPath(const std::string &webhook_base_url) {
 EndpointParts ParseEndpoint(const std::string &endpoint) {
   auto parsed = urls::parse_uri(endpoint);
   if (!parsed) {
-    throw std::runtime_error(fmt::format("invalid tunnel endpoint '{}': {}",
+    throw std::runtime_error(fmt::format("invalid websocket endpoint '{}': {}",
                                          endpoint, parsed.error().message()));
   }
   const auto &url = parsed.value();
   if (!url.has_authority() || url.host().empty()) {
     throw std::runtime_error(
-        fmt::format("tunnel endpoint missing host: '{}'", endpoint));
+        fmt::format("websocket endpoint missing host: '{}'", endpoint));
   }
 
   EndpointParts parts;
   const auto scheme = url.scheme();
   if (scheme != "wss") {
     throw std::runtime_error(fmt::format(
-        "tunnel endpoint must use wss:// scheme (got '{}')", scheme));
+        "websocket endpoint must use wss:// scheme (got '{}')", scheme));
   }
   parts.host = std::string(url.host());
   parts.port = url.has_port() ? std::string(url.port()) : std::string("443");
@@ -207,17 +323,18 @@ std::uint64_t NowMillis() {
 
 } // namespace
 
-class TunnelClient::Session
-    : public std::enable_shared_from_this<TunnelClient::Session> {
+class WebsocketClient::Session
+    : public std::enable_shared_from_this<WebsocketClient::Session> {
 public:
-  Session(TunnelClient &client, TunnelConfig config, EndpointParts endpoint,
-          LocalEndpointParts local_endpoint)
+  Session(WebsocketClient &client, WebsocketConfig config, EndpointParts endpoint,
+          LocalEndpointParts local_endpoint, std::string auth_token)
       : client_(client), config_(std::move(config)),
         endpoint_(std::move(endpoint)),
         local_endpoint_(std::move(local_endpoint)),
-    webhook_ingress_path_(ParseIngressPath(config_.webhook_base_url)),
-    compiled_routes_(CompileRoutes(config_, local_endpoint_)),
-        header_allowlist_(BuildHeaderAllowlist(config_.header_allowlist)),
+      webhook_ingress_path_(ParseIngressPath(config_.webhook_base_url)),
+      compiled_routes_(CompileRoutes(config_.tunnel, local_endpoint_)),
+      header_allowlist_(BuildHeaderAllowlist(config_.tunnel.header_allowlist)),
+        auth_token_(std::move(auth_token)),
         max_payload_bytes_(
             static_cast<std::size_t>(std::max(0, config_.max_payload_bytes))),
         resolver_(net::make_strand(client.ioc_)),
@@ -258,11 +375,11 @@ private:
   };
 
   static std::vector<CompiledRoute>
-  CompileRoutes(const TunnelConfig &config,
+  CompileRoutes(const WebsocketConfig::Tunnel &tunnel,
                 const LocalEndpointParts &default_endpoint) {
     std::vector<CompiledRoute> compiled;
-    compiled.reserve(config.routes.size());
-    for (const auto &rule : config.routes) {
+    compiled.reserve(tunnel.routes.size());
+    for (const auto &rule : tunnel.routes) {
       if (rule.match_prefix.empty()) {
         continue;
       }
@@ -292,9 +409,9 @@ private:
     const std::string original_path_only(parts.path);
     std::string effective_path_only = original_path_only;
 
-    if (!tunnel_id_.empty() && !webhook_ingress_path_.empty()) {
+    if (!websocket_id_.empty() && !webhook_ingress_path_.empty()) {
       const std::string prefix =
-          JoinLocalPath(webhook_ingress_path_, "/" + tunnel_id_);
+          JoinLocalPath(webhook_ingress_path_, "/" + websocket_id_);
       if (StartsWith(std::string_view(effective_path_only), prefix)) {
         const auto next_pos = prefix.size();
         if (effective_path_only.size() == next_pos) {
@@ -346,7 +463,7 @@ private:
 
   class LocalCall : public std::enable_shared_from_this<LocalCall> {
   public:
-    LocalCall(std::shared_ptr<Session> session, TunnelRequest request,
+    LocalCall(std::shared_ptr<Session> session, WebsocketRequest request,
               LocalEndpointParts local_endpoint, std::string local_target)
         : session_(session), request_(std::move(request)),
           local_endpoint_(std::move(local_endpoint)),
@@ -380,8 +497,10 @@ private:
       deadline_.cancel();
       resolver_.cancel();
       beast::error_code ec;
-      stream_.socket().cancel(ec);
-      stream_.socket().close(ec);
+      auto cancelled = stream_.socket().cancel(ec);
+      auto closed = stream_.socket().close(ec);
+      (void)cancelled;
+      (void)closed;
     }
 
   private:
@@ -402,7 +521,7 @@ private:
                                          : local_endpoint_.host_header;
       http_request_.set(http::field::host, host_value);
       http_request_.set(http::field::user_agent,
-                        "cert-ctrl-tunnel/local-forwarder");
+                        "cert-ctrl-websocket/local-forwarder");
       http_request_.set(http::field::connection, "close");
       session.ApplyAllowlistedHeaders(http_request_, request_.headers);
     }
@@ -449,7 +568,7 @@ private:
         Fail(502, "local response exceeded payload limit");
         return;
       }
-      TunnelResponse res;
+      WebsocketResponse res;
       res.id = request_.id;
       res.status = http_response_.result_int();
       res.body = std::move(http_response_.body());
@@ -465,11 +584,12 @@ private:
         return;
       }
       beast::error_code ignore;
-      stream_.socket().cancel(ignore);
+      auto cancelled = stream_.socket().cancel(ignore);
+      (void)cancelled;
       Fail(504, "local request timeout");
     }
 
-    void CompleteSuccess(TunnelResponse &&res) {
+    void CompleteSuccess(WebsocketResponse &&res) {
       if (completed_) {
         return;
       }
@@ -492,7 +612,7 @@ private:
     }
 
     std::weak_ptr<Session> session_;
-    TunnelRequest request_;
+    WebsocketRequest request_;
     LocalEndpointParts local_endpoint_;
     std::string local_target_;
     std::size_t max_payload_bytes_{0};
@@ -513,7 +633,7 @@ private:
         ws_.next_layer().set_verify_mode(ssl::verify_peer);
       } catch (const std::exception &ex) {
         client_.output_.logger().warning()
-            << "Tunnel TLS verify setup failed, continuing: " << ex.what()
+            << "Websocket TLS verify setup failed, continuing: " << ex.what()
             << std::endl;
       }
     } else {
@@ -522,7 +642,7 @@ private:
   }
 
   void Resolve() {
-    client_.output_.logger().info() << "Tunnel resolving " << endpoint_.host
+    client_.output_.logger().info() << "Websocket resolving " << endpoint_.host
                                     << ':' << endpoint_.port << std::endl;
     resolver_.async_resolve(
         endpoint_.host, endpoint_.port,
@@ -570,13 +690,22 @@ private:
     }
     ws_.set_option(
         websocket::stream_base::timeout::suggested(beast::role_type::client));
-    ws_.set_option(
-        websocket::stream_base::decorator([](websocket::request_type &req) {
-          req.set(http::field::user_agent, std::string("cert-ctrl-tunnel/") +
+    const std::string token = auth_token_;
+    ws_.set_option(websocket::stream_base::decorator(
+        [token](websocket::request_type &req) {
+          req.set(http::field::user_agent, std::string("cert-ctrl-websocket/") +
                                                BOOST_BEAST_VERSION_STRING);
+          if (!token.empty()) {
+            req.set(http::field::authorization, std::string("Bearer ") + token);
+          }
         }));
+    std::string host_header = endpoint_.host;
+    if (endpoint_.port != "443") {
+      host_header.append(":");
+      host_header.append(endpoint_.port);
+    }
     ws_.async_handshake(
-        endpoint_.host, endpoint_.target,
+        host_header, endpoint_.target,
         beast::bind_front_handler(&Session::OnWsHandshake, shared_from_this()));
   }
 
@@ -586,7 +715,7 @@ private:
       return;
     }
     client_.output_.logger().info()
-        << "Tunnel websocket established to " << endpoint_.host
+        << "Websocket websocket established to " << endpoint_.host
         << endpoint_.target << std::endl;
     client_.HandleSessionConnected();
     StartRead();
@@ -605,7 +734,7 @@ private:
       }
       if (ec == websocket::error::closed) {
         client_.output_.logger().warning()
-            << "Tunnel websocket closed by peer" << std::endl;
+            << "Websocket websocket closed by peer" << std::endl;
         NotifyClosed(true);
         return;
       }
@@ -619,7 +748,7 @@ private:
       HandleMessage(message);
     } catch (const std::exception &ex) {
       client_.output_.logger().error()
-          << "Tunnel received invalid JSON: " << ex.what() << std::endl;
+          << "Websocket received invalid JSON: " << ex.what() << std::endl;
     }
     StartRead();
   }
@@ -627,17 +756,44 @@ private:
   void HandleMessage(const json::value &jv) {
     if (!jv.is_object()) {
       client_.output_.logger().warning()
-          << "Tunnel received non-object payload" << std::endl;
+          << "Websocket received non-object payload" << std::endl;
       return;
     }
     const auto &obj = jv.as_object();
     const auto *type_field = obj.if_contains("type");
     if (!type_field || !type_field->is_string()) {
       client_.output_.logger().warning()
-          << "Tunnel payload missing type field" << std::endl;
+          << "Websocket payload missing type field" << std::endl;
       return;
     }
     const std::string type = std::string(type_field->as_string().c_str());
+
+    if (type == "event") {
+      try {
+        auto env = json::value_to<certctrl::WebsocketEventEnvelope>(jv);
+
+        if (env.name == "updates.signal") {
+          HandleUpdatesSignal(env);
+          return;
+        }
+
+        auto legacy = certctrl::TryConvertEventEnvelopeToLegacyMessage(env);
+        if (!legacy) {
+          client_.output_.logger().debug()
+              << "Websocket ignoring unknown event name: " << env.name
+              << std::endl;
+          return;
+        }
+        HandleMessage(*legacy);
+        return;
+      } catch (const std::exception &ex) {
+        client_.output_.logger().warning()
+            << "Websocket received invalid event envelope: " << ex.what()
+            << std::endl;
+        return;
+      }
+    }
+
     if (type == "hello") {
       HandleHello(jv);
     } else if (type == "request") {
@@ -648,47 +804,124 @@ private:
       HandlePong(jv);
     } else {
       client_.output_.logger().debug()
-          << "Tunnel ignoring message type: " << type << std::endl;
+          << "Websocket ignoring message type: " << type << std::endl;
     }
+  }
+
+  void HandleUpdatesSignal(const certctrl::WebsocketEventEnvelope &env) {
+    if (!client_.signal_dispatcher_) {
+      client_.output_.logger().warning()
+          << "Websocket received updates.signal but signal dispatcher is not initialized"
+          << std::endl;
+      return;
+    }
+
+    const auto ack_id = env.id;
+    const auto resume_token = env.resume_token;
+
+    if (!env.payload.is_object()) {
+      client_.output_.logger().warning()
+          << "Websocket updates.signal payload must be an object" << std::endl;
+      return;
+    }
+
+    ::data::DeviceUpdateSignal signal;
+    try {
+      signal = json::value_to<::data::DeviceUpdateSignal>(env.payload);
+    } catch (const std::exception &ex) {
+      client_.output_.logger().warning()
+          << "Websocket failed to parse updates.signal payload: " << ex.what()
+          << std::endl;
+      return;
+    }
+
+    auto self = shared_from_this();
+    client_.signal_dispatcher_->dispatch(signal).run(
+        [self, logger = &client_.output_.logger(), type = signal.type, ack_id,
+         resume_token](auto r) {
+          if (r.is_err()) {
+            logger->warning()
+                << "updates.signal dispatch failed for type=" << type
+                << " error=" << r.error().what << std::endl;
+            return;
+          }
+
+          net::post(self->ws_.get_executor(), [self, ack_id, resume_token]() {
+            if (resume_token && !resume_token->empty()) {
+              if (auto err =
+                      self->client_.state_store_.save_websocket_resume_token(
+                          resume_token)) {
+                self->client_.output_.logger().warning()
+                    << "Failed to persist websocket resume token: " << *err
+                    << std::endl;
+              }
+            }
+            if (ack_id && !ack_id->empty()) {
+              self->SendUpdatesAck(*ack_id, resume_token);
+            }
+          });
+        });
+  }
+
+  void SendUpdatesAck(const std::string &ack_id,
+                      const std::optional<std::string> &resume_token) {
+    certctrl::WebsocketEventEnvelope ack;
+    ack.name = "updates.ack";
+    ack.id = ack_id;
+    ack.ts_ms = NowMillis();
+    ack.resume_token = resume_token;
+    ack.payload = json::object{};
+    Enqueue(json::value_from(ack));
   }
 
   void HandleHello(const json::value &jv) {
     try {
-      auto hello = json::value_to<TunnelHello>(jv);
+      auto hello = json::value_to<WebsocketHello>(jv);
       hello_received_ = true;
-      tunnel_id_ = hello.tunnel_id;
+      websocket_id_ = hello.connection_id;
       client_.output_.logger().info()
-          << "Tunnel handshake hello for tunnel_id=" << tunnel_id_
-          << " local_base_url=" << hello.local_base_url << std::endl;
+          << "Websocket handshake hello for websocket_id=" << websocket_id_
+          << std::endl;
+
+      SendHelloAck();
     } catch (const std::exception &ex) {
       client_.output_.logger().error()
-          << "Failed to parse tunnel hello: " << ex.what() << std::endl;
+          << "Failed to parse websocket hello: " << ex.what() << std::endl;
     }
   }
 
+  void SendHelloAck() {
+    certctrl::WebsocketEventEnvelope env;
+    env.name = "lifecycle.hello_ack";
+    env.ts_ms = NowMillis();
+    env.resume_token = client_.state_store_.get_websocket_resume_token();
+    env.payload = json::object{{"connection_id", websocket_id_}};
+    Enqueue(json::value_from(env));
+  }
+
   void HandleRequest(const json::value &jv) {
-    TunnelRequest req;
+    WebsocketRequest req;
     try {
-      req = json::value_to<TunnelRequest>(jv);
+      req = json::value_to<WebsocketRequest>(jv);
     } catch (const std::exception &ex) {
       client_.output_.logger().error()
-          << "Failed to parse tunnel request: " << ex.what() << std::endl;
+          << "Failed to parse websocket request: " << ex.what() << std::endl;
       return;
     }
 
     if (req.body.size() > max_payload_bytes_) {
-      SendImmediateError(req.id, 413, "payload exceeds tunnel limit");
+      SendImmediateError(req.id, 413, "payload exceeds websocket limit");
       return;
     }
 
     if (config_.max_concurrent_requests > 0 &&
         in_flight_requests_ >= config_.max_concurrent_requests) {
-      SendImmediateError(req.id, 429, "too many concurrent tunnel requests");
+      SendImmediateError(req.id, 429, "too many concurrent websocket requests");
       return;
     }
 
     if (local_calls_.find(req.id) != local_calls_.end()) {
-      SendImmediateError(req.id, 409, "duplicate tunnel request id");
+      SendImmediateError(req.id, 409, "duplicate websocket request id");
       return;
     }
 
@@ -704,28 +937,28 @@ private:
 
   void HandlePing(const json::value &jv) {
     try {
-      auto ping = json::value_to<TunnelPing>(jv);
-      TunnelPong pong;
+      auto ping = json::value_to<WebsocketPing>(jv);
+      WebsocketPong pong;
       pong.ts = ping.ts ? ping.ts : NowMillis();
       Enqueue(json::value_from(pong));
     } catch (const std::exception &ex) {
       client_.output_.logger().warning()
-          << "Failed to parse tunnel ping: " << ex.what() << std::endl;
+          << "Failed to parse websocket ping: " << ex.what() << std::endl;
     }
   }
 
   void HandlePong(const json::value &jv) {
     try {
-      auto pong = json::value_to<TunnelPong>(jv);
+      auto pong = json::value_to<WebsocketPong>(jv);
       client_.output_.logger().debug()
-          << "Tunnel pong ts=" << pong.ts << std::endl;
+          << "Websocket pong ts=" << pong.ts << std::endl;
     } catch (const std::exception &ex) {
       client_.output_.logger().warning()
-          << "Failed to parse tunnel pong: " << ex.what() << std::endl;
+          << "Failed to parse websocket pong: " << ex.what() << std::endl;
     }
   }
 
-  void OnLocalCallSuccess(TunnelResponse &&res) {
+  void OnLocalCallSuccess(WebsocketResponse &&res) {
     DeliverResponse(std::move(res));
     CompleteLocalRequest(res.id);
   }
@@ -747,7 +980,7 @@ private:
     if (ec) {
       if (ec != net::error::operation_aborted) {
         client_.output_.logger().warning()
-            << "Tunnel ping timer error: " << ec.message() << std::endl;
+            << "Websocket ping timer error: " << ec.message() << std::endl;
       }
       return;
     }
@@ -756,7 +989,7 @@ private:
   }
 
   void SendPing() {
-    TunnelPing ping;
+    WebsocketPing ping;
     ping.ts = NowMillis();
     Enqueue(json::value_from(ping));
   }
@@ -791,7 +1024,7 @@ private:
 
   void SendImmediateError(const std::string &request_id, int status,
                           std::string message) {
-    TunnelResponse res;
+    WebsocketResponse res;
     res.id = request_id;
     res.status = status;
     res.body = std::move(message);
@@ -799,7 +1032,7 @@ private:
     DeliverResponse(std::move(res));
   }
 
-  void DeliverResponse(TunnelResponse &&response) {
+  void DeliverResponse(WebsocketResponse &&response) {
     Enqueue(json::value_from(response));
   }
 
@@ -843,7 +1076,7 @@ private:
   void OnClose(const beast::error_code &ec) {
     if (ec && ec != net::error::operation_aborted) {
       client_.output_.logger().warning()
-          << "Tunnel websocket close error: " << ec.message() << std::endl;
+          << "Websocket websocket close error: " << ec.message() << std::endl;
     }
     NotifyClosed(false);
   }
@@ -854,7 +1087,25 @@ private:
       return;
     }
     client_.output_.logger().error()
-        << "Tunnel " << context << " error: " << ec.message() << std::endl;
+        << "Websocket " << context << " error: " << ec.message() << std::endl;
+
+    if (std::string_view(context) == "ws_handshake") {
+      const std::string msg = ec.message();
+      const bool looks_like_rejection =
+          (msg.find("declined") != std::string::npos) ||
+          (msg.find("handshake") != std::string::npos) ||
+          (msg.find("upgrade") != std::string::npos);
+
+      if (looks_like_rejection) {
+        client_.output_.logger().warning()
+            << "Websocket handshake failed. This is often caused by authorization "
+               "failure (token expired / device not registered) or a server/proxy "
+               "rejecting the WebSocket upgrade. If this device should be online, "
+               "re-run the device onboarding/registration flow to obtain a fresh token."
+            << std::endl;
+      }
+    }
+
     NotifyClosed(true);
   }
 
@@ -869,8 +1120,8 @@ private:
     client_.HandleSessionClosed(should_retry && !closing_);
   }
 
-  TunnelClient &client_;
-  TunnelConfig config_;
+  WebsocketClient &client_;
+  WebsocketConfig config_;
   EndpointParts endpoint_;
   LocalEndpointParts local_endpoint_;
   std::vector<CompiledRoute> compiled_routes_;
@@ -887,53 +1138,168 @@ private:
   bool closing_{false};
   bool notified_close_{false};
   bool hello_received_{false};
-  std::string tunnel_id_;
+  std::string websocket_id_;
   std::string webhook_ingress_path_;
+  std::string auth_token_;
 };
 
-TunnelClient::TunnelClient(cjj365::IoContextManager &io_context_manager,
-                           ITunnelConfigProvider &config_provider,
-                           customio::ConsoleOutput &output)
+WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
+                                 IWebsocketConfigProvider &config_provider,
+                                 certctrl::ICertctrlConfigProvider &certctrl_config_provider,
+                                 customio::ConsoleOutput &output,
+                                 cjj365::ConfigSources &config_sources,
+                                 certctrl::IDeviceStateStore &state_store,
+                                 std::shared_ptr<certctrl::InstallConfigManager> install_config_manager,
+                                 std::shared_ptr<certctrl::ISessionRefresher> session_refresher)
     : ioc_(io_context_manager.ioc()), config_provider_(config_provider),
-      output_(output), reconnect_timer_(ioc_), rng_(std::random_device{}()) {}
+      certctrl_config_provider_(certctrl_config_provider),
+      output_(output), config_sources_(config_sources),
+      state_store_(state_store),
+      install_config_manager_(std::move(install_config_manager)),
+      session_refresher_(std::move(session_refresher)),
+      reconnect_timer_(ioc_), rng_(std::random_device{}()) {
+  if (config_sources_.paths_.empty()) {
+  output_.logger().warning()
+    << "Signal dispatcher not initialized: no config source directories"
+    << std::endl;
+  return;
+  }
 
-TunnelClient::~TunnelClient() { Stop(); }
+  const auto config_dir = config_sources_.paths_.back();
+  instance_lock_path_ = config_dir / "state" / "websocket_instance.lock";
+  signal_dispatcher_ =
+    std::make_unique<certctrl::SignalDispatcher>(config_dir, &state_store_);
 
-void TunnelClient::Start() {
+  auto on_ws_config_updated = [this]() {
+    net::dispatch(ioc_, [this]() {
+      if (!running_ || stop_requested_) {
+        return;
+      }
+      output_.logger().info()
+          << "websocket config updated; restarting websocket session"
+          << std::endl;
+      reconnect_timer_.cancel();
+      if (session_) {
+        session_->Stop();
+        session_.reset();
+      }
+      this->StartSession(config_provider_.get(), true);
+    });
+  };
+
+  signal_dispatcher_->register_handler(
+      std::make_shared<certctrl::signal_handlers::ConfigUpdatedHandler>(
+          certctrl_config_provider_, output_, &config_provider_, on_ws_config_updated));
+
+  if (!install_config_manager_) {
+  output_.logger().warning()
+    << "InstallConfigManager dependency missing; updates.signal will be ignored"
+    << std::endl;
+  } else {
+  signal_dispatcher_->register_handler(
+    std::make_shared<certctrl::signal_handlers::InstallUpdatedHandler>(
+      install_config_manager_, output_));
+
+  signal_dispatcher_->register_handler(
+    std::make_shared<certctrl::signal_handlers::CertUpdatedHandler>(
+      install_config_manager_, output_));
+
+  signal_dispatcher_->register_handler(
+    std::make_shared<certctrl::signal_handlers::CertUnassignedHandler>(
+      install_config_manager_, output_));
+
+  signal_dispatcher_->register_handler(
+    std::make_shared<certctrl::signal_handlers::CaAssignedHandler>(
+      install_config_manager_, output_));
+
+  signal_dispatcher_->register_handler(
+    std::make_shared<certctrl::signal_handlers::CaUnassignedHandler>(
+      install_config_manager_, output_));
+  }
+
+  output_.logger().info() << "Websocket signal dispatcher ready (handlers="
+              << signal_dispatcher_->handler_count() << ")"
+              << std::endl;
+}
+
+WebsocketClient::~WebsocketClient() { Stop(); }
+
+bool WebsocketClient::AcquireSingleInstanceLock() {
+  if (instance_lock_) {
+    return true;
+  }
+
+  if (instance_lock_path_.empty()) {
+    output_.logger().warning()
+        << "Websocket single-instance lock disabled: lock path missing"
+        << std::endl;
+    return true;
+  }
+
+  try {
+    std::error_code ec;
+    std::filesystem::create_directories(instance_lock_path_.parent_path(), ec);
+    {
+      std::ofstream touch(instance_lock_path_, std::ios::app);
+    }
+
+    auto lock = std::make_unique<boost::interprocess::file_lock>(
+        instance_lock_path_.c_str());
+    if (!lock->try_lock()) {
+      return false;
+    }
+    instance_lock_ = std::move(lock);
+    return true;
+  } catch (const std::exception &ex) {
+    output_.logger().warning()
+        << "Websocket single-instance lock failed (continuing without lock): "
+        << ex.what() << std::endl;
+    return true;
+  }
+}
+
+void WebsocketClient::Start() {
   const auto &config = config_provider_.get();
   BOOST_LOG_SEV(lg, trivial::trace)
-      << "TunnelClient::Start invoked (enabled=" << std::boolalpha
+      << "WebsocketClient::Start invoked (enabled=" << std::boolalpha
       << config.enabled << ", running=" << running_ << std::noboolalpha << ")";
   if (!config.enabled) {
     output_.logger().debug()
-        << "Tunnel client start skipped: feature disabled" << std::endl;
+        << "Websocket client start skipped: feature disabled" << std::endl;
+    return;
+  }
+
+  if (!AcquireSingleInstanceLock()) {
+    output_.logger().info()
+        << "Websocket client start skipped: another agent instance already holds the websocket lock"
+        << std::endl;
     return;
   }
   if (running_) {
-    output_.logger().debug() << "Tunnel client already running" << std::endl;
+    output_.logger().debug() << "Websocket client already running" << std::endl;
     return;
   }
   running_ = true;
   stop_requested_ = false;
   LogConfiguration(config);
   BOOST_LOG_SEV(lg, trivial::debug)
-      << "Starting tunnel client toward " << config.remote_endpoint
-      << " forwarding to " << config.local_base_url;
-  output_.logger().info() << "Tunnel client (preview) enabling for "
-                          << config.remote_endpoint << " → "
-                          << config.local_base_url << std::endl;
+      << "Starting websocket client toward " << config.remote_endpoint
+      << " forwarding to " << config.tunnel.local_base_url;
+    output_.logger().info()
+      << "Websocket client (preview) enabling for " << config.remote_endpoint
+      << " -> " << config.tunnel.local_base_url << std::endl;
 
-  TunnelConfig config_copy = config;
+  WebsocketConfig config_copy = config;
   net::dispatch(ioc_, [this, config_copy]() mutable {
-    StartSession(std::move(config_copy));
+    this->StartSession(std::move(config_copy), true);
   });
 }
 
-void TunnelClient::Stop() {
+void WebsocketClient::Stop() {
   if (!running_) {
     return;
   }
-  BOOST_LOG_SEV(lg, trivial::trace) << "TunnelClient::Stop invoked";
+  BOOST_LOG_SEV(lg, trivial::trace) << "WebsocketClient::Stop invoked";
   running_ = false;
   stop_requested_ = true;
   reconnect_timer_.cancel();
@@ -943,12 +1309,12 @@ void TunnelClient::Stop() {
       session_.reset();
     }
   });
-  output_.logger().info() << "Tunnel client stopped" << std::endl;
-  BOOST_LOG_SEV(lg, trivial::info) << "Tunnel client stopped";
+  output_.logger().info() << "Websocket client stopped" << std::endl;
+  BOOST_LOG_SEV(lg, trivial::info) << "Websocket client stopped";
 }
 
-void TunnelClient::LogConfiguration(const TunnelConfig &config) {
-  output_.logger().debug() << fmt::format("tunnel cfg: ping={}s, timeout={}s, "
+void WebsocketClient::LogConfiguration(const WebsocketConfig &config) {
+  output_.logger().debug() << fmt::format("websocket cfg: ping={}s, timeout={}s, "
                                           "max_concurrent={}, max_payload={}B",
                                           config.ping_interval_seconds,
                                           config.request_timeout_seconds,
@@ -962,82 +1328,153 @@ void TunnelClient::LogConfiguration(const TunnelConfig &config) {
       config.verify_tls);
 }
 
-void TunnelClient::StartSession(TunnelConfig config) {
+void WebsocketClient::StartSession(WebsocketConfig config, bool allow_refresh) {
   if (!running_) {
     return;
   }
   BOOST_LOG_SEV(lg, trivial::debug)
-      << "Starting tunnel session with remote_endpoint="
+      << "Starting websocket session with remote_endpoint="
       << config.remote_endpoint;
   reconnect_timer_.cancel();
   EndpointParts remote_endpoint;
   LocalEndpointParts local_endpoint;
   try {
     remote_endpoint = ParseEndpoint(config.remote_endpoint);
-    local_endpoint = ParseLocalEndpoint(config.local_base_url);
+    local_endpoint = ParseLocalEndpoint(config.tunnel.local_base_url);
   } catch (const std::exception &ex) {
     output_.logger().error()
-        << "Tunnel configuration error: " << ex.what() << std::endl;
+        << "Websocket configuration error: " << ex.what() << std::endl;
     BOOST_LOG_SEV(lg, trivial::error)
-        << "Tunnel configuration error: " << ex.what();
+        << "Websocket configuration error: " << ex.what();
     ScheduleReconnect();
     return;
   }
+
+  // Server contract (bbserver WebsocketHandler): device_id is required as a
+  // query parameter, and authentication is via device JWT (Bearer header or
+  // token query param). We prefer Authorization header; still add device_id to
+  // the URL.
+  std::string auth_token;
+  std::string device_id;
+  if (auto tok = state_store_.get_access_token(); tok && !tok->empty()) {
+    auth_token = *tok;
+    if (auto did = DecodeDeviceIdFromJwt(auth_token); did && !did->empty()) {
+      device_id = *did;
+    }
+  }
+
+  if (device_id.empty()) {
+    output_.logger().warning()
+        << "Websocket start skipped: cached access token missing device_id claim; "
+           "run 'cert-ctrl login' to obtain a fresh device token."
+        << std::endl;
+    ScheduleReconnect();
+    return;
+  }
+    // Server expects route param: /api/websocket/<device_id> (or /api/tunnel/<device_id>)
+    remote_endpoint.target =
+      EnsureDeviceIdPath(std::move(remote_endpoint.target), device_id);
+
+  output_.logger().info() << "Websocket connecting to "
+                          << fmt::format("wss://{}:{}{}", remote_endpoint.host,
+                                         remote_endpoint.port,
+                                         remote_endpoint.target)
+                          << std::endl;
+  // Ensure token is fresh enough; if not, refresh using the stored refresh
+  // token and retry the connection.
+  static constexpr std::chrono::seconds kSkew{60};
+  if (allow_refresh && IsJwtExpiringSoon(auth_token, kSkew)) {
+    if (!session_refresher_) {
+      output_.logger().warning()
+          << "Websocket access token is expired/expiring, but SessionRefresher is unavailable; "
+             "run 'cert-ctrl login' or ensure refresh is configured."
+          << std::endl;
+      ScheduleReconnect();
+      return;
+    }
+
+    output_.logger().info()
+        << "Websocket access token expired/expiring; refreshing session tokens before connect."
+        << std::endl;
+
+    auto self = shared_from_this();
+    session_refresher_->refresh("websocket connect")
+        .run([self, cfg = std::move(config)](auto result) mutable {
+          net::dispatch(self->ioc_, [self, cfg = std::move(cfg),
+                                    result = std::move(result)]() mutable {
+            if (!self->running_) {
+              return;
+            }
+            if (result.is_err()) {
+              self->output_.logger().warning()
+                  << "Websocket token refresh failed: " << result.error().what
+                  << std::endl;
+              self->ScheduleReconnect();
+              return;
+            }
+            self->StartSession(std::move(cfg), false);
+          });
+        });
+    return;
+  }
+
   session_ = std::make_shared<Session>(*this, std::move(config),
                                        std::move(remote_endpoint),
-                                       std::move(local_endpoint));
+                                       std::move(local_endpoint),
+                                       std::move(auth_token));
   session_->Start();
-  BOOST_LOG_SEV(lg, trivial::trace) << "Tunnel session dispatched";
+  BOOST_LOG_SEV(lg, trivial::trace) << "Websocket session dispatched";
 }
 
-void TunnelClient::HandleSessionClosed(bool should_retry) {
+void WebsocketClient::HandleSessionClosed(bool should_retry) {
   session_.reset();
   if (!running_) {
     return;
   }
   BOOST_LOG_SEV(lg, trivial::debug)
-      << "Tunnel session closed (retry=" << std::boolalpha << should_retry
+      << "Websocket session closed (retry=" << std::boolalpha << should_retry
       << ", stop_requested=" << stop_requested_ << std::noboolalpha << ")";
   if (!should_retry || stop_requested_) {
-    output_.logger().info() << "Tunnel session closed" << std::endl;
+    output_.logger().info() << "Websocket session closed" << std::endl;
     return;
   }
   ScheduleReconnect();
 }
 
-void TunnelClient::HandleSessionConnected() {
-  BOOST_LOG_SEV(lg, trivial::info) << "Tunnel session established";
+void WebsocketClient::HandleSessionConnected() {
+  BOOST_LOG_SEV(lg, trivial::info) << "Websocket session established";
   backoff_.Reset();
 }
 
-void TunnelClient::ScheduleReconnect() {
+void WebsocketClient::ScheduleReconnect() {
   if (!running_) {
     return;
   }
-  TunnelConfig cfg = config_provider_.get();
+  WebsocketConfig cfg = config_provider_.get();
   backoff_.UpdateOptions(BuildBackoffOptions(cfg));
   auto delay = backoff_.NextDelay(rng_);
   output_.logger().warning()
-      << fmt::format("Tunnel reconnect in {} ms", delay.count()) << std::endl;
+      << fmt::format("Websocket reconnect in {} ms", delay.count()) << std::endl;
   BOOST_LOG_SEV(lg, trivial::warning)
-      << "Tunnel reconnect scheduled in " << delay.count() << " ms";
+      << "Websocket reconnect scheduled in " << delay.count() << " ms";
   reconnect_timer_.expires_after(delay);
+  auto weak = weak_from_this();
   reconnect_timer_.async_wait(
-      [this, cfg](const boost::system::error_code &ec) mutable {
-        if (ec || !running_) {
-          if (ec) {
-            BOOST_LOG_SEV(lg, trivial::debug)
-                << "Reconnect timer cancelled: " << ec.message();
-          }
+      [weak, cfg](const boost::system::error_code &ec) mutable {
+        if (ec) {
           return;
         }
-        BOOST_LOG_SEV(lg, trivial::trace) << "Reconnect timer firing";
-        StartSession(std::move(cfg));
+        auto self = weak.lock();
+        if (!self || !self->running_) {
+          return;
+        }
+        BOOST_LOG_SEV(self->lg, trivial::trace) << "Reconnect timer firing";
+        self->StartSession(std::move(cfg), true);
       });
 }
 
 monad::ExponentialBackoffOptions
-TunnelClient::BuildBackoffOptions(const TunnelConfig &config) const {
+WebsocketClient::BuildBackoffOptions(const WebsocketConfig &config) const {
   monad::ExponentialBackoffOptions opts;
   const int initial = std::max(100, config.reconnect_initial_delay_ms);
   const int maximum = std::max(initial, config.reconnect_max_delay_ms);

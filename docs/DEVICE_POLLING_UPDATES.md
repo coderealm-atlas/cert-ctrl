@@ -1,5 +1,9 @@
 # Device Polling Updates API
 
+Note: This document specifies the **legacy HTTP polling** contract (`GET /apiv1/devices/self/updates`). The agent is moving to **WebSocket-first** delivery (`updates.signal` + resume) and in WebSocket mode the default long-running workflow skips HTTP polling.
+
+See: `docs/WEBSOCKET_POLLING_MIGRATION_COMBINED.md`.
+
 This document specifies a lightweight, per-device polling endpoint that lets a device learn about relevant changes without receiving large payloads. The endpoint returns compact “signals” (metadata and references), and the device fetches full resources only when needed. When there are no changes, the server responds with 204 No Content to minimize bandwidth and wakeups.
 
 The spec integrates installation changes from `device_install_configs` so devices learn that their installation profile changed and can refetch it.

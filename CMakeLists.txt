@@ -664,9 +664,10 @@ list(APPEND APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/certificates_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/update_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_apply_handler.cpp
+    # ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/short_poll_runner.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/state/device_state_store.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/tunnel/tunnel_client.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/tunnel/tunnel_messages.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/websocket/websocket_client.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/websocket/websocket_messages.cpp
 )
 
 # Always use a stable target name; vary only the output file name per config

@@ -107,50 +107,76 @@ target_link_libraries(test_info_handler PRIVATE
 
 gtest_discover_tests(test_info_handler DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
-add_executable(test_tunnel_messages
-  test_tunnel_messages.cpp
-  ${CMAKE_SOURCE_DIR}/src/tunnel/tunnel_messages.cpp
+add_executable(test_websocket_messages
+  test_websocket_messages.cpp
+  ${CMAKE_SOURCE_DIR}/src/websocket/websocket_messages.cpp
 )
-target_compile_features(test_tunnel_messages PRIVATE cxx_std_17)
-target_include_directories(test_tunnel_messages PRIVATE
+target_compile_features(test_websocket_messages PRIVATE cxx_std_17)
+target_include_directories(test_websocket_messages PRIVATE
   ${CMAKE_SOURCE_DIR}/include
 )
-target_link_libraries(test_tunnel_messages PRIVATE
+target_link_libraries(test_websocket_messages PRIVATE
   GTest::gtest_main
   Boost::json
   fmt::fmt
 )
 
-gtest_discover_tests(test_tunnel_messages DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+gtest_discover_tests(test_websocket_messages DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
-add_executable(test_tunnel_client
-  test_tunnel_client.cpp
-  ${CMAKE_SOURCE_DIR}/src/tunnel/tunnel_client.cpp
-  ${CMAKE_SOURCE_DIR}/src/tunnel/tunnel_messages.cpp
+add_executable(test_websocket_client
+  test_websocket_client.cpp
+  ${CMAKE_SOURCE_DIR}/src/websocket/websocket_client.cpp
+  ${CMAKE_SOURCE_DIR}/src/websocket/websocket_messages.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_config_manager.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/copy_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/exec_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/import_ca_action.cpp
+  ${CMAKE_SOURCE_DIR}/src/browser_trust_sync.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/install_resource_materializer.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/materialize_password_manager.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/session_refresher.cpp
+  ${CMAKE_SOURCE_DIR}/src/secret_util.cpp
+  ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
+  ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
+  ${DEVICE_STATE_STORE_SRC}
+  ${HTTP_CLIENT_SRCS}
 )
-target_compile_features(test_tunnel_client PRIVATE cxx_std_17)
-target_include_directories(test_tunnel_client PRIVATE
+target_compile_features(test_websocket_client PRIVATE cxx_std_17)
+target_include_directories(test_websocket_client PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/external/http_client/include
+  ${CMAKE_SOURCE_DIR}/external/http_client
 )
-target_link_libraries(test_tunnel_client PRIVATE
+target_link_libraries(test_websocket_client PRIVATE
   GTest::gtest_main
+  Boost::program_options
   Boost::asio
   Boost::json
   Boost::url
   Boost::system
+  Boost::container
+  Boost::uuid
+  Boost::process
+  Boost::iostreams
   Boost::log
   Boost::log_setup
+  Boost::filesystem
+  Boost::thread
+  Boost::chrono
+  Boost::date_time
   fmt::fmt
   OpenSSL::SSL
   OpenSSL::Crypto
+  unofficial-sodium::sodium
+  unofficial::sqlite3::sqlite3
   certctrl_libatomic
+  di_config
 ryml::ryml
 )
 
-certctrl_use_static_atomic(test_tunnel_client)
+certctrl_use_static_atomic(test_websocket_client)
 
-gtest_discover_tests(test_tunnel_client DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
+gtest_discover_tests(test_websocket_client DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
 
 add_executable(test_device_fingerprint
   test_device_fingerprint.cpp
@@ -566,3 +592,33 @@ gtest_discover_tests(
   test_updates_polling_handler
   DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG}
   DISCOVERY_PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+
+# Short poll runner tests
+# add_executable(test_short_poll_runner
+#   test_short_poll_runner.cpp
+#   ${HTTP_CLIENT_SRCS}
+#   ${CMAKE_SOURCE_DIR}/src/handlers/short_poll_runner.cpp
+# )
+# target_compile_features(test_short_poll_runner PRIVATE cxx_std_17)
+# target_include_directories(test_short_poll_runner PRIVATE
+#   ${CMAKE_SOURCE_DIR}/include
+#   ${CMAKE_SOURCE_DIR}/external/http_client/include
+#   ${CMAKE_SOURCE_DIR}/tests/include
+# )
+# target_link_libraries(test_short_poll_runner PRIVATE
+#   GTest::gtest_main
+#   Boost::asio
+#   Boost::json
+#   Boost::url
+#   Boost::system
+#   Boost::log
+#   Boost::log_setup
+#   fmt::fmt
+#   OpenSSL::SSL
+#   OpenSSL::Crypto
+#   certctrl_libatomic
+# )
+
+# certctrl_use_static_atomic(test_short_poll_runner)
+
+# gtest_discover_tests(test_short_poll_runner DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
