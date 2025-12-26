@@ -9,6 +9,9 @@ Unify all server→agent commands and agent→server responses on a single WebSo
 
 Historically, the “tunnel” (HTTP reverse-proxy forwarding) was the only inbound message branch. Now HTTP forwarding is only one subset of a broader event space (device update signals, control, lifecycle, etc.).
 
+Related:
+- Automated end-to-end test plan: [docs/e2e/AUTOMATED_E2E_TEST_PLAN.md](e2e/AUTOMATED_E2E_TEST_PLAN.md)
+
 ## Scope / Non-goals
 **In scope**
 - A single WebSocket endpoint handling lifecycle + HTTP forwarding + device update signals.
