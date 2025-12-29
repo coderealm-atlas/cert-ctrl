@@ -7,6 +7,17 @@ It supersedes the previously split-out documents and is intended to be the only 
 ## Goal
 Unify all server→agent commands and agent→server responses on a single WebSocket connection, and replace updates polling with server-pushed `updates.signal` events.
 
+**Canonical delivery model (target)**
+- **Durability / resume (for replayable updates)**: server appends replayable device updates to Redis Stream `device:updates:<device_id>` (bounded via `MAXLEN`).
+- **Realtime**: when the device is connected via WebSocket, server **directly pushes** `updates.signal` to that WebSocket session (best-effort, low latency).
+- **Catch-up**: on reconnect, server replays from the Redis stream using the client-provided `resume_token` (Redis Stream entry id).
+
+This keeps Redis as the source of truth for replayable updates while avoiding “one Redis blocking read per WebSocket session”, which is not viable at 100k connections.
+
+Important nuance:
+- Some signals are time-bounded commands (example: “start a temporary ACME listener”). They may be useful only during a short TTL and become meaningless afterward.
+- For time-bounded commands, we rely on explicit expiry semantics: an expired replay MUST become a safe no-op, but still ack + advance `resume_token` so delivery does not stall.
+
 Historically, the “tunnel” (HTTP reverse-proxy forwarding) was the only inbound message branch. Now HTTP forwarding is only one subset of a broader event space (device update signals, control, lifecycle, etc.).
 
 Related:
@@ -300,10 +311,51 @@ For `updates.signal` messages the server expects to be reliably delivered:
 Implementation note:
 - The existing polling cursor is already a Redis Stream entry id (e.g. `1736900123421-0`) and is a good direct `resume_token`.
 
+### Resume token semantics (precise)
+This is the core rule set that makes **direct push + Redis resume** behave consistently.
+
+- `resume_token` is the **raw Redis Stream entry id** string (example: `1736900123421-0`).
+- For `updates.signal`, the server SHOULD set:
+  - envelope `resume_token` = Redis Stream entry id of this update
+  - envelope `id` = the same value (so the client will ack and the id is stable)
+- The token carried by the client in `lifecycle.hello_ack.resume_token` means:
+  - “this is the **last successfully processed** stream entry id”.
+- Server catch-up rule on (re)connect:
+  - start reading from Redis with the client token as the `XREAD` start id, so Redis returns entries with ids **greater than** the token.
+  - This matches existing polling semantics (“after cursor”).
+- Initial / missing token:
+  - if the client provides no `resume_token`, the server MUST behave as if it were `0-0`.
+
+#### Trimming / gaps (MAXLEN reality)
+Because streams are bounded (via `MAXLEN`), the client token can become too old and the exact backlog may no longer exist.
+
+- If the client `resume_token` is **older than the earliest entry currently retained** in the stream:
+  - the server MUST treat this as a **gap** (some updates were trimmed and cannot be replayed).
+  - the server SHOULD resume delivery from the earliest retained entry (best-effort), and SHOULD additionally trigger a “full resync” update if the domain requires it (implementation-specific).
+  - Note: the missing trimmed updates are unrecoverable from the stream; correctness must rely on periodic/snapshot-style signals for any state that cannot tolerate gaps.
+
+Practical sizing guideline:
+- Choose `MAXLEN` so the stream holds at least the expected offline window worth of updates per device.
+
 ---
 
-## Server-side notes (current external/bb implementation)
-These notes reflect the server implementation found under `external/bb/apps/bbserver/include/http_handlers/websocket_handler.hpp`.
+## Server-side notes (target design)
+
+### Delivery path: direct push + Redis resume
+- **Write-first**: server MUST append the update to Redis stream `device:updates:<device_id>` before attempting realtime delivery.
+- **Direct push**: if the device is currently connected to this server instance via WebSocket, the server SHOULD send `updates.signal` directly to that WebSocket session immediately.
+- **Best-effort realtime**: failure to push over WebSocket MUST NOT drop the update; the Redis entry is the durable record and will be delivered on reconnect/catch-up.
+- **Resume**: on reconnect, server MUST start delivery from the Redis stream using `lifecycle.hello_ack.resume_token`.
+- **Trimming**: streams MUST be bounded (e.g. `XADD ... MAXLEN ~ N`) so Redis memory does not grow unbounded.
+
+### Ack handling
+- `updates.ack` SHOULD be used for observability / flow control.
+- Durability is guaranteed by Redis stream + resume token, not by relying exclusively on acks.
+
+---
+
+## Server-side notes (current external/bb implementation — interim)
+These notes reflect the current server implementation found under `external/bb/apps/bbserver/include/http_handlers/websocket_handler.hpp`.
 
 - **Hello**: server sends envelope `lifecycle.hello` with `payload.connection_id` and may include extra fields.
 - **When updates start**: server begins streaming `updates.signal` only after receiving `lifecycle.hello_ack`.
@@ -311,7 +363,59 @@ These notes reflect the server implementation found under `external/bb/apps/bbse
   - Redis key: `device:updates:<device_id>`.
   - The Redis entry id is used as both `updates.signal.id` and `updates.signal.resume_token`.
 - **Ack handling**: `updates.ack` is currently accepted but treated as a no-op (telemetry-only).
-- **Redelivery model**: within a single connection, the server advances its internal cursor as it *sends*; redelivery is primarily driven by reconnect + the client-provided `lifecycle.hello_ack.resume_token`.
+- **Delivery mechanism**: the current implementation reads the Redis stream (blocking `XREAD ... BLOCK`) and forwards entries to the WebSocket session.
+
+This interim bridge works functionally, but it is **not** a suitable long-term approach for very high concurrency (e.g. 100k connected agents), because it tends to consume a Redis connection + a long-lived blocked read per WebSocket session.
+
+## Scalability note: Redis blocking reads per WebSocket (serious concern)
+
+### What the current server does
+The current server implementation bridges `device:updates:<device_id>` (Redis Stream) to WebSocket delivery by running a loop that issues a blocking stream read (Redis `XREAD ... BLOCK <ms>`), then sends each returned entry as `updates.signal`.
+
+Important nuance: this is **async** on the server (it does not block a CPU thread), but it still consumes **a Redis connection + an outstanding blocked read** per active WebSocket session.
+
+### Why it exists
+This design keeps a single “source of truth” for server→agent updates (the Redis stream) and allows:
+- durable backlog when the device is offline,
+- resume on reconnect using the stream entry id as `resume_token`,
+- a unified delivery model across polling and WebSocket.
+
+### Why it becomes a scalability problem
+At high concurrency (e.g. tens/hundreds of thousands of connected agents), “one Redis connection + one blocking read per WebSocket” is usually not acceptable:
+- Redis `maxclients` / file descriptor limits can be exceeded.
+- Memory and bookkeeping overhead grows linearly with WebSocket connections.
+- A slow/overloaded Redis can degrade WebSocket delivery across all agents.
+
+This is not a theoretical concern: even though the server is asynchronous, Redis and the OS still have to hold the sockets and state.
+
+### Recommended direction (canonical)
+If WebSocket is the primary realtime path, prefer an architecture where Redis connections scale with server instances (or shards), not with devices.
+
+**Canonical recommendation**: write to Redis stream for durability, and directly push to the WebSocket session when connected. Use Redis stream only for resume/catch-up.
+
+Common options:
+
+1) **Direct push when online + stream for offline backlog**
+  - When a device is connected via WebSocket, publish updates directly to that session.
+  - Still append to the Redis stream (or another durable store) only for offline delivery/resume.
+  - Result: realtime delivery does not require per-connection Redis reads.
+
+2) **Shared Redis stream readers + in-process fanout**
+  - Run a small number of Redis stream readers per server (sharded by device id range / hash).
+  - Maintain an in-memory map `device_id -> websocket_session`.
+  - Reader routes each stream entry to the correct session(s).
+  - Result: Redis connections are bounded, but correctness now depends on server-side routing/sharding.
+
+3) **Pub/Sub for realtime + Stream for durability**
+  - Publish to a Pub/Sub channel for “online devices”, and append to stream for durability.
+  - Use resume token to fill gaps on reconnect.
+  - Result: fast fanout without per-device stream reads, but requires careful gap handling.
+
+### Operational recommendation
+Before fully cutting over polling → WebSocket, decide a realistic target for concurrent connected agents and validate:
+- Redis connection limits and resource usage,
+- expected per-server WebSocket concurrency,
+- whether “per-websocket stream read” is acceptable at that target.
 
 ### Requirements (agent)
 On receiving `updates.signal`:
@@ -402,6 +506,49 @@ Reason: the current client only sends `updates.ack` when `env.id` is present and
 
 #### `updates.ack`
 Server behavior (recommendation): treat `updates.ack` as an optimization/hint (metrics / flow control), not as the sole durability mechanism. Durability should remain based on Redis stream + client resume token.
+
+---
+
+## Migration checklist: interim Redis-bridge → direct push (preserve resume)
+This is the minimal sequence to move from the current “Redis stream blocking read per WebSocket” bridge to the canonical “direct push + Redis resume” model without breaking `resume_token`.
+
+- Keep publishing to Redis Stream as the durable log (`XADD device:updates:<device_id> MAXLEN ~ N ...`).
+- Change realtime delivery to be **write-first, then push**:
+  - `XADD` first, capture the returned stream entry id.
+  - Build `updates.signal` with `id` = entry id and `resume_token` = entry id.
+  - If the device is currently connected to this same server instance, send the message directly over that WebSocket.
+- On WebSocket connect:
+  - wait for `lifecycle.hello_ack`.
+  - perform a bounded catch-up read from the Redis stream starting **after** `hello_ack.resume_token` until “now”.
+  - once caught up, switch to pure direct push for new updates (no per-connection Redis blocking reads).
+- Keep `updates.ack` handling as telemetry/flow-control (optional for correctness).
+
+Multi-server note:
+- Direct push only reaches sessions connected to the same server instance. If you have multiple bbserver instances behind a load balancer, you must either:
+  - ensure device WebSockets are **sticky** to one instance, OR
+  - add a cross-node fanout mechanism (e.g. Redis Pub/Sub / broker) so a publish on node A can be pushed to a WS session on node B.
+
+---
+
+## Replayable updates vs time-bounded commands
+Not every signal is meaningful to keep or replay forever.
+
+Recommended classification:
+- **Replayable (state-carrying) updates**: safe and useful to replay after reconnect.
+  - Examples: `install.updated`, `cert.updated`, `config.updated`.
+  - These SHOULD be appended to the Redis stream and replayed via `resume_token`.
+- **Time-bounded commands**: useful only within a TTL; after expiry they MUST become a no-op.
+  - Examples: `acme.http01.start`, `acme.tlsalpn01.start`.
+  - **For ACME verification flows, the device MUST be connected during the verification process.** Therefore, these commands SHOULD be delivered as **realtime-only** (direct WebSocket push) and SHOULD NOT rely on Redis stream replay for correctness.
+  - Even if realtime-only, these commands MUST include TTL/expiry so the agent can self-cleanup if the server cannot send a stop message (e.g. server crash).
+  - If you choose to also append them to the stream for observability, they MUST still obey the expiry/no-op rules below.
+
+Normative rule for time-bounded commands:
+- If a time-bounded command is received but is already expired, the agent MUST:
+  - perform **no side effects**, and
+  - still treat it as successfully processed for delivery purposes (persist `resume_token` + send `updates.ack` when `id` is present).
+
+Rationale: otherwise an expired command can be replayed forever and stall delivery progress.
 
 ---
 
@@ -506,11 +653,11 @@ The agent must be able to *serve* this content locally for the duration of valid
 ### Wire contract
 Deliver all ACME actions as `updates.signal` with a new `payload.type`. This keeps the envelope contract intact.
 
-#### 1) Start/Update challenge: `updates.signal` payload.type = `acme.http01.challenge`
+#### 1) Start/Update signal: `updates.signal` payload.type = `acme.http01.start`
 Canonical payload:
 ```json
 {
-  "type": "acme.http01.challenge",
+  "type": "acme.http01.start",
   "ts_ms": 1736900123421,
   "ref": {
     "challenge_id": "chlg-abc123",
@@ -539,6 +686,10 @@ Rules:
 - `ref.ttl_seconds` defaults to `300` if omitted.
 - `ref.domains` is OPTIONAL (observability only).
 
+Expiry semantics (normative):
+- The agent MUST treat the command as expired if `now_ms > (ts_ms + ttl_seconds*1000)`.
+- If expired when received (including during replay after reconnect), the agent MUST no-op but MUST still ack + advance `resume_token`.
+
 Notes:
 - HTTP-01 is defined over plain HTTP; the `https` object exists only to cover deployments that want an HTTPS listener for local testing or non-standard frontends. If `https.enabled=true`, the server MUST also provide certificate material and exact serving requirements (not covered here). For interoperability, the initial rollout SHOULD keep `https.enabled=false`.
 
@@ -563,7 +714,7 @@ Stop conditions (normative):
 - The agent MUST also stop the temporary HTTP-01 server automatically when the local `ttl_seconds` timeout elapses (even if no explicit stop command arrives).
 - Stop is idempotent: repeating stop (or timeout firing after a stop) MUST be a no-op.
 
-#### Start/Update (`acme.http01.challenge`)
+#### Start/Update (`acme.http01.start`)
 1) Validate payload types and required fields (`challenge_id`, `token`, `key_authorization`).
 2) Acquire an in-process guard so only one active HTTP-01 challenge server is running per agent instance.
 3) Bind and start a minimal HTTP server:
@@ -585,6 +736,9 @@ Failure semantics:
   - NOT ack
   - NOT advance/persist `resume_token`
 
+Expired replay semantics:
+- If the signal is expired (per `ttl_seconds`), the agent MUST NOT attempt to bind/listen; it MUST ack+advance as described above.
+
 Operational note:
 - Binding to privileged ports (e.g. 80) may require elevated privileges or `cap_net_bind_service`. The server side MUST choose `ref.listen.http.port` and the deployment’s edge forwarding such that the agent can bind successfully.
 
@@ -594,11 +748,17 @@ Operational note:
 3) If the referenced `challenge_id` is not active, the agent SHOULD still ack (idempotent stop).
 
 ### Server behavior plan
+0) Confirm the device is currently connected via WebSocket.
+  - If the device is not connected, the server MUST fail the verification attempt (do not proceed).
 1) Create a unique `challenge_id` per pending authorization.
-2) Send `updates.signal` (`acme.http01.challenge`) with stable non-empty `id` + monotonic `resume_token`.
-3) Wait for `updates.ack` for that `id` (or infer success by observing the agent has advanced its resume token on next connect).
+2) Send `updates.signal` (`acme.http01.start`) via **direct WebSocket push**.
+3) Wait for `updates.ack` for that `id`.
+  - If ack is not received within a short timeout, the server MUST fail the verification attempt (do not proceed).
 4) Trigger ACME validation.
 5) After validation completes (success or failure), send `acme.http01.stop` (best-effort cleanup).
+
+Note:
+- This flow intentionally requires the device to be online; it is not designed to be resumable “offline”. TTL-based self-cleanup on the agent still applies.
 
 ### Security considerations
 - The agent MUST NOT serve arbitrary files.
@@ -622,11 +782,11 @@ TLS-ALPN-01 requires that a TLS server on the validation port (commonly `443`) p
 ### Wire contract
 Deliver all TLS-ALPN-01 actions as `updates.signal` with a new `payload.type`.
 
-#### 1) Start/Update challenge: `updates.signal` payload.type = `acme.tlsalpn01.challenge`
+#### 1) Start/Update signal: `updates.signal` payload.type = `acme.tlsalpn01.start`
 Canonical payload:
 ```json
 {
-  "type": "acme.tlsalpn01.challenge",
+  "type": "acme.tlsalpn01.start",
   "ts_ms": 1736900123421,
   "ref": {
     "challenge_id": "chlg-abc123",
@@ -660,6 +820,10 @@ Rules:
 - `ref.certificate.key_pem` MUST be present.
 - `ref.ttl_seconds` SHOULD be present; if omitted, the agent MAY apply a conservative default (e.g. 300) but the preferred rollout is server-provided TTL.
 
+Expiry semantics (normative):
+- The agent MUST treat the command as expired if `now_ms > (ts_ms + ttl_seconds*1000)`.
+- If expired when received (including during replay after reconnect), the agent MUST no-op but MUST still ack + advance `resume_token`.
+
 Notes:
 - The certificate must be the ACME TLS-ALPN-01 challenge certificate for `ref.domain` (including the ACME validation extension and SAN), compatible with ALPN `acme-tls/1`.
 - We intentionally make certificate generation a server-side responsibility in this proposal to keep the agent implementation small and deterministic.
@@ -680,7 +844,7 @@ Stop conditions (normative):
 - The agent MUST also stop the temporary TLS-ALPN-01 server automatically when the local `ttl_seconds` timeout elapses.
 - Stop is idempotent: repeating stop (or timeout firing after a stop) MUST be a no-op.
 
-#### Start/Update (`acme.tlsalpn01.challenge`)
+#### Start/Update (`acme.tlsalpn01.start`)
 1) Validate required fields (`challenge_id`, `domain`, `listen.bind`, `listen.port`, `certificate.cert_pem`, `certificate.key_pem`).
 2) Acquire an in-process guard so only one active TLS-ALPN-01 server is running per agent instance.
 3) Bind and start a minimal TLS server:
@@ -705,15 +869,20 @@ Operational note:
 - Binding to privileged ports (e.g. 443) may require elevated privileges or `cap_net_bind_service`. The server side MUST choose `ref.listen.port` and the deployment’s edge forwarding such that the agent can bind successfully.
 
 ### Server behavior plan
+0) Confirm the device is currently connected via WebSocket.
+  - If the device is not connected, the server MUST fail the verification attempt (do not proceed).
 1) Create a unique `challenge_id` per pending authorization.
 2) Generate the TLS-ALPN-01 challenge certificate and key for `ref.domain`.
-3) Send `updates.signal` (`acme.tlsalpn01.challenge`) with stable non-empty `id` + monotonic `resume_token`.
+3) Send `updates.signal` (`acme.tlsalpn01.start`) via **direct WebSocket push**.
 4) Wait for `updates.ack`.
+  - If ack is not received within a short timeout, the server MUST fail the verification attempt (do not proceed).
 5) Trigger ACME validation.
 6) After validation completes (success or failure), send `acme.tlsalpn01.stop` (best-effort cleanup).
+
+Note:
+- This flow intentionally requires the device to be online; it is not designed to be resumable “offline”. TTL-based self-cleanup on the agent still applies.
 
 ### Security considerations
 - The agent MUST NOT use the provided certificate/key for anything other than the temporary TLS-ALPN-01 listener.
 - The agent SHOULD keep the listener minimal (no HTTP serving on this port for this mode).
 - The agent SHOULD avoid persisting private key material to disk.
-

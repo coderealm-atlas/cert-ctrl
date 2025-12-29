@@ -52,6 +52,10 @@ Provide a single runner entrypoint, e.g.:
 - `scripts/e2e/run.sh` (bash orchestrator), or
 - `pytest` suite (recommended for retries + assertions)
 
+Local implementation (this repo):
+- `e2e/run.sh` (wrapper around `docker-compose.client-test.yml`)
+- cert-ctrl config under `e2e/cert-ctrl/config` (WebSocket enabled, wss endpoint)
+
 Runner responsibilities:
 1. `docker compose up -d --build`
 2. Wait for health checks
@@ -128,13 +132,13 @@ Goal: handler failure does not advance delivery.
 
 ### 5) ACME HTTP-01 (optional)
 Goal: server triggers temporary HTTP responder.
-- Send `acme.http01.challenge`.
+- Send `acme.http01.start`.
 - Assert: `http://<agent>:<port>/.well-known/acme-challenge/<token>` returns `key_authorization`.
 - Assert: `stop` or TTL cleanup works.
 
 ### 6) ACME TLS-ALPN-01 (optional)
 Goal: server triggers temporary TLS responder.
-- Send `acme.tlsalpn01.challenge`.
+- Send `acme.tlsalpn01.start`.
 - Assert: TLS handshake with SNI + ALPN `acme-tls/1` succeeds.
 - Assert: `stop` or TTL cleanup works.
 
@@ -142,3 +146,5 @@ Goal: server triggers temporary TLS responder.
 - Binding privileged ports (80/443) inside containers is possible, but keep it explicit and deterministic.
 - If you need “realistic” port behavior, use host port mappings or a front proxy container.
 - Keep E2E tests fast: prefer deterministic admin endpoints for most contract tests.
+- The cert-ctrl WebSocket client requires `wss://`; local stacks should enable TLS
+  (self-signed is fine with `verify_tls=false`) or add a TLS proxy.

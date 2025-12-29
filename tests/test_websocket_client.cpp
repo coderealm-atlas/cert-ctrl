@@ -1369,7 +1369,7 @@ TEST(WebsocketClientIntegrationTest,
   signal.id = "acme-bad";
   signal.resume_token = "rt-bad";
   signal.payload = json::object{
-      {"type", "acme.tlsalpn01.challenge"},
+      {"type", "acme.tlsalpn01.start"},
       {"ts_ms", 1736900125001},
       {"ref",
        json::object{{"challenge_id", "ch-bad"},
@@ -1434,7 +1434,7 @@ TEST(WebsocketClientIntegrationTest,
   }
 
   EXPECT_FALSE(saw_updates_ack_for_bad)
-      << "should not ack when acme.tlsalpn01.challenge handler fails";
+      << "should not ack when acme.tlsalpn01.start handler fails";
   EXPECT_EQ(state_store.get_websocket_resume_token(),
             std::optional<std::string>("rt-seed"));
 
@@ -1455,7 +1455,7 @@ TEST(WebsocketClientIntegrationTest, AcksTlsAlpn01ChallengeAndPersistsResumeToke
   signal.id = "acme-1";
   signal.resume_token = "rt-acme-1";
   signal.payload = json::object{
-      {"type", "acme.tlsalpn01.challenge"},
+      {"type", "acme.tlsalpn01.start"},
       {"ts_ms", 1736900125002},
       {"ref",
        json::object{{"challenge_id", "ch-1"},

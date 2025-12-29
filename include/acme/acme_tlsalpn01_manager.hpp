@@ -38,37 +38,37 @@ public:
     if (req.challenge_id.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.challenge_id is required"));
+          "acme.tlsalpn01.start ref.challenge_id is required"));
     }
     if (req.domain.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.domain is required"));
+          "acme.tlsalpn01.start ref.domain is required"));
     }
     if (req.token.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.token is required"));
+          "acme.tlsalpn01.start ref.token is required"));
     }
     if (req.key_authorization.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.key_authorization is required"));
+          "acme.tlsalpn01.start ref.key_authorization is required"));
     }
     if (req.bind.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.listen.bind is required"));
+          "acme.tlsalpn01.start ref.listen.bind is required"));
     }
     if (req.cert_pem.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.certificate.cert_pem is required"));
+          "acme.tlsalpn01.start ref.certificate.cert_pem is required"));
     }
     if (req.key_pem.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.certificate.key_pem is required"));
+          "acme.tlsalpn01.start ref.certificate.key_pem is required"));
     }
 
     const int ttl = (req.ttl_seconds > 0) ? req.ttl_seconds : 300;
