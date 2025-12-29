@@ -692,8 +692,33 @@ private:
       Fail("tls_handshake", ec);
       return;
     }
-    ws_.set_option(
-        websocket::stream_base::timeout::suggested(beast::role_type::client));
+
+    // We apply a connect deadline on the lowest layer in OnResolve(). After the
+    // TCP/TLS connection is established, clear any lowest-layer expiry so the
+    // websocket stream's timeout system is the only one in effect.
+    beast::get_lowest_layer(ws_).expires_never();
+
+    // Websocket idle timeout behavior is configurable via websocket_config.json:
+    //   -1: disable websocket timeouts ("never expire")
+    //    0: use Boost.Beast suggested client timeouts (default / previous behavior)
+    //   >0: set websocket idle timeout to this many seconds
+    if (config_.ws_idle_timeout_seconds < 0) {
+      // This Boost.Beast version doesn't provide timeout::none(); instead, use
+      // stream_base::none() (duration::max) to disable the timeouts.
+      websocket::stream_base::timeout t{};
+      t.handshake_timeout = websocket::stream_base::none();
+      t.idle_timeout = websocket::stream_base::none();
+      t.keep_alive_pings = false;
+      ws_.set_option(t);
+    } else if (config_.ws_idle_timeout_seconds == 0) {
+      ws_.set_option(
+          websocket::stream_base::timeout::suggested(beast::role_type::client));
+    } else {
+      auto t = websocket::stream_base::timeout::suggested(beast::role_type::client);
+      t.idle_timeout = std::chrono::seconds(config_.ws_idle_timeout_seconds);
+      ws_.set_option(t);
+    }
+
     const std::string token = auth_token_;
     ws_.set_option(websocket::stream_base::decorator(
         [token](websocket::request_type &req) {

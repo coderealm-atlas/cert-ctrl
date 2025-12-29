@@ -4,6 +4,7 @@
     "webhook_base_url": "https://api.cjj365.cc/hooks",
     "verify_tls": true,
     "request_timeout_seconds": 45,
+    "ws_idle_timeout_seconds": 0,
     "ping_interval_seconds": 20,
     "max_concurrent_requests": 12,
     "max_payload_bytes": 5242880,
