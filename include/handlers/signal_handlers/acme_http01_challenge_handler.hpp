@@ -17,7 +17,7 @@ public:
   explicit AcmeHttp01ChallengeHandler(std::shared_ptr<certctrl::acme::AcmeHttp01Manager> mgr)
       : mgr_(std::move(mgr)) {}
 
-  std::string signal_type() const override { return "acme.http01.challenge"; }
+  std::string signal_type() const override { return "acme.http01.start"; }
 
   monad::IO<void> handle(const ::data::DeviceUpdateSignal &signal) override {
     if (!mgr_) {
@@ -32,7 +32,7 @@ public:
     if (!cid_v || !cid_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.challenge_id must be string"));
+          "acme.http01.start ref.challenge_id must be string"));
     }
     req.challenge_id = std::string(cid_v->as_string().c_str());
 
@@ -40,7 +40,7 @@ public:
     if (!token_v || !token_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.token must be string"));
+          "acme.http01.start ref.token must be string"));
     }
     req.token = std::string(token_v->as_string().c_str());
 
@@ -48,7 +48,7 @@ public:
     if (!ka_v || !ka_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.key_authorization must be string"));
+          "acme.http01.start ref.key_authorization must be string"));
     }
     req.key_authorization = std::string(ka_v->as_string().c_str());
 
@@ -62,7 +62,7 @@ public:
       } else {
         return monad::IO<void>::fail(monad::make_error(
             my_errors::GENERAL::TYPE_CONVERT_FAILED,
-            "acme.http01.challenge ref.ttl_seconds must be number"));
+            "acme.http01.start ref.ttl_seconds must be number"));
       }
     }
 
@@ -70,7 +70,7 @@ public:
     if (!listen_v || !listen_v->is_object()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.listen must be object"));
+          "acme.http01.start ref.listen must be object"));
     }
 
     const auto &listen_obj = listen_v->as_object();
@@ -79,7 +79,7 @@ public:
     if (!http_v || !http_v->is_object()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.listen.http must be object"));
+          "acme.http01.start ref.listen.http must be object"));
     }
 
     const auto &http_obj = http_v->as_object();
@@ -88,7 +88,7 @@ public:
     if (!bind_v || !bind_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.listen.http.bind must be string"));
+          "acme.http01.start ref.listen.http.bind must be string"));
     }
     req.bind = std::string(bind_v->as_string().c_str());
 
@@ -96,7 +96,7 @@ public:
     if (!port_v || (!port_v->is_int64() && !port_v->is_uint64() && !port_v->is_double())) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.listen.http.port must be number"));
+          "acme.http01.start ref.listen.http.port must be number"));
     }
 
     std::int64_t port_i64 = 0;
@@ -110,7 +110,7 @@ public:
     if (port_i64 < 0 || port_i64 > 65535) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::INVALID_ARGUMENT,
-          "acme.http01.challenge ref.listen.http.port out of range"));
+          "acme.http01.start ref.listen.http.port out of range"));
     }
     req.port = static_cast<std::uint16_t>(port_i64);
 
@@ -120,7 +120,7 @@ public:
           if (!enabled_v->is_bool()) {
             return monad::IO<void>::fail(monad::make_error(
                 my_errors::GENERAL::TYPE_CONVERT_FAILED,
-                "acme.http01.challenge ref.listen.https.enabled must be boolean"));
+                "acme.http01.start ref.listen.https.enabled must be boolean"));
           }
           req.https_enabled = enabled_v->as_bool();
         }

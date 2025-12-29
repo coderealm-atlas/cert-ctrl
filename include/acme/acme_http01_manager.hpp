@@ -32,28 +32,28 @@ public:
     if (req.challenge_id.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.challenge_id is required"));
+          "acme.http01.start ref.challenge_id is required"));
     }
     if (req.token.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.token is required"));
+          "acme.http01.start ref.token is required"));
     }
     if (req.key_authorization.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.key_authorization is required"));
+          "acme.http01.start ref.key_authorization is required"));
     }
     if (req.bind.empty()) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.http01.challenge ref.listen.http.bind is required"));
+          "acme.http01.start ref.listen.http.bind is required"));
     }
 
     if (req.https_enabled) {
       return monad::Result<void, monad::Error>::Err(monad::make_error(
           my_errors::GENERAL::NOT_IMPLEMENTED,
-          "acme.http01.challenge https.enabled=true is not supported"));
+          "acme.http01.start https.enabled=true is not supported"));
     }
 
     const int ttl = (req.ttl_seconds > 0) ? req.ttl_seconds : 300;

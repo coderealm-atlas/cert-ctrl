@@ -18,7 +18,7 @@ public:
       std::shared_ptr<certctrl::acme::AcmeTlsAlpn01Manager> mgr)
       : mgr_(std::move(mgr)) {}
 
-  std::string signal_type() const override { return "acme.tlsalpn01.challenge"; }
+  std::string signal_type() const override { return "acme.tlsalpn01.start"; }
 
   monad::IO<void> handle(const ::data::DeviceUpdateSignal& signal) override {
     if (!mgr_) {
@@ -33,7 +33,7 @@ public:
     if (!cid_v || !cid_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.challenge_id must be string"));
+          "acme.tlsalpn01.start ref.challenge_id must be string"));
     }
     req.challenge_id = std::string(cid_v->as_string().c_str());
 
@@ -41,7 +41,7 @@ public:
     if (!domain_v || !domain_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.domain must be string"));
+          "acme.tlsalpn01.start ref.domain must be string"));
     }
     req.domain = std::string(domain_v->as_string().c_str());
 
@@ -49,7 +49,7 @@ public:
     if (!token_v || !token_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.token must be string"));
+          "acme.tlsalpn01.start ref.token must be string"));
     }
     req.token = std::string(token_v->as_string().c_str());
 
@@ -57,7 +57,7 @@ public:
     if (!ka_v || !ka_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.key_authorization must be string"));
+          "acme.tlsalpn01.start ref.key_authorization must be string"));
     }
     req.key_authorization = std::string(ka_v->as_string().c_str());
 
@@ -71,7 +71,7 @@ public:
       } else {
         return monad::IO<void>::fail(monad::make_error(
             my_errors::GENERAL::TYPE_CONVERT_FAILED,
-            "acme.tlsalpn01.challenge ref.ttl_seconds must be number"));
+            "acme.tlsalpn01.start ref.ttl_seconds must be number"));
       }
     }
 
@@ -79,7 +79,7 @@ public:
     if (!listen_v || !listen_v->is_object()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.listen must be object"));
+          "acme.tlsalpn01.start ref.listen must be object"));
     }
 
     const auto& listen_obj = listen_v->as_object();
@@ -88,7 +88,7 @@ public:
     if (!bind_v || !bind_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.listen.bind must be string"));
+          "acme.tlsalpn01.start ref.listen.bind must be string"));
     }
     req.bind = std::string(bind_v->as_string().c_str());
 
@@ -97,7 +97,7 @@ public:
         (!port_v->is_int64() && !port_v->is_uint64() && !port_v->is_double())) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.listen.port must be number"));
+          "acme.tlsalpn01.start ref.listen.port must be number"));
     }
 
     std::int64_t port_i64 = 0;
@@ -112,7 +112,7 @@ public:
     if (port_i64 < 0 || port_i64 > 65535) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::INVALID_ARGUMENT,
-          "acme.tlsalpn01.challenge ref.listen.port out of range"));
+          "acme.tlsalpn01.start ref.listen.port out of range"));
     }
     req.port = static_cast<std::uint16_t>(port_i64);
 
@@ -120,7 +120,7 @@ public:
     if (!cert_v || !cert_v->is_object()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.certificate must be object"));
+          "acme.tlsalpn01.start ref.certificate must be object"));
     }
 
     const auto& cert_obj = cert_v->as_object();
@@ -129,7 +129,7 @@ public:
     if (!cert_pem_v || !cert_pem_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.certificate.cert_pem must be string"));
+          "acme.tlsalpn01.start ref.certificate.cert_pem must be string"));
     }
     req.cert_pem = std::string(cert_pem_v->as_string().c_str());
 
@@ -137,7 +137,7 @@ public:
     if (!key_pem_v || !key_pem_v->is_string()) {
       return monad::IO<void>::fail(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
-          "acme.tlsalpn01.challenge ref.certificate.key_pem must be string"));
+          "acme.tlsalpn01.start ref.certificate.key_pem must be string"));
     }
     req.key_pem = std::string(key_pem_v->as_string().c_str());
 
