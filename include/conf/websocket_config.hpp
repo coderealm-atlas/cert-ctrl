@@ -101,6 +101,11 @@ struct WebsocketConfig {
   std::string webhook_base_url{"https://api.cjj365.cc/hooks"};
   bool verify_tls{true};
   int request_timeout_seconds{45};
+  // Websocket stream idle timeout behavior:
+  //   -1: disable websocket timeouts ("never expire")
+  //    0: use Boost.Beast suggested client timeouts (default)
+  //   >0: set websocket idle timeout to this many seconds
+  int ws_idle_timeout_seconds{0};
   int ping_interval_seconds{20};
   int max_concurrent_requests{12};
   int max_payload_bytes{5 * 1024 * 1024};
@@ -128,6 +133,9 @@ struct WebsocketConfig {
       }
       if (auto *p = obj->if_contains("request_timeout_seconds")) {
         cfg.request_timeout_seconds = p->to_number<int>();
+      }
+      if (auto *p = obj->if_contains("ws_idle_timeout_seconds")) {
+        cfg.ws_idle_timeout_seconds = p->to_number<int>();
       }
       if (auto *p = obj->if_contains("ping_interval_seconds")) {
         cfg.ping_interval_seconds = p->to_number<int>();
@@ -177,6 +185,7 @@ struct WebsocketConfig {
                              {"webhook_base_url", cfg.webhook_base_url},
                              {"verify_tls", cfg.verify_tls},
                              {"request_timeout_seconds", cfg.request_timeout_seconds},
+                             {"ws_idle_timeout_seconds", cfg.ws_idle_timeout_seconds},
                              {"ping_interval_seconds", cfg.ping_interval_seconds},
                              {"max_concurrent_requests", cfg.max_concurrent_requests},
                              {"max_payload_bytes", cfg.max_payload_bytes},
