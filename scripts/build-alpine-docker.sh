@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 IMAGE_NAME="${IMAGE_NAME:-cert-ctrl/alpine-builder}"
 PRESET="${1:-alpine-release}"
+BUILD_TARGET="${BUILD_TARGET:-cert_ctrl}"
 BUILD_DIR_REL="${BUILD_DIR_REL:-build/${PRESET}}"
 INSTALL_PREFIX_REL="${INSTALL_PREFIX_REL:-install/selfhost-${PRESET}}"
 BUILD_DIR="/work/${BUILD_DIR_REL}"
@@ -100,7 +101,7 @@ if [ ! -x "\${TMP_VCPKG}/vcpkg" ]; then
   (cd "\${TMP_VCPKG}" && ./bootstrap-vcpkg.sh -disableMetrics)
 fi
 cmake --preset "${PRESET}" --fresh -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
-cmake --build --preset "${PRESET}"
+cmake --build --preset "${PRESET}" --target "${BUILD_TARGET}"
 rm -rf "${INSTALL_PREFIX}"
 cmake --install "${BUILD_DIR}" --config Release --prefix "${INSTALL_PREFIX}"
 EOF

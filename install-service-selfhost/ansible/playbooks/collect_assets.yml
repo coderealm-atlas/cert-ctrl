@@ -8,16 +8,27 @@
     - name: Determine release version on controller
       when: install_service_release_version | length == 0
       shell: |
-        set -euo pipefail
+        set -eu
         cd "{{ install_service_repo_path }}"
-        if describe=$(git describe --tags --long --dirty --match "v[0-9]*[.][0-9]*[.][0-9]*" --exclude "*-*" --abbrev=8 2>/dev/null); then
-          tag="${describe%-dirty}"
+        describe=$(git describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>/dev/null || true)
+        if [ -n "$describe" ]; then
+          tag="$describe"
         else
-          short_sha=$(git rev-parse --short HEAD)
-          tag="build-local-${short_sha}"
+          short_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+          commit_count=$(git rev-list --count HEAD 2>/dev/null || true)
+          if [ -n "$short_sha" ] && [ -n "$commit_count" ]; then
+            tag="v0.0.${commit_count}-${short_sha}"
+            if ! git diff --quiet HEAD 2>/dev/null; then
+              tag="${tag}-dirty"
+            fi
+          fi
         fi
-        tag=$(printf '%s' "$tag" | sed -E 's/-0-g[0-9a-f]+$//')
-        tag=$(printf '%s' "$tag" | sed -E 's/-$//')
+        if [ -z "${tag:-}" ]; then
+          tag="v0.0.0-unknown"
+        fi
+        if [ "{{ install_service_force_clean_git_describe | default(false) | bool }}" = "true" ]; then
+          tag=$(printf '%s' "$tag" | sed -E 's/-dirty$//')
+        fi
         printf '%s\n' "$tag"
       register: install_service_release_version_cmd
       changed_when: false

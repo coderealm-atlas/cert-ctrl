@@ -8,7 +8,10 @@ INVENTORY_PATH="${ANSIBLE_DIR}/inventory.yml"
 
 action="pipeline"
 limit=""
+build_groups=()
+build_groups_all="false"
 extra_vars=()
+docker_buildkit=""
 
 usage() {
   cat <<'EOF'
@@ -17,6 +20,7 @@ Usage: deploy.sh [options]
 Actions (default: pipeline)
   --action build|collect|prepare|pipeline
   --build windows|macos|freebsd|linux-docker|all
+  --builds windows,macos,freebsd,linux-docker|all
 
 Options
   --limit <ansible-limit>
@@ -27,6 +31,21 @@ Options
   --skip-git-fetch-tags
   -h|--help
 EOF
+}
+
+add_build_group() {
+  local target="$1"
+  target="${target//[[:space:]]/}"
+  case "$target" in
+    windows) build_groups+=("build_windows") ;;
+    macos) build_groups+=("build_macos") ;;
+    freebsd) build_groups+=("build_freebsd") ;;
+    linux-docker) build_groups+=("build_linux_docker") ;;
+    *)
+      echo "Unknown build target: $target" >&2
+      exit 1
+      ;;
+  esac
 }
 
 while [[ $# -gt 0 ]]; do
@@ -50,6 +69,17 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2
       ;;
+    --builds)
+      if [[ "$2" == "all" ]]; then
+        build_groups_all="true"
+      else
+        IFS=',' read -r -a build_targets <<< "$2"
+        for target in "${build_targets[@]}"; do
+          add_build_group "$target"
+        done
+      fi
+      shift 2
+      ;;
     --limit)
       limit="$2"
       shift 2
@@ -65,6 +95,14 @@ while [[ $# -gt 0 ]]; do
     --release-version)
       extra_vars+=("install_service_release_version=$2")
       shift 2
+      ;;
+    --docker-buildkit)
+      docker_buildkit="$2"
+      shift 2
+      ;;
+    --no-docker-buildkit)
+      docker_buildkit="0"
+      shift
       ;;
     --skip-git-pull)
       extra_vars+=("install_service_skip_git_pull=true")
@@ -86,6 +124,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ ${#build_groups[@]} -gt 0 && -n "$limit" ]]; then
+  echo "--builds cannot be used with --limit" >&2
+  exit 1
+fi
+
 case "$action" in
   build) playbook="${ANSIBLE_DIR}/playbooks/build_release.yml" ;;
   collect) playbook="${ANSIBLE_DIR}/playbooks/collect_assets.yml" ;;
@@ -98,11 +141,20 @@ case "$action" in
 esac
 
 cmd=(ansible-playbook -i "$INVENTORY_PATH" "$playbook")
+if [[ -z "$limit" && ${#build_groups[@]} -gt 0 && "$build_groups_all" != "true" ]]; then
+  if [[ "$action" == "pipeline" || "$action" == "collect" || "$action" == "prepare" ]]; then
+    build_groups+=("localhost" "assets_host")
+  fi
+  limit="$(IFS=:; echo "${build_groups[*]}")"
+fi
 if [[ -n "$limit" ]]; then
   cmd+=(--limit "$limit")
 fi
 for var in "${extra_vars[@]}"; do
   cmd+=(-e "$var")
 done
+if [[ -n "$docker_buildkit" ]]; then
+  cmd+=(-e "install_service_docker_buildkit=${docker_buildkit}")
+fi
 
 ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" "${cmd[@]}"
