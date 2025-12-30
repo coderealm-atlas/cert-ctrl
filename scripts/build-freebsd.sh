@@ -83,6 +83,15 @@ if [[ ${#LIBATOMIC_DIRS[@]} -gt 0 ]]; then
   done
   ATOMIC_CMAKE_PATH="$(IFS=';'; echo "${LIBATOMIC_DIRS[*]}")"
   CMAKE_EXTRA_ARGS+=(-DCMAKE_LIBRARY_PATH="${ATOMIC_CMAKE_PATH}")
+  ATOMIC_LINKER_FLAGS=""
+  for p in "${LIBATOMIC_DIRS[@]}"; do
+    if [[ -n "${ATOMIC_LINKER_FLAGS}" ]]; then
+      ATOMIC_LINKER_FLAGS+=" "
+    fi
+    ATOMIC_LINKER_FLAGS+="-L${p} -Wl,-rpath,${p}"
+  done
+  CMAKE_EXTRA_ARGS+=(-DCMAKE_EXE_LINKER_FLAGS="${ATOMIC_LINKER_FLAGS}")
+  CMAKE_EXTRA_ARGS+=(-DCMAKE_SHARED_LINKER_FLAGS="${ATOMIC_LINKER_FLAGS}")
   echo "[freebsd-build] Hinting CMake to libatomic paths: ${LIBATOMIC_DIRS[*]}"
 else
   echo "[freebsd-build] Hint: install gcc (for libatomic) if CMake cannot find libatomic." >&2
@@ -113,19 +122,13 @@ cmake --install "${BUILD_DIR}" --prefix "${INSTALL_PREFIX}"
 
 BIN_NAME="cert_ctrl"
 BIN_SRC="${INSTALL_PREFIX}/bin/${BIN_NAME}"
-BIN_DEST_DIR="${REPO_ROOT}/bin-in-git"
-BIN_DEST="${BIN_DEST_DIR}/${BIN_NAME}-freebsd"
-
-mkdir -p "${BIN_DEST_DIR}"
 if [[ -x "${BIN_SRC}" ]]; then
   if command -v strip >/dev/null 2>&1; then
     echo "[freebsd-build] Stripping symbols from ${BIN_SRC}"
     strip "${BIN_SRC}" || echo "[freebsd-build] Warning: strip failed; continuing with unstripped binary" >&2
   fi
-  cp -f "${BIN_SRC}" "${BIN_DEST}"
-  echo "[freebsd-build] Copied ${BIN_SRC} -> ${BIN_DEST}"
 else
   echo "[freebsd-build] Warning: expected binary not found at ${BIN_SRC}" >&2
 fi
 
-echo "[freebsd-build] Done. Artifacts are in ${INSTALL_PREFIX}/bin and ${BIN_DEST_DIR}"
+echo "[freebsd-build] Done. Artifacts are in ${INSTALL_PREFIX}/bin"

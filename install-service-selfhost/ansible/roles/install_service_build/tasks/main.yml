@@ -1,0 +1,225 @@
+---
+- name: Ensure build commands provided
+  assert:
+    that:
+      - install_service_build_commands | length > 0
+    fail_msg: install_service_build_commands is required for build hosts
+
+- name: Build effective environment
+  set_fact:
+    install_service_proxy_env_effective: >-
+      {{
+        install_service_proxy_env
+        | default({})
+        | dict2items
+        | rejectattr('value', 'equalto', '')
+        | rejectattr('value', 'equalto', None)
+        | items2dict
+      }}
+    install_service_env_effective: >-
+      {{
+        (install_service_proxy_env_effective | default({}))
+        | combine(install_service_build_env | default({}))
+      }}
+    install_service_ps_env_block: >-
+      {%- set ns = namespace(parts=[]) -%}
+      {%- for item in install_service_env_effective | default({}) | dict2items -%}
+      {%- set value = item.value | replace("\"", "`\"") -%}
+      {%- set _ = ns.parts.append("$env:" ~ item.key ~ " = \"" ~ value ~ "\"") -%}
+      {%- endfor -%}
+      {{ ns.parts | join('; ') }}{% if ns.parts | length > 0 %}; {% endif %}
+    install_service_ps_path_block: >-
+      $extraPath = $env:INSTALL_SERVICE_PATH_EXTRA;
+      if ($extraPath) { $env:PATH = "$env:PATH;$extraPath"; };
+    install_service_ps_msvc_block: >-
+      {%- if install_service_msvc_env | default(false) | bool -%}
+      $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\\Installer\\vswhere.exe";
+      if (Test-Path $vswhere) {
+        $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath;
+        if ($vsInstall) {
+          $vcvars = Join-Path $vsInstall "VC\\Auxiliary\\Build\\vcvars64.bat";
+          if (Test-Path $vcvars) {
+            $envBlock = cmd /c "`"$vcvars`" >nul && set";
+            foreach ($line in $envBlock) {
+              if ($line -match ''^(?<name>[^=]+)=(?<val>.*)$'') {
+                [Environment]::SetEnvironmentVariable($matches.name, $matches.val);
+              }
+            }
+          }
+        }
+      };
+      {%- endif -%}
+
+- name: Build PowerShell preamble
+  set_fact:
+    install_service_ps_preamble: >-
+      {{ install_service_ps_env_block }}{{ install_service_ps_msvc_block }}{{ install_service_ps_path_block }}
+
+- name: Report proxy usage
+  debug:
+    msg: "Proxy configured via install_service_proxy_env: {{ install_service_proxy_env_effective.keys() | list | join(', ') }}"
+  when: install_service_proxy_env_effective is defined and install_service_proxy_env_effective | length > 0
+
+- name: Check repository exists (POSIX)
+  stat:
+    path: "{{ install_service_repo_path }}"
+  register: install_service_repo_stat
+  when: not install_service_is_windows
+
+- name: Check repository directory exists (Windows)
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    'if (Test-Path "{{ install_service_repo_path }}") { exit 0 } else { exit 1 }'
+  register: install_service_repo_stat_win
+  failed_when: false
+  changed_when: false
+  when: install_service_is_windows
+
+- name: Check repository is a git worktree (Windows)
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    'if (Test-Path "{{ install_service_repo_path }}\\.git") { exit 0 } else { exit 1 }'
+  register: install_service_repo_git_win
+  failed_when: false
+  changed_when: false
+  when: install_service_is_windows and install_service_repo_stat_win.rc == 0
+
+- name: Default git repo status when path missing (Windows)
+  set_fact:
+    install_service_repo_git_win:
+      rc: 1
+  when: install_service_is_windows and install_service_repo_stat_win.rc != 0
+
+- name: Fail when repo path exists but is not a git worktree (Windows)
+  when: install_service_is_windows and install_service_repo_stat_win.rc == 0 and install_service_repo_git_win.rc != 0 and not install_service_repo_force_reclone | bool
+  fail:
+    msg: >-
+      install_service_repo_path exists but is not a git repository.
+      Set install_service_repo_force_reclone=true or pick a different install_service_repo_path.
+
+- name: Remove non-git repo path before reclone (Windows)
+  when: install_service_is_windows and install_service_repo_stat_win.rc == 0 and install_service_repo_git_win.rc != 0 and install_service_repo_force_reclone | bool
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    'Remove-Item -Recurse -Force "{{ install_service_repo_path }}"'
+
+- name: Clone repository (POSIX)
+  when: not install_service_is_windows and not install_service_repo_stat.stat.exists
+  command: git clone --depth 1 "{{ install_service_repo_url }}" "{{ install_service_repo_path }}"
+  environment: "{{ install_service_env_effective }}"
+
+- name: Clone repository (Windows)
+  when: install_service_is_windows and install_service_repo_git_win.rc != 0
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    '{{ install_service_ps_env_block }}git clone --depth 1 "{{ install_service_repo_url }}" "{{ install_service_repo_path }}"'
+
+- name: Update repository (POSIX)
+  when: not install_service_is_windows and not install_service_skip_git_pull | bool and install_service_repo_stat.stat.exists
+  shell: git -C "{{ install_service_repo_path }}" pull --ff-only
+  changed_when: false
+  environment: "{{ install_service_env_effective }}"
+
+- name: Update repository (Windows)
+  when: install_service_is_windows and not install_service_skip_git_pull | bool and install_service_repo_git_win.rc == 0
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    '{{ install_service_ps_env_block }}git -C "{{ install_service_repo_path }}" pull --ff-only'
+  changed_when: false
+
+- name: Fetch repository tags (POSIX)
+  when: not install_service_is_windows and not install_service_skip_git_fetch_tags | bool
+  shell: git -C "{{ install_service_repo_path }}" fetch --tags --force
+  changed_when: false
+  environment: "{{ install_service_env_effective }}"
+
+- name: Fetch repository tags (Windows)
+  when: install_service_is_windows and install_service_repo_git_win.rc == 0 and not install_service_skip_git_fetch_tags | bool
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    '{{ install_service_ps_env_block }}git -C "{{ install_service_repo_path }}" fetch --tags --force'
+  changed_when: false
+
+- name: Update submodules (POSIX)
+  when: not install_service_is_windows and install_service_update_submodules | bool
+  shell: git -C "{{ install_service_repo_path }}" submodule update --init --recursive
+  changed_when: false
+  environment: "{{ install_service_env_effective }}"
+
+- name: Determine release version (POSIX)
+  when: not install_service_is_windows and install_service_release_version | length == 0
+  shell: |
+    set -eu
+    cd "{{ install_service_repo_path }}"
+    describe=$(git describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>/dev/null || true)
+    if [ -n "$describe" ]; then
+      tag="$describe"
+    else
+      short_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+      commit_count=$(git rev-list --count HEAD 2>/dev/null || true)
+      if [ -n "$short_sha" ] && [ -n "$commit_count" ]; then
+        tag="v0.0.${commit_count}-${short_sha}"
+        if ! git diff --quiet HEAD 2>/dev/null; then
+          tag="${tag}-dirty"
+        fi
+      fi
+    fi
+    if [ -z "${tag:-}" ]; then
+      tag="v0.0.0-unknown"
+    fi
+    if [ "{{ install_service_force_clean_git_describe | bool }}" = "true" ]; then
+      tag=$(printf '%s' "$tag" | sed -E 's/-dirty$//')
+    fi
+    printf '%s\n' "$tag"
+  register: install_service_release_version_cmd_posix
+  changed_when: false
+
+- name: Determine release version (Windows)
+  when: install_service_is_windows and install_service_release_version | length == 0 and install_service_repo_git_win.rc == 0
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    '$ErrorActionPreference = "Stop";
+    Set-Location "{{ install_service_repo_path }}";
+    $describe = git describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>$null;
+    if ($LASTEXITCODE -eq 0 -and $describe) { $tag = $describe.Trim() }
+    else {
+      $shortSha = git rev-parse --short HEAD 2>$null;
+      $commitCount = git rev-list --count HEAD 2>$null;
+      if ($shortSha -and $commitCount) {
+        $tag = "v0.0.$commitCount-$shortSha";
+        git diff --quiet HEAD 2>$null;
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 128) {
+          $tag = "$tag-dirty";
+        }
+      }
+    }
+    if (-not $tag) { $tag = "v0.0.0-unknown" }
+    if ({{ install_service_force_clean_git_describe | bool | lower }}) { $tag = $tag -replace ''-dirty$'', '''' }
+    Write-Output $tag'
+  register: install_service_release_version_cmd_win
+  changed_when: false
+
+- name: Set release version from git describe
+  when: install_service_release_version | length == 0
+  set_fact:
+    install_service_release_version: >-
+      {{
+        (install_service_release_version_cmd_posix.stdout | default(''))
+        or (install_service_release_version_cmd_win.stdout | default(''))
+      | trim }}
+
+- name: Run build commands
+  when: not install_service_is_windows
+  shell: "{{ item }}"
+  args:
+    chdir: "{{ install_service_repo_path }}"
+  environment: "{{ install_service_env_effective }}"
+  loop: "{{ install_service_build_commands }}"
+
+- name: Run build commands (Windows)
+  when: install_service_is_windows
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    '{{ install_service_ps_preamble }}Set-Location "{{ install_service_repo_path }}"; {{ item }}'
+  loop: "{{ install_service_build_commands }}"
+  changed_when: false

@@ -1,0 +1,99 @@
+---
+- name: Ensure release version provided
+  assert:
+    that:
+      - install_service_release_version | length > 0
+    fail_msg: install_service_release_version is required
+
+- name: Ensure local assets source provided
+  assert:
+    that:
+      - install_service_assets_src | length > 0
+    fail_msg: install_service_assets_src is required
+
+- name: Check local assets source
+  delegate_to: localhost
+  stat:
+    path: "{{ install_service_assets_src }}"
+  register: install_service_assets_src_stat
+
+- name: Ensure local assets source exists
+  assert:
+    that:
+      - install_service_assets_src_stat.stat.exists
+      - install_service_assets_src_stat.stat.isdir
+    fail_msg: "install_service_assets_src does not exist or is not a directory"
+
+- name: Ensure rsync available on controller
+  delegate_to: localhost
+  command: rsync --version
+  changed_when: false
+
+- name: Ensure rsync available on target
+  command: rsync --version
+  changed_when: false
+
+- name: Set release directory
+  set_fact:
+    install_service_release_dir: "{{ install_service_assets_root }}/releases/{{ install_service_release_version }}"
+
+- name: Set latest version
+  set_fact:
+    install_service_latest_version_effective: "{{ install_service_latest_version | default('') | length > 0 | ternary(install_service_latest_version, install_service_release_version) }}"
+
+- name: Ensure assets root exists
+  file:
+    path: "{{ install_service_assets_root }}"
+    state: directory
+    owner: "{{ install_service_owner }}"
+    group: "{{ install_service_group }}"
+    mode: '0755'
+
+- name: Ensure release directory exists
+  file:
+    path: "{{ install_service_release_dir }}"
+    state: directory
+    owner: "{{ install_service_owner }}"
+    group: "{{ install_service_group }}"
+    mode: '0755'
+
+- name: Synchronize release assets
+  ansible.posix.synchronize:
+    src: "{{ install_service_assets_src }}/"
+    dest: "{{ install_service_release_dir }}/"
+    archive: true
+    delete: false
+
+- name: Fix release ownership
+  file:
+    path: "{{ install_service_release_dir }}"
+    state: directory
+    owner: "{{ install_service_owner }}"
+    group: "{{ install_service_group }}"
+    recurse: true
+
+- name: Discover release assets
+  find:
+    paths: "{{ install_service_release_dir }}"
+    file_type: file
+  register: install_service_asset_files
+
+- name: Build asset metadata
+  set_fact:
+    install_service_assets: "{{ install_service_assets | default([]) + [ { 'name': (item.path | basename), 'size': item.size } ] }}"
+  loop: "{{ install_service_asset_files.files }}"
+
+- name: Write latest.json
+  template:
+    src: latest.json.j2
+    dest: "{{ install_service_assets_root }}/latest.json"
+    owner: "{{ install_service_owner }}"
+    group: "{{ install_service_group }}"
+    mode: '0644'
+
+- name: Update latest release symlink
+  file:
+    src: "{{ install_service_release_dir }}"
+    dest: "{{ install_service_assets_root }}/releases/latest"
+    state: link
+  when: install_service_create_latest_symlink | bool

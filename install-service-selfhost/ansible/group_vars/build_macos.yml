@@ -1,0 +1,11 @@
+install_service_build_env:
+  PATH: "/usr/local/bin:/opt/homebrew/bin:{{ ansible_env.PATH }}"
+
+install_service_build_commands:
+  - cmake --preset macos-release
+  - cmake --build --preset macos-release
+  - cmake --install build/macos-release --prefix install/selfhost-macos
+
+install_service_install_prefix: "{{ install_service_repo_path }}/install/selfhost-macos"
+install_service_asset_name: cert-ctrl-macos-x64
+install_service_archive_ext: .tar.gz

@@ -751,9 +751,8 @@ Operational note:
 0) Confirm the device is currently connected via WebSocket.
   - If the device is not connected, the server MUST fail the verification attempt (do not proceed).
 1) Create a unique `challenge_id` per pending authorization.
-2) Send `updates.signal` (`acme.http01.start`) via **direct WebSocket push**.
-3) Wait for `updates.ack` for that `id`.
-  - If ack is not received within a short timeout, the server MUST fail the verification attempt (do not proceed).
+2) Send `updates.signal` (`acme.http01.challenge`) with stable non-empty `id` + monotonic `resume_token`.
+3) Wait for `updates.ack` for that `id` (or infer success by observing the agent has advanced its resume token on next connect).
 4) Trigger ACME validation.
 5) After validation completes (success or failure), send `acme.http01.stop` (best-effort cleanup).
 
@@ -873,7 +872,7 @@ Operational note:
   - If the device is not connected, the server MUST fail the verification attempt (do not proceed).
 1) Create a unique `challenge_id` per pending authorization.
 2) Generate the TLS-ALPN-01 challenge certificate and key for `ref.domain`.
-3) Send `updates.signal` (`acme.tlsalpn01.start`) via **direct WebSocket push**.
+3) Send `updates.signal` (`acme.tlsalpn01.challenge`) with stable non-empty `id` + monotonic `resume_token`.
 4) Wait for `updates.ack`.
   - If ack is not received within a short timeout, the server MUST fail the verification attempt (do not proceed).
 5) Trigger ACME validation.

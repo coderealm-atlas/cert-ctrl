@@ -1,0 +1,30 @@
+---
+- name: Prepare install-service assets
+  hosts: assets_host
+  become: true
+  vars_files:
+    - ../vars.yml
+  pre_tasks:
+    - name: Determine release version on assets host
+      when: install_service_release_version | length == 0
+      shell: |
+        set -euo pipefail
+        cd "{{ install_service_repo_path }}"
+        if describe=$(git describe --tags --long --dirty --match "v[0-9]*[.][0-9]*[.][0-9]*" --exclude "*-*" --abbrev=8 2>/dev/null); then
+          tag="${describe%-dirty}"
+        else
+          short_sha=$(git rev-parse --short HEAD)
+          tag="build-local-${short_sha}"
+        fi
+        tag=$(printf '%s' "$tag" | sed -E 's/-0-g[0-9a-f]+$//')
+        tag=$(printf '%s' "$tag" | sed -E 's/-$//')
+        printf '%s\n' "$tag"
+      register: install_service_release_version_cmd
+      changed_when: false
+
+    - name: Set release version from git describe
+      when: install_service_release_version | length == 0
+      set_fact:
+        install_service_release_version: "{{ install_service_release_version_cmd.stdout | trim }}"
+  roles:
+    - install_service_assets

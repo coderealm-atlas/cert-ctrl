@@ -1,0 +1,26 @@
+install_service_assets_root: /opt/install-service/assets
+install_service_assets_src: "{{ install_service_assets_staging_root }}/{{ install_service_release_version }}"
+install_service_release_version: ""
+install_service_latest_version: ""
+install_service_owner: root
+install_service_group: root
+install_service_create_latest_symlink: false
+
+install_service_repo_url: https://github.com/coderealm-atlas/cert-ctrl.git
+install_service_remote_staging_root: /tmp/install-service-assets
+install_service_assets_staging_root: /home/jianglibo/cert-ctrl/install-service-selfhost/assets-staging
+install_service_skip_git_pull: false
+
+install_service_binary_basename: cert-ctrl
+
+install_service_linux_docker_jobs:
+  - name: linux-x64
+    script: scripts/build-ubuntu-docker.sh
+    preset: release
+    install_prefix: install/selfhost-release
+    asset_name: cert-ctrl-linux-x64
+  - name: linux-musl-x64
+    script: scripts/build-alpine-docker.sh
+    preset: alpine-release
+    install_prefix: install/selfhost-alpine-release
+    asset_name: cert-ctrl-linux-musl-x64

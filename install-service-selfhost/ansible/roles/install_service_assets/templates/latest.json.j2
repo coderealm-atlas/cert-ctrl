@@ -1,0 +1,12 @@
+{
+  "version": "{{ install_service_latest_version_effective }}",
+  "updated_at": "{{ ansible_date_time.iso8601 }}",
+  "assets": [
+{% for asset in install_service_assets | default([]) %}
+    {
+      "name": "{{ asset.name }}",
+      "size": {{ asset.size }}
+    }{% if not loop.last %},{% endif %}
+{% endfor %}
+  ]
+}
