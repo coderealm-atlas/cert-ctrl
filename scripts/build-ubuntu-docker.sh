@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 IMAGE_NAME="${IMAGE_NAME:-cert-ctrl/ubuntu-builder}"
 PRESET="${1:-release}"
+BUILD_TARGET="${BUILD_TARGET:-cert_ctrl}"
 BUILD_DIR_REL="${BUILD_DIR_REL:-build/${PRESET}}"
 INSTALL_PREFIX_REL="${INSTALL_PREFIX_REL:-install/selfhost-${PRESET}}"
 BUILD_DIR="/work/${BUILD_DIR_REL}"
@@ -98,7 +99,7 @@ if [ ! -x "\${TMP_VCPKG}/vcpkg" ]; then
 fi
 rm -rf /work/build
 cmake --preset "${PRESET}" -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
-cmake --build --preset "${PRESET}"
+cmake --build --preset "${PRESET}" --target "${BUILD_TARGET}"
 rm -rf "${INSTALL_PREFIX}"
 cmake --install "${BUILD_DIR}" --config Release --prefix "${INSTALL_PREFIX}"
 EOF

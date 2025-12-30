@@ -16,10 +16,21 @@
         | rejectattr('value', 'equalto', None)
         | items2dict
       }}
+    install_service_build_env_effective: >-
+      {{
+        (install_service_build_env | default({}))
+        | combine(
+          (
+            install_service_docker_buildkit is not none and
+            (install_service_docker_buildkit | string | length) > 0
+          )
+          | ternary({'DOCKER_BUILDKIT': (install_service_docker_buildkit | string)}, {})
+        )
+      }}
     install_service_env_effective: >-
       {{
         (install_service_proxy_env_effective | default({}))
-        | combine(install_service_build_env | default({}))
+        | combine(install_service_build_env_effective | default({}))
       }}
     install_service_ps_env_block: >-
       {%- set ns = namespace(parts=[]) -%}

@@ -10,3 +10,4 @@ install_service_skip_git_pull: false
 install_service_skip_git_fetch_tags: false
 install_service_force_clean_git_describe: false
 install_service_update_submodules: true
+install_service_docker_buildkit: ""
