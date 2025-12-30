@@ -174,6 +174,13 @@ target_link_libraries(test_websocket_client PRIVATE
 ryml::ryml
 )
 
+if(APPLE)
+  target_link_libraries(test_websocket_client PRIVATE
+    "-framework CoreFoundation"
+    "-framework Security"
+  )
+endif()
+
 certctrl_use_static_atomic(test_websocket_client)
 
 gtest_discover_tests(test_websocket_client DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
