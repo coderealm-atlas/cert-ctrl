@@ -101,7 +101,9 @@
     {
       "name": "w64",
       "inherits": "default",
-      "description": "Compile for Windows using Visual studio",
+      "description": "Compile for Windows using Visual Studio 2022",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
       "binaryDir": "${sourceDir}/build/w64",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -186,7 +188,8 @@
     },
     {
       "name": "w64",
-      "configurePreset": "w64"
+      "configurePreset": "w64",
+      "configuration": "Release"
     },
     {
       "name": "release-compat",
