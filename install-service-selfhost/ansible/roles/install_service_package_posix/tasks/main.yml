@@ -1,0 +1,69 @@
+---
+- name: Ensure packaging variables provided
+  assert:
+    that:
+      - install_service_release_version | length > 0
+      - install_service_install_prefix | length > 0
+      - install_service_asset_name | length > 0
+      - install_service_archive_ext | length > 0
+    fail_msg: install_service_release_version, install_service_install_prefix, install_service_asset_name, and install_service_archive_ext are required
+
+- name: Set staging paths
+  set_fact:
+    install_service_release_dir: "{{ install_service_remote_staging_root }}/{{ install_service_release_version }}"
+    install_service_package_tmp: "{{ install_service_remote_staging_root }}/.tmp/{{ install_service_asset_name }}"
+    install_service_archive_path: "{{ install_service_remote_staging_root }}/{{ install_service_release_version }}/{{ install_service_asset_name }}{{ install_service_archive_ext }}"
+
+- name: Ensure staging directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - "{{ install_service_release_dir }}"
+    - "{{ install_service_package_tmp }}"
+
+- name: Locate installed binary
+  shell: |
+    set -eu
+    for candidate in \
+      "{{ install_service_install_prefix }}/bin/{{ install_service_binary_basename }}" \
+      "{{ install_service_install_prefix }}/bin/cert_ctrl" \
+      "{{ install_service_install_prefix }}/{{ install_service_binary_basename }}" \
+      "{{ install_service_install_prefix }}/cert_ctrl"; do
+      if [ -f "$candidate" ]; then
+        echo "$candidate"
+        exit 0
+      fi
+    done
+    exit 1
+  register: install_service_binary_path
+  changed_when: false
+
+- name: Stage binary for packaging
+  copy:
+    src: "{{ install_service_binary_path.stdout }}"
+    dest: "{{ install_service_package_tmp }}/{{ install_service_binary_basename }}"
+    mode: '0755'
+    remote_src: true
+
+- name: Create archive
+  command: >-
+    tar -czf "{{ install_service_archive_path }}"
+    -C "{{ install_service_package_tmp }}"
+    "{{ install_service_binary_basename }}"
+
+- name: Generate checksum
+  shell: |
+    set -eu
+    file="{{ install_service_archive_path }}"
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "$file" > "${file}.sha256"
+    elif command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 "$file" > "${file}.sha256"
+    elif command -v sha256 >/dev/null 2>&1; then
+      sha256 "$file" | awk '{print $4"  "FILENAME}' FILENAME="$(basename "$file")" > "${file}.sha256"
+    else
+      echo "No SHA256 tool found" >&2
+      exit 1
+    fi

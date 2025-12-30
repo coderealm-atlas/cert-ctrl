@@ -1,0 +1,49 @@
+all:
+  children:
+    build_windows:
+      hosts:
+        win-build:
+          install_service_proxy_env:
+            HTTP_PROXY: http://127.0.0.1:10808
+            HTTPS_PROXY: http://127.0.0.1:10808
+            NO_PROXY: localhost,127.0.0.1
+          ansible_host: 192.168.3.165
+          ansible_user: Administrator
+          ansible_connection: ssh
+          ansible_shell_type: cmd
+          ansible_shell_executable: cmd.exe
+          install_service_repo_path: C:\Users\Administrator\cert-ctrl
+    build_macos:
+      hosts:
+        mac-build:
+          install_service_proxy_env:
+            HTTP_PROXY: http://10.0.2.2:10809
+            HTTPS_PROXY: http://10.0.2.2:10809
+            NO_PROXY: localhost,127.0.0.1
+          ansible_host: 127.0.0.1
+          ansible_port: 10022
+          ansible_user: jianglibo
+          install_service_repo_path: /Users/jianglibo/cert-ctrl
+    build_freebsd:
+      hosts:
+        bsd-build:
+          install_service_proxy_env:
+            HTTP_PROXY: http://192.168.3.163:10809
+            HTTPS_PROXY: http://192.168.3.163:10809
+            NO_PROXY: localhost,127.0.0.1
+          ansible_host: 192.168.3.227
+          ansible_user: dev
+          install_service_repo_path: /home/dev/cert-ctrl
+    build_linux_docker:
+      hosts:
+        localhost:
+          ansible_connection: local
+          install_service_repo_path: /home/jianglibo/cert-ctrl
+    assets_host:
+      hosts:
+        localhost:
+          ansible_connection: local
+    install_service:
+      hosts:
+        localhost:
+          ansible_connection: local

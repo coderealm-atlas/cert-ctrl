@@ -1,0 +1,41 @@
+---
+- name: Build and package on macOS
+  hosts: build_macos
+  vars_files:
+    - ../vars.yml
+  roles:
+    - install_service_build
+    - install_service_package_posix
+
+- name: Build and package on FreeBSD
+  hosts: build_freebsd
+  vars_files:
+    - ../vars.yml
+  roles:
+    - install_service_build
+    - install_service_package_posix
+
+- name: Build and package on Windows
+  hosts: build_windows
+  gather_facts: false
+  vars_files:
+    - ../vars.yml
+  roles:
+    - install_service_build
+    - install_service_package_windows
+
+- name: Build and package Linux (Docker)
+  hosts: build_linux_docker
+  vars_files:
+    - ../vars.yml
+  roles:
+    - install_service_build
+  tasks:
+    - name: Package Linux Docker artifacts
+      include_role:
+        name: install_service_package_posix
+      vars:
+        install_service_install_prefix: "{{ install_service_repo_path }}/{{ item.install_prefix }}"
+        install_service_asset_name: "{{ item.asset_name }}"
+        install_service_archive_ext: .tar.gz
+      loop: "{{ install_service_linux_docker_jobs }}"

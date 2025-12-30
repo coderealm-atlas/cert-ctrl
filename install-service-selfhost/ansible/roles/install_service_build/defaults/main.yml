@@ -1,0 +1,12 @@
+---
+install_service_build_commands: []
+install_service_build_env: {}
+install_service_proxy_env: {}
+install_service_path_extra: []
+install_service_msvc_env: false
+install_service_is_windows: false
+install_service_repo_force_reclone: false
+install_service_skip_git_pull: false
+install_service_skip_git_fetch_tags: false
+install_service_force_clean_git_describe: false
+install_service_update_submodules: true

@@ -1,0 +1,4 @@
+---
+- import_playbook: build_release.yml
+- import_playbook: collect_assets.yml
+- import_playbook: prepare_assets.yml

@@ -1,0 +1,67 @@
+---
+- name: Ensure local staging directory exists
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars.yml
+  tasks:
+    - name: Determine release version on controller
+      when: install_service_release_version | length == 0
+      shell: |
+        set -euo pipefail
+        cd "{{ install_service_repo_path }}"
+        if describe=$(git describe --tags --long --dirty --match "v[0-9]*[.][0-9]*[.][0-9]*" --exclude "*-*" --abbrev=8 2>/dev/null); then
+          tag="${describe%-dirty}"
+        else
+          short_sha=$(git rev-parse --short HEAD)
+          tag="build-local-${short_sha}"
+        fi
+        tag=$(printf '%s' "$tag" | sed -E 's/-0-g[0-9a-f]+$//')
+        tag=$(printf '%s' "$tag" | sed -E 's/-$//')
+        printf '%s\n' "$tag"
+      register: install_service_release_version_cmd
+      changed_when: false
+
+    - name: Set release version from git describe
+      when: install_service_release_version | length == 0
+      set_fact:
+        install_service_release_version: "{{ install_service_release_version_cmd.stdout | trim }}"
+
+    - name: Ensure local release staging directory exists
+      file:
+        path: "{{ install_service_assets_staging_root }}/{{ install_service_release_version }}"
+        state: directory
+        mode: '0755'
+
+- name: Collect assets from POSIX build hosts
+  hosts: build_macos:build_freebsd:build_linux_docker
+  vars_files:
+    - ../vars.yml
+  tasks:
+    - name: Ensure rsync exists on target
+      command: rsync --version
+      changed_when: false
+
+    - name: Pull release assets to controller
+      ansible.posix.synchronize:
+        mode: pull
+        src: "{{ install_service_remote_staging_root }}/{{ install_service_release_version }}/"
+        dest: "{{ install_service_assets_staging_root }}/{{ install_service_release_version }}/"
+        archive: true
+
+- name: Collect assets from Windows build hosts
+  hosts: build_windows
+  vars_files:
+    - ../vars.yml
+  tasks:
+    - name: Fetch Windows archive
+      fetch:
+        src: "{{ install_service_remote_staging_root }}\\{{ install_service_release_version }}\\{{ install_service_asset_name }}{{ install_service_archive_ext }}"
+        dest: "{{ install_service_assets_staging_root }}/{{ install_service_release_version }}/"
+        flat: true
+
+    - name: Fetch Windows checksum
+      fetch:
+        src: "{{ install_service_remote_staging_root }}\\{{ install_service_release_version }}\\{{ install_service_asset_name }}{{ install_service_archive_ext }}.sha256"
+        dest: "{{ install_service_assets_staging_root }}/{{ install_service_release_version }}/"
+        flat: true

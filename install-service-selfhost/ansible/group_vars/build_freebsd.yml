@@ -1,0 +1,6 @@
+install_service_build_commands:
+  - BUILD_TYPE=Release INSTALL_PREFIX="{{ install_service_repo_path }}/install/selfhost-freebsd" scripts/build-freebsd.sh
+
+install_service_install_prefix: "{{ install_service_repo_path }}/install/selfhost-freebsd"
+install_service_asset_name: cert-ctrl-freebsd-x64
+install_service_archive_ext: .tar.gz
