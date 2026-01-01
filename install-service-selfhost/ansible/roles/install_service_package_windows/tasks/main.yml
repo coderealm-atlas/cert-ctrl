@@ -8,29 +8,18 @@
       - install_service_archive_ext | length > 0
     fail_msg: install_service_release_version, install_service_install_prefix, install_service_asset_name, and install_service_archive_ext are required
 
+- name: Upload packaging script
+  copy:
+    src: "{{ playbook_dir }}/../../scripts/package-windows-release.ps1"
+    dest: C:\\temp\\install-service-package.ps1
+
 - name: Package Windows release
   raw: >-
-    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    '$ErrorActionPreference = "Stop";
-    $releaseDir = Join-Path "{{ install_service_remote_staging_root }}" "{{ install_service_release_version }}";
-    $tmpDir = Join-Path "{{ install_service_remote_staging_root }}" ".tmp\\{{ install_service_asset_name }}";
-    $archivePath = Join-Path $releaseDir "{{ install_service_asset_name }}{{ install_service_archive_ext }}";
-    if (-not (Test-Path $releaseDir)) { New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null };
-    if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null };
-    $candidates = @(
-      Join-Path "{{ install_service_install_prefix }}" "bin\\{{ install_service_binary_basename }}.exe",
-      Join-Path "{{ install_service_install_prefix }}" "bin\\cert_ctrl.exe",
-      Join-Path "{{ install_service_install_prefix }}" "{{ install_service_binary_basename }}.exe",
-      Join-Path "{{ install_service_install_prefix }}" "cert_ctrl.exe"
-    );
-    $binaryPath = $null;
-    foreach ($candidate in $candidates) { if (Test-Path $candidate) { $binaryPath = $candidate; break } };
-    if (-not $binaryPath) { throw "Unable to locate cert-ctrl binary under {{ install_service_install_prefix }}" };
-    $stagedBinary = Join-Path $tmpDir "{{ install_service_binary_basename }}.exe";
-    Copy-Item $binaryPath $stagedBinary -Force;
-    if (Test-Path $archivePath) { Remove-Item $archivePath -Force };
-    Compress-Archive -Path $stagedBinary -DestinationPath $archivePath -Force;
-    $hash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLower();
-    $shaLine = "$hash  $(Split-Path $archivePath -Leaf)";
-    $shaPath = "$archivePath.sha256";
-    $shaLine | Out-File -FilePath $shaPath -Encoding ascii'
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+    "C:\\temp\\install-service-package.ps1"
+    -ReleaseVersion "{{ install_service_release_version }}"
+    -InstallPrefix "{{ install_service_install_prefix }}"
+    -AssetName "{{ install_service_asset_name }}"
+    -ArchiveExt "{{ install_service_archive_ext }}"
+    -BinaryBasename "{{ install_service_binary_basename }}"
+    -StagingRoot "{{ install_service_remote_staging_root }}"

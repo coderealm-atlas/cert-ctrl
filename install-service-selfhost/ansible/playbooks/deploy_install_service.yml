@@ -1,0 +1,10 @@
+---
+- name: Deploy install-service selfhost app
+  hosts: install_service_remote
+  become: true
+  vars_files:
+    - ../vars.yml
+  vars:
+    install_service_app_src: "{{ playbook_dir }}/../.."
+  roles:
+    - install_service_app

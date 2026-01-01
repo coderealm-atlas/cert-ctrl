@@ -1,0 +1,137 @@
+---
+- name: Ensure app source is provided
+  assert:
+    that:
+      - install_service_app_src | length > 0
+    fail_msg: install_service_app_src is required
+
+- name: Ensure app packages installed (Debian/Ubuntu)
+  apt:
+    name:
+      - nodejs
+      - npm
+      - rsync
+    state: present
+    update_cache: true
+  when: ansible_os_family == 'Debian'
+
+- name: Ensure app packages installed (other)
+  package:
+    name:
+      - nodejs
+      - npm
+      - rsync
+    state: present
+  when: ansible_os_family != 'Debian'
+
+- name: Ensure service group exists
+  group:
+    name: "{{ install_service_app_group }}"
+    system: true
+  when: install_service_app_group != 'root'
+
+- name: Ensure service user exists
+  user:
+    name: "{{ install_service_app_user }}"
+    group: "{{ install_service_app_group }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+  when: install_service_app_user != 'root'
+
+- name: Ensure app root exists
+  file:
+    path: "{{ install_service_app_root }}"
+    state: directory
+    owner: "{{ install_service_app_user }}"
+    group: "{{ install_service_app_group }}"
+    mode: '0755'
+
+- name: Ensure assets root exists
+  file:
+    path: "{{ install_service_assets_root }}"
+    state: directory
+    owner: "{{ install_service_assets_owner | default('root') }}"
+    group: "{{ install_service_assets_group | default('root') }}"
+    mode: '0755'
+
+- name: Build rsync exclude options
+  set_fact:
+    install_service_app_rsync_opts: >-
+      {{
+        install_service_app_excludes
+        | default([])
+        | map('regex_replace', '^(.*)$', '--exclude=\\1')
+        | list
+      }}
+
+- name: Synchronize install-service app
+  ansible.posix.synchronize:
+    src: "{{ install_service_app_src }}/"
+    dest: "{{ install_service_app_root }}/"
+    archive: true
+    delete: true
+    rsync_opts: "{{ install_service_app_rsync_opts }}"
+  register: install_service_app_sync
+  notify:
+    - restart install-service
+
+- name: Fix app ownership
+  file:
+    path: "{{ install_service_app_root }}"
+    state: directory
+    owner: "{{ install_service_app_user }}"
+    group: "{{ install_service_app_group }}"
+    recurse: true
+
+- name: Build app environment
+  set_fact:
+    install_service_app_env_effective: >-
+      {{
+        {'NODE_ENV': 'production'}
+        | combine(install_service_app_env | default({}))
+      }}
+
+- name: Install Node.js dependencies
+  command: "{{ install_service_app_install_command }}"
+  args:
+    chdir: "{{ install_service_app_root }}"
+  environment: "{{ install_service_app_env_effective }}"
+  register: install_service_app_npm
+  changed_when: install_service_app_npm.rc == 0
+  notify:
+    - restart install-service
+
+- name: Check configured node path
+  stat:
+    path: "{{ install_service_node_path }}"
+  register: install_service_node_stat
+
+- name: Discover node path
+  command: command -v node
+  register: install_service_node_cmd
+  changed_when: false
+  failed_when: false
+  when: not install_service_node_stat.stat.exists
+
+- name: Set node path from discovery
+  set_fact:
+    install_service_node_path: "{{ install_service_node_cmd.stdout | trim }}"
+  when: not install_service_node_stat.stat.exists and install_service_node_cmd.rc == 0 and (install_service_node_cmd.stdout | trim | length > 0)
+
+- name: Template systemd unit
+  template:
+    src: install-service-selfhost.service.j2
+    dest: "/etc/systemd/system/{{ install_service_service_name }}.service"
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - reload systemd
+    - restart install-service
+
+- name: Ensure service enabled and running
+  systemd:
+    name: "{{ install_service_service_name }}"
+    state: started
+    enabled: true

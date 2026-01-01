@@ -4,11 +4,31 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+if [[ -n "${INSTALL_SERVICE_REPO_PATH:-}" ]]; then
+  REPO_ROOT="$(cd -- "${INSTALL_SERVICE_REPO_PATH}" && pwd -P)"
+else
+  REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+fi
 
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build/freebsd-${BUILD_TYPE}}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-${REPO_ROOT}/install/freebsd-${BUILD_TYPE}}"
+BUILD_TARGET="${BUILD_TARGET:-cert_ctrl}"
+FORCE_BUILD="${INSTALL_SERVICE_FORCE_BUILD:-0}"
+STAMP_FILE="${BUILD_DIR}/.install-service-build.stamp"
+
+if [[ -n "${INSTALL_SERVICE_INSTALL_PREFIX:-}" ]]; then
+  INSTALL_PREFIX="${INSTALL_SERVICE_INSTALL_PREFIX}"
+fi
+
+git_head=""
+git_dirty="0"
+submodule_status=""
+submodule_dirty="0"
+
+if [[ "${FORCE_BUILD}" == "1" || "${FORCE_BUILD}" == "true" || "${FORCE_BUILD}" == "True" ]]; then
+  rm -rf "${BUILD_DIR}" "${INSTALL_PREFIX}"
+fi
 
 # Pick the matching FreeBSD triplet for the host architecture.
 case "$(uname -m)" in
@@ -38,6 +58,41 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
     echo "Install them with: sudo pkg install -y bash cmake ninja git curl python3 pkgconf patchelf" >&2
   fi
   exit 1
+fi
+
+git_head="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+if ! git -C "${REPO_ROOT}" diff --quiet --ignore-submodules -- 2>/dev/null; then
+  git_dirty="1"
+fi
+if ! git -C "${REPO_ROOT}" diff --cached --quiet --ignore-submodules -- 2>/dev/null; then
+  git_dirty="1"
+fi
+submodule_status="$(git -C "${REPO_ROOT}" submodule status 2>/dev/null || true)"
+if printf "%s\n" "${submodule_status}" | grep -q '^[+-U]'; then
+  submodule_dirty="1"
+fi
+
+if [[ "${FORCE_BUILD}" != "1" && "${FORCE_BUILD}" != "true" && "${FORCE_BUILD}" != "True" ]]; then
+  if [[ "${git_dirty}" == "0" && "${submodule_dirty}" == "0" && -f "${STAMP_FILE}" ]]; then
+    BIN_PATH="${INSTALL_PREFIX}/bin/${BUILD_TARGET}"
+    if [[ ! -x "${BIN_PATH}" && -x "${INSTALL_PREFIX}/bin/cert_ctrl" ]]; then
+      BIN_PATH="${INSTALL_PREFIX}/bin/cert_ctrl"
+    fi
+    if [[ -x "${BIN_PATH}" ]]; then
+      stamp_tmp="${BUILD_DIR}/.install-service-build.stamp.tmp"
+      mkdir -p "${BUILD_DIR}"
+      {
+        printf "git_head=%s\n" "${git_head}"
+        printf "submodules=%s\n" "${submodule_status}"
+      } > "${stamp_tmp}"
+      if cmp -s "${stamp_tmp}" "${STAMP_FILE}"; then
+        echo "[freebsd-build] No source changes detected; skipping build."
+        rm -f "${stamp_tmp}"
+        exit 0
+      fi
+      rm -f "${stamp_tmp}"
+    fi
+  fi
 fi
 
 if command -v sysctl >/dev/null 2>&1; then
@@ -115,7 +170,7 @@ cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \
   "${CMAKE_EXTRA_ARGS[@]}"
 
 echo "[freebsd-build] Building..."
-cmake --build "${BUILD_DIR}"
+cmake --build "${BUILD_DIR}" --target "${BUILD_TARGET}"
 
 echo "[freebsd-build] Installing to ${INSTALL_PREFIX}..."
 cmake --install "${BUILD_DIR}" --prefix "${INSTALL_PREFIX}"
@@ -130,5 +185,11 @@ if [[ -x "${BIN_SRC}" ]]; then
 else
   echo "[freebsd-build] Warning: expected binary not found at ${BIN_SRC}" >&2
 fi
+
+mkdir -p "${BUILD_DIR}"
+{
+  printf "git_head=%s\n" "${git_head}"
+  printf "submodules=%s\n" "${submodule_status}"
+} > "${STAMP_FILE}"
 
 echo "[freebsd-build] Done. Artifacts are in ${INSTALL_PREFIX}/bin"

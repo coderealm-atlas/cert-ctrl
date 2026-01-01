@@ -1,0 +1,5 @@
+---
+- name: reload nginx
+  shell: |
+    nginx -t
+    systemctl reload nginx

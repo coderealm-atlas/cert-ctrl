@@ -1,10 +1,14 @@
 install_service_build_env:
-  PATH: "/usr/local/bin:/opt/homebrew/bin:{{ ansible_env.PATH }}"
+  PATH: "/usr/local/bin:/opt/homebrew/bin:/Applications/CMake.app/Contents/bin:/usr/local/opt/cmake/bin:/usr/bin:/bin:/usr/sbin:/sbin:{{ ansible_env.PATH }}"
+  BUILD_TARGET: cert_ctrl
+install_service_cmake_path: /usr/local/bin/cmake
+install_service_autoreconf_path: /usr/local/bin/autoreconf
+install_service_cmake_extra_args: "-DCMAKE_PROGRAM_PATH=/usr/local/bin\\;/opt/homebrew/bin -DAUTORECONF=/usr/local/bin/autoreconf -DAUTOCONF=/usr/local/bin/autoconf"
 
-install_service_build_commands:
-  - cmake --preset macos-release
-  - cmake --build --preset macos-release
-  - cmake --install build/macos-release --prefix install/selfhost-macos
+install_service_build_script_path: "{{ playbook_dir }}/../../scripts/build-macos-release.sh"
+install_service_build_script_remote_path: /tmp/install-service-build-macos-release.sh
+
+install_service_build_commands: []
 
 install_service_install_prefix: "{{ install_service_repo_path }}/install/selfhost-macos"
 install_service_asset_name: cert-ctrl-macos-x64

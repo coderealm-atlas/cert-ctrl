@@ -10,6 +10,10 @@ BUILD_DIR_REL="${BUILD_DIR_REL:-build/${PRESET}}"
 INSTALL_PREFIX_REL="${INSTALL_PREFIX_REL:-install/selfhost-${PRESET}}"
 BUILD_DIR="/work/${BUILD_DIR_REL}"
 INSTALL_PREFIX="/work/${INSTALL_PREFIX_REL}"
+FORCE_BUILD="${INSTALL_SERVICE_FORCE_BUILD:-0}"
+HOST_BUILD_DIR="${REPO_ROOT}/${BUILD_DIR_REL}"
+HOST_INSTALL_PREFIX="${REPO_ROOT}/${INSTALL_PREFIX_REL}"
+STAMP_FILE="${HOST_BUILD_DIR}/.install-service-build.stamp"
 
 VCPKG_COMMIT="${VCPKG_COMMIT:-b322364f06308bdd24823f9d8f03fe0cc86fd46f}"
 
@@ -74,6 +78,43 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+git_head="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+git_dirty="0"
+if ! git -C "${REPO_ROOT}" diff --quiet --ignore-submodules -- 2>/dev/null; then
+  git_dirty="1"
+fi
+if ! git -C "${REPO_ROOT}" diff --cached --ignore-submodules -- 2>/dev/null; then
+  git_dirty="1"
+fi
+submodule_status="$(git -C "${REPO_ROOT}" submodule status 2>/dev/null || true)"
+submodule_dirty="0"
+if printf "%s\n" "${submodule_status}" | grep -q '^[+-U]'; then
+  submodule_dirty="1"
+fi
+
+if [[ "${FORCE_BUILD}" != "1" && "${FORCE_BUILD}" != "true" && "${FORCE_BUILD}" != "True" ]]; then
+  if [[ "${git_dirty}" == "0" && "${submodule_dirty}" == "0" && -f "${STAMP_FILE}" ]]; then
+    BIN_PATH="${HOST_INSTALL_PREFIX}/bin/${BUILD_TARGET}"
+    if [[ ! -x "${BIN_PATH}" && -x "${HOST_INSTALL_PREFIX}/bin/cert_ctrl" ]]; then
+      BIN_PATH="${HOST_INSTALL_PREFIX}/bin/cert_ctrl"
+    fi
+    if [[ -x "${BIN_PATH}" ]]; then
+      stamp_tmp="${HOST_BUILD_DIR}/.install-service-build.stamp.tmp"
+      mkdir -p "${HOST_BUILD_DIR}"
+      {
+        printf "git_head=%s\n" "${git_head}"
+        printf "submodules=%s\n" "${submodule_status}"
+      } > "${stamp_tmp}"
+      if cmp -s "${stamp_tmp}" "${STAMP_FILE}"; then
+        echo "[ubuntu-build] No source changes detected; skipping docker build."
+        rm -f "${stamp_tmp}"
+        exit 0
+      fi
+      rm -f "${stamp_tmp}"
+    fi
+  fi
+fi
+
 DOCKERFILE="${REPO_ROOT}/docker/ubuntu-builder.Dockerfile"
 echo "[ubuntu-build] Building image ${IMAGE_NAME} using ${DOCKERFILE}" >&2
 docker build -t "${IMAGE_NAME}" -f "${DOCKERFILE}" "${REPO_ROOT}"
@@ -97,8 +138,12 @@ git -C /work/external/vcpkg archive "\${VCPKG_COMMIT}" | tar -x -C "\${TMP_VCPKG
 if [ ! -x "\${TMP_VCPKG}/vcpkg" ]; then
   (cd "\${TMP_VCPKG}" && ./bootstrap-vcpkg.sh -disableMetrics)
 fi
-rm -rf /work/build
-cmake --preset "${PRESET}" -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
+if [ "${FORCE_BUILD}" = "1" ] || [ "${FORCE_BUILD}" = "true" ] || [ "${FORCE_BUILD}" = "True" ]; then
+  rm -rf /work/build
+  cmake --preset "${PRESET}" --fresh -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
+else
+  cmake --preset "${PRESET}" -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
+fi
 cmake --build --preset "${PRESET}" --target "${BUILD_TARGET}"
 rm -rf "${INSTALL_PREFIX}"
 cmake --install "${BUILD_DIR}" --config Release --prefix "${INSTALL_PREFIX}"
@@ -140,3 +185,9 @@ fi
 DOCKER_ARGS+=("${EXTRA_DOCKER_ENV[@]}")
 
 docker run "${DOCKER_ARGS[@]}" "${IMAGE_NAME}" bash -c "${RUN_CMD}"
+
+mkdir -p "${HOST_BUILD_DIR}"
+{
+  printf "git_head=%s\n" "${git_head}"
+  printf "submodules=%s\n" "${submodule_status}"
+} > "${STAMP_FILE}"

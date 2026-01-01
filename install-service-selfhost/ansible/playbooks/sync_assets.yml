@@ -1,0 +1,21 @@
+---
+- name: Sync install-service assets to remote
+  hosts: install_service_remote
+  become: true
+  vars_files:
+    - ../vars.yml
+  pre_tasks:
+    - name: Ensure rsync installed (Debian/Ubuntu)
+      apt:
+        name: rsync
+        state: present
+        update_cache: true
+      when: ansible_os_family == 'Debian'
+
+    - name: Ensure rsync installed (other)
+      package:
+        name: rsync
+        state: present
+      when: ansible_os_family != 'Debian'
+  roles:
+    - install_service_assets

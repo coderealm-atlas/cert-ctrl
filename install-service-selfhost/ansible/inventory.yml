@@ -23,6 +23,7 @@ all:
           ansible_host: 127.0.0.1
           ansible_port: 10022
           ansible_user: jianglibo
+          ansible_shell_executable: /bin/bash
           install_service_repo_path: /Users/jianglibo/cert-ctrl
     build_freebsd:
       hosts:
@@ -39,6 +40,16 @@ all:
         localhost:
           ansible_connection: local
           install_service_repo_path: /home/jianglibo/cert-ctrl
+    install_service_remote:
+      hosts:
+        install-selfhost:
+          ansible_host: install-selfhost.lets-script.com
+          ansible_user: root
+          install_service_app_root: /opt/install-service/selfhost
+          install_service_assets_root: /opt/install-service/assets
+          install_service_app_user: install-service
+          install_service_app_group: install-service
+          install_service_nginx_port: 8080
     assets_host:
       hosts:
         localhost:

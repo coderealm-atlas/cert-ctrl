@@ -1,0 +1,36 @@
+---
+- name: Ensure nginx installed (Debian/Ubuntu)
+  apt:
+    name: nginx
+    state: present
+    update_cache: true
+  when: ansible_os_family == 'Debian'
+
+- name: Ensure nginx installed (other)
+  package:
+    name: nginx
+    state: present
+  when: ansible_os_family != 'Debian'
+
+- name: Ensure assets root exists
+  file:
+    path: "{{ install_service_assets_root }}"
+    state: directory
+    owner: "{{ install_service_assets_owner }}"
+    group: "{{ install_service_assets_group }}"
+    mode: '0755'
+
+- name: Template nginx site
+  template:
+    src: install-service.conf.j2
+    dest: "{{ install_service_nginx_conf_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload nginx
+
+- name: Ensure nginx enabled and running
+  service:
+    name: nginx
+    state: started
+    enabled: true

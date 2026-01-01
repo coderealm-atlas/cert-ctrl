@@ -1,0 +1,18 @@
+---
+install_service_app_root: /opt/install-service/selfhost
+install_service_app_user: install-service
+install_service_app_group: install-service
+install_service_node_path: /usr/bin/node
+install_service_app_port: 8787
+install_service_app_host: 127.0.0.1
+install_service_service_name: install-service-selfhost
+install_service_app_src: ""
+install_service_app_excludes:
+  - node_modules
+  - assets-staging
+  - ansible
+  - .git
+  - .github
+  - assets
+install_service_app_install_command: npm ci --omit=dev
+install_service_app_env: {}

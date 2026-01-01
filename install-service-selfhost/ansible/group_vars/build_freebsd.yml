@@ -1,5 +1,13 @@
-install_service_build_commands:
-  - BUILD_TYPE=Release INSTALL_PREFIX="{{ install_service_repo_path }}/install/selfhost-freebsd" scripts/build-freebsd.sh
+install_service_build_env:
+  BUILD_TYPE: Release
+  BUILD_TARGET: cert_ctrl
+  INSTALL_PREFIX: "{{ install_service_repo_path }}/install/selfhost-freebsd"
+  INSTALL_SERVICE_INSTALL_PREFIX: "{{ install_service_repo_path }}/install/selfhost-freebsd"
+
+install_service_build_script_path: "{{ playbook_dir }}/../../../scripts/build-freebsd.sh"
+install_service_build_script_remote_path: /tmp/install-service-build-freebsd.sh
+
+install_service_build_commands: []
 
 install_service_install_prefix: "{{ install_service_repo_path }}/install/selfhost-freebsd"
 install_service_asset_name: cert-ctrl-freebsd-x64
