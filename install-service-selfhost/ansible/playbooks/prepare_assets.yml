@@ -26,7 +26,7 @@
         if [ -z "${tag:-}" ]; then
           tag="v0.0.0-unknown"
         fi
-        if [ "{{ install_service_force_clean_git_describe | default(false) | bool }}" = "true" ]; then
+        if [ "{{ install_service_force_clean_git_describe | default(false) | bool | lower }}" = "true" ]; then
           tag=$(printf '%s' "$tag" | sed -E 's/-dirty$//')
         fi
         printf '%s\n' "$tag"

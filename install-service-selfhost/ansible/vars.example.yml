@@ -31,4 +31,4 @@ install_service_linux_docker_jobs:
     install_prefix: install/selfhost-alpine-release
     asset_name: cert-ctrl-linux-musl-x64
 
-device_login_apikey: "ak_f7d166e929d2f6f91362c041d75ab3e6.5Jl31bcQUV6for7MnjSQxVzq0LB9mXuUfuJ2"
+device_login_apikey: ""

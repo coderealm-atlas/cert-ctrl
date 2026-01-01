@@ -12,13 +12,17 @@ build_groups=()
 build_groups_all="false"
 extra_vars=()
 docker_buildkit=""
+release_version=""
+run_publish="false"
+run_github_release="false"
+github_release_override="false"
 
 usage() {
   cat <<'EOF'
 Usage: deploy.sh [options]
 
 Actions (default: pipeline)
-  --action build|collect|prepare|pipeline
+  --action build|collect|prepare|pipeline|quick
   --build windows|macos|freebsd|linux-docker|all
   --builds windows,macos,freebsd,linux-docker|all
 
@@ -27,6 +31,10 @@ Options
   --inventory <path>
   --ansible-config <path>
   --release-version <version>
+  --release-version-latest
+  --publish-github-release
+  --skip-github-release
+  --force-build
   --skip-git-pull
   --skip-git-fetch-tags
   -h|--help
@@ -93,8 +101,26 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --release-version)
-      extra_vars+=("install_service_release_version=$2")
+      release_version="$2"
       shift 2
+      ;;
+    --release-version-latest)
+      release_version="latest"
+      shift
+      ;;
+    --publish-github-release)
+      run_github_release="true"
+      github_release_override="true"
+      shift
+      ;;
+    --skip-github-release)
+      run_github_release="false"
+      github_release_override="true"
+      shift
+      ;;
+    --force-build)
+      extra_vars+=("install_service_force_build=true")
+      shift
       ;;
     --docker-buildkit)
       docker_buildkit="$2"
@@ -124,6 +150,29 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$release_version" && "$release_version" != "latest" ]]; then
+  extra_vars+=("install_service_release_version=$release_version")
+fi
+
+if [[ "$release_version" == "latest" ]]; then
+  assets_root="${ROOT_DIR}/assets-staging"
+  if [[ ! -d "$assets_root" ]]; then
+    echo "assets staging root not found: $assets_root" >&2
+    exit 1
+  fi
+  clean_versions="$(ls -1 "$assets_root" | grep -v -- '-dirty$' | sort -V || true)"
+  if [[ -n "$clean_versions" ]]; then
+    latest_version="$(printf '%s\n' "$clean_versions" | tail -1)"
+  else
+    latest_version="$(ls -1 "$assets_root" | sort -V | tail -1 || true)"
+  fi
+  if [[ -z "$latest_version" ]]; then
+    echo "no release versions found under $assets_root" >&2
+    exit 1
+  fi
+  extra_vars+=("install_service_release_version=$latest_version")
+fi
+
 if [[ ${#build_groups[@]} -gt 0 && -n "$limit" ]]; then
   echo "--builds cannot be used with --limit" >&2
   exit 1
@@ -134,6 +183,13 @@ case "$action" in
   collect) playbook="${ANSIBLE_DIR}/playbooks/collect_assets.yml" ;;
   prepare) playbook="${ANSIBLE_DIR}/playbooks/prepare_assets.yml" ;;
   pipeline) playbook="${ANSIBLE_DIR}/playbooks/pipeline.yml" ;;
+  quick)
+    playbook="${ANSIBLE_DIR}/playbooks/pipeline.yml"
+    run_publish="true"
+    if [[ "$github_release_override" != "true" ]]; then
+      run_github_release="true"
+    fi
+    ;;
   *)
     echo "Unknown action: $action" >&2
     exit 1
@@ -158,3 +214,31 @@ if [[ -n "$docker_buildkit" ]]; then
 fi
 
 ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" "${cmd[@]}"
+
+if [[ "$run_publish" == "true" ]]; then
+  publish_cmd=("${ROOT_DIR}/publish.sh" --action all)
+  if [[ -n "$limit" ]]; then
+    publish_cmd+=(--limit "$limit")
+  fi
+  publish_cmd+=(--inventory "$INVENTORY_PATH" --ansible-config "$ANSIBLE_CONFIG_PATH")
+  if [[ -n "$release_version" ]]; then
+    if [[ "$release_version" == "latest" ]]; then
+      publish_cmd+=(--release-version-latest)
+    else
+      publish_cmd+=(--release-version "$release_version")
+    fi
+  fi
+  "${publish_cmd[@]}"
+fi
+
+if [[ "$run_github_release" == "true" ]]; then
+  release_cmd=("${ROOT_DIR}/github-release.sh")
+  if [[ -n "$release_version" ]]; then
+    if [[ "$release_version" == "latest" ]]; then
+      release_cmd+=(--release-version-latest)
+    else
+      release_cmd+=(--release-version "$release_version")
+    fi
+  fi
+  "${release_cmd[@]}"
+fi

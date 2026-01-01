@@ -8,6 +8,15 @@ install_service_is_windows: false
 install_service_repo_force_reclone: false
 install_service_skip_git_pull: false
 install_service_skip_git_fetch_tags: false
+install_service_git_retry_count: 3
+install_service_git_retry_delay: 5
+install_service_git_low_speed_limit: 1
+install_service_git_low_speed_time: 30
+install_service_git_try_without_proxy: true
 install_service_force_clean_git_describe: false
 install_service_update_submodules: true
 install_service_docker_buildkit: ""
+install_service_build_log_path_posix: /tmp/install-service-build.log
+install_service_build_log_path_win: C:\\temp\\install-service-build.log
+install_service_force_build: false
+install_service_force_submodule_update: false

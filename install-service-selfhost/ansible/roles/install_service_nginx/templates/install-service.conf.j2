@@ -1,0 +1,17 @@
+server {
+  listen {{ install_service_nginx_port }};
+  listen [::]:{{ install_service_nginx_port }};
+  server_name _;
+  root {{ install_service_assets_root }};
+
+  location = / {
+    proxy_pass http://127.0.0.1:{{ install_service_app_port }};
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+  }
+
+  location / {
+    try_files $uri $uri/ =404;
+  }
+}

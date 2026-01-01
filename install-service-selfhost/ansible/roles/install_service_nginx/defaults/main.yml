@@ -1,0 +1,7 @@
+---
+install_service_nginx_conf_path: /etc/nginx/conf.d/install-service.conf
+install_service_nginx_port: 8080
+install_service_assets_root: /opt/install-service/assets
+install_service_assets_owner: root
+install_service_assets_group: root
+install_service_app_port: 8787

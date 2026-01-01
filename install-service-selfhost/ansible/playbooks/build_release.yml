@@ -35,7 +35,9 @@
       include_role:
         name: install_service_package_posix
       vars:
-        install_service_install_prefix: "{{ install_service_repo_path }}/{{ item.install_prefix }}"
-        install_service_asset_name: "{{ item.asset_name }}"
+        install_service_install_prefix: "{{ install_service_repo_path }}/{{ docker_job.install_prefix }}"
+        install_service_asset_name: "{{ docker_job.asset_name }}"
         install_service_archive_ext: .tar.gz
       loop: "{{ install_service_linux_docker_jobs }}"
+      loop_control:
+        loop_var: docker_job

@@ -1,6 +1,6 @@
 install_service_build_commands:
-  - scripts/build-ubuntu-docker.sh release
-  - scripts/build-alpine-docker.sh alpine-release
+  - BUILD_TARGET=cert_ctrl scripts/build-ubuntu-docker.sh release
+  - BUILD_TARGET=cert_ctrl scripts/build-alpine-docker.sh alpine-release
 
 install_service_linux_docker_jobs:
   - name: linux-x64

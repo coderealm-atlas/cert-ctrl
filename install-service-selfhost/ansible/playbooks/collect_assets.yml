@@ -26,7 +26,7 @@
         if [ -z "${tag:-}" ]; then
           tag="v0.0.0-unknown"
         fi
-        if [ "{{ install_service_force_clean_git_describe | default(false) | bool }}" = "true" ]; then
+        if [ "{{ install_service_force_clean_git_describe | default(false) | bool | lower }}" = "true" ]; then
           tag=$(printf '%s' "$tag" | sed -E 's/-dirty$//')
         fi
         printf '%s\n' "$tag"
@@ -38,6 +38,11 @@
       set_fact:
         install_service_release_version: "{{ install_service_release_version_cmd.stdout | trim }}"
 
+    - name: Register release version for other plays
+      add_host:
+        name: install_service_release_controller
+        install_service_release_version: "{{ install_service_release_version }}"
+
     - name: Ensure local release staging directory exists
       file:
         path: "{{ install_service_assets_staging_root }}/{{ install_service_release_version }}"
@@ -48,7 +53,46 @@
   hosts: build_macos:build_freebsd:build_linux_docker
   vars_files:
     - ../vars.yml
+  vars:
+    install_service_release_version: >-
+      {{
+        hostvars['install_service_release_controller'].install_service_release_version
+        | default(install_service_release_version)
+      }}
   tasks:
+    - name: Determine release version on POSIX build host (fallback)
+      when: install_service_release_version | length == 0
+      shell: |
+        set -eu
+        cd "{{ install_service_repo_path }}"
+        describe=$(git describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>/dev/null || true)
+        if [ -n "$describe" ]; then
+          tag="$describe"
+        else
+          short_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+          commit_count=$(git rev-list --count HEAD 2>/dev/null || true)
+          if [ -n "$short_sha" ] && [ -n "$commit_count" ]; then
+            tag="v0.0.${commit_count}-${short_sha}"
+            if ! git diff --quiet HEAD 2>/dev/null; then
+              tag="${tag}-dirty"
+            fi
+          fi
+        fi
+        if [ -z "${tag:-}" ]; then
+          tag="v0.0.0-unknown"
+        fi
+        if [ "{{ install_service_force_clean_git_describe | default(false) | bool | lower }}" = "true" ]; then
+          tag=$(printf '%s' "$tag" | sed -E 's/-dirty$//')
+        fi
+        printf '%s\n' "$tag"
+      register: install_service_release_version_cmd_posix
+      changed_when: false
+
+    - name: Set release version from POSIX git describe
+      when: install_service_release_version | length == 0
+      set_fact:
+        install_service_release_version: "{{ install_service_release_version_cmd_posix.stdout | trim }}"
+
     - name: Ensure rsync exists on target
       command: rsync --version
       changed_when: false
@@ -64,15 +108,55 @@
   hosts: build_windows
   vars_files:
     - ../vars.yml
+  vars:
+    install_service_release_version: >-
+      {{
+        hostvars['install_service_release_controller'].install_service_release_version
+        | default(install_service_release_version)
+      }}
   tasks:
+    - name: Determine release version on Windows build host (fallback)
+      when: install_service_release_version | length == 0
+      raw: >-
+        & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+        '$ErrorActionPreference = "Stop";
+        Set-Location "{{ install_service_repo_path }}";
+        $describe = git describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>$null;
+        if ($LASTEXITCODE -eq 0 -and $describe) { $tag = $describe.Trim() }
+        else {
+          $shortSha = git rev-parse --short HEAD 2>$null;
+          $commitCount = git rev-list --count HEAD 2>$null;
+          if ($shortSha -and $commitCount) {
+            $tag = "v0.0.$commitCount-$shortSha";
+            git diff --quiet HEAD 2>$null;
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 128) {
+              $tag = (''{0}-dirty'' -f $tag);
+            }
+          }
+        }
+        if (-not $tag) { $tag = "v0.0.0-unknown" }
+        if ({{ install_service_force_clean_git_describe | bool | lower }}) { $tag = $tag -replace ''-dirty$'', '''' }
+        Write-Output $tag'
+      register: install_service_release_version_cmd_win
+      changed_when: false
+
+    - name: Set release version from Windows git describe
+      when: install_service_release_version | length == 0
+      set_fact:
+        install_service_release_version: "{{ install_service_release_version_cmd_win.stdout | trim }}"
+
+    - name: Normalize Windows staging root for fetch
+      set_fact:
+        install_service_remote_staging_root_win: "{{ install_service_remote_staging_root | replace('\\\\', '/') }}"
+
     - name: Fetch Windows archive
       fetch:
-        src: "{{ install_service_remote_staging_root }}\\{{ install_service_release_version }}\\{{ install_service_asset_name }}{{ install_service_archive_ext }}"
+        src: "{{ install_service_remote_staging_root_win }}/{{ install_service_release_version }}/{{ install_service_asset_name }}{{ install_service_archive_ext }}"
         dest: "{{ install_service_assets_staging_root }}/{{ install_service_release_version }}/"
         flat: true
 
     - name: Fetch Windows checksum
       fetch:
-        src: "{{ install_service_remote_staging_root }}\\{{ install_service_release_version }}\\{{ install_service_asset_name }}{{ install_service_archive_ext }}.sha256"
+        src: "{{ install_service_remote_staging_root_win }}/{{ install_service_release_version }}/{{ install_service_asset_name }}{{ install_service_archive_ext }}.sha256"
         dest: "{{ install_service_assets_staging_root }}/{{ install_service_release_version }}/"
         flat: true

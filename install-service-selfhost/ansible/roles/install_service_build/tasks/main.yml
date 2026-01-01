@@ -2,8 +2,8 @@
 - name: Ensure build commands provided
   assert:
     that:
-      - install_service_build_commands | length > 0
-    fail_msg: install_service_build_commands is required for build hosts
+      - (install_service_build_commands | length > 0) or (install_service_build_script_path | default('') | length > 0)
+    fail_msg: install_service_build_commands or install_service_build_script_path is required for build hosts
 
 - name: Build effective environment
   set_fact:
@@ -26,19 +26,16 @@
           )
           | ternary({'DOCKER_BUILDKIT': (install_service_docker_buildkit | string)}, {})
         )
+        | combine(
+          (install_service_force_build | bool)
+          | ternary({'INSTALL_SERVICE_FORCE_BUILD': '1'}, {'INSTALL_SERVICE_FORCE_BUILD': '0'})
+        )
       }}
     install_service_env_effective: >-
       {{
         (install_service_proxy_env_effective | default({}))
         | combine(install_service_build_env_effective | default({}))
       }}
-    install_service_ps_env_block: >-
-      {%- set ns = namespace(parts=[]) -%}
-      {%- for item in install_service_env_effective | default({}) | dict2items -%}
-      {%- set value = item.value | replace("\"", "`\"") -%}
-      {%- set _ = ns.parts.append("$env:" ~ item.key ~ " = \"" ~ value ~ "\"") -%}
-      {%- endfor -%}
-      {{ ns.parts | join('; ') }}{% if ns.parts | length > 0 %}; {% endif %}
     install_service_ps_path_block: >-
       $extraPath = $env:INSTALL_SERVICE_PATH_EXTRA;
       if ($extraPath) { $env:PATH = "$env:PATH;$extraPath"; };
@@ -60,11 +57,104 @@
         }
       };
       {%- endif -%}
+    install_service_git_low_speed_args: >-
+      {{
+        (
+          (install_service_git_low_speed_limit | int) > 0
+          and (install_service_git_low_speed_time | int) > 0
+        )
+        | ternary(
+          '-c http.lowSpeedLimit=' ~ (install_service_git_low_speed_limit | string)
+          ~ ' -c http.lowSpeedTime=' ~ (install_service_git_low_speed_time | string),
+          ''
+        )
+      }}
+
+- name: Build proxy environment variants
+  set_fact:
+    install_service_proxy_env_keys_all: >-
+      {{
+        (
+          (install_service_proxy_env_effective.keys() | list)
+          + (install_service_proxy_env_effective.keys() | list | map('upper') | list)
+          + (install_service_proxy_env_effective.keys() | list | map('lower') | list)
+        ) | unique
+      }}
+    install_service_env_no_proxy: >-
+      {{
+        (install_service_env_effective | default({}))
+        | dict2items
+        | rejectattr('key', 'in', install_service_proxy_env_keys_all | default([]))
+        | items2dict
+      }}
+    install_service_ps_env_block: >-
+      {%- set ns = namespace(parts=[]) -%}
+      {%- for item in install_service_env_effective | default({}) | dict2items -%}
+      {%- set value = item.value | replace("\"", "`\"") -%}
+      {%- set _ = ns.parts.append("$env:" ~ item.key ~ " = \"" ~ value ~ "\"") -%}
+      {%- endfor -%}
+      {{ ns.parts | join('; ') }}{% if ns.parts | length > 0 %}; {% endif %}
+    install_service_ps_env_block_no_proxy: >-
+      {%- set ns = namespace(parts=[]) -%}
+      {%- for item in install_service_env_no_proxy | default({}) | dict2items -%}
+      {%- set value = item.value | replace("\"", "`\"") -%}
+      {%- set _ = ns.parts.append("$env:" ~ item.key ~ " = \"" ~ value ~ "\"") -%}
+      {%- endfor -%}
+      {%- for key in install_service_proxy_env_keys_all | default([]) -%}
+      {%- set _ = ns.parts.append("Remove-Item Env:" ~ key ~ " -ErrorAction SilentlyContinue") -%}
+      {%- endfor -%}
+      {{ ns.parts | join('; ') }}{% if ns.parts | length > 0 %}; {% endif %}
 
 - name: Build PowerShell preamble
   set_fact:
     install_service_ps_preamble: >-
       {{ install_service_ps_env_block }}{{ install_service_ps_msvc_block }}{{ install_service_ps_path_block }}
+    install_service_ps_preamble_no_proxy: >-
+      {{ install_service_ps_env_block_no_proxy }}{{ install_service_ps_msvc_block }}{{ install_service_ps_path_block }}
+
+- name: Set build log path
+  set_fact:
+    install_service_build_log_path: >-
+      {{
+        install_service_is_windows
+        | ternary(install_service_build_log_path_win, install_service_build_log_path_posix)
+      }}
+
+- name: Set build log directory (POSIX)
+  when: not install_service_is_windows
+  set_fact:
+    install_service_build_log_dir: "{{ install_service_build_log_path | dirname }}"
+
+- name: Check build log directory (POSIX)
+  when: not install_service_is_windows and install_service_build_log_dir not in ['/tmp', '/private/tmp', '.']
+  stat:
+    path: "{{ install_service_build_log_dir }}"
+  register: install_service_build_log_dir_stat
+
+- name: Ensure build log directory exists (POSIX)
+  when: not install_service_is_windows and install_service_build_log_dir not in ['/tmp', '/private/tmp', '.'] and not install_service_build_log_dir_stat.stat.exists
+  file:
+    path: "{{ install_service_build_log_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Truncate build log (POSIX)
+  when: not install_service_is_windows
+  shell: ": > \"{{ install_service_build_log_path }}\""
+
+- name: Truncate build log (Windows)
+  when: install_service_is_windows
+  ansible.windows.win_shell: |
+    $logPath = "{{ install_service_build_log_path }}"
+    $logDir = Split-Path -Parent $logPath
+    if ($logDir -and -not (Test-Path $logDir)) {
+      New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    }
+    "" | Out-File -FilePath $logPath -Encoding ascii
+
+- name: Report build log path
+  debug:
+    msg: "Build log path: {{ install_service_build_log_path }}"
 
 - name: Report proxy usage
   debug:
@@ -127,35 +217,155 @@
 
 - name: Update repository (POSIX)
   when: not install_service_is_windows and not install_service_skip_git_pull | bool and install_service_repo_stat.stat.exists
-  shell: git -C "{{ install_service_repo_path }}" pull --ff-only
-  changed_when: false
-  environment: "{{ install_service_env_effective }}"
+  block:
+    - name: Update repository (POSIX, proxy)
+      shell: git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" pull --ff-only
+      register: install_service_git_pull_posix
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_pull_posix.rc == 0
+      changed_when: false
+      environment: "{{ install_service_env_effective }}"
+  rescue:
+    - name: Fail update repository without proxy disabled (POSIX)
+      when: not install_service_git_try_without_proxy | bool
+      fail:
+        msg: "git pull failed with proxy; set install_service_git_try_without_proxy=true to retry without proxy."
+    - name: Update repository (POSIX, no proxy)
+      when: install_service_git_try_without_proxy | bool
+      shell: git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" pull --ff-only
+      register: install_service_git_pull_posix
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_pull_posix.rc == 0
+      changed_when: false
+      environment: "{{ install_service_env_no_proxy }}"
 
 - name: Update repository (Windows)
   when: install_service_is_windows and not install_service_skip_git_pull | bool and install_service_repo_git_win.rc == 0
-  raw: >-
-    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    '{{ install_service_ps_env_block }}git -C "{{ install_service_repo_path }}" pull --ff-only'
-  changed_when: false
+  block:
+    - name: Update repository (Windows, proxy)
+      raw: >-
+        & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+        '{{ install_service_ps_preamble }}git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" pull --ff-only'
+      register: install_service_git_pull_win
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_pull_win.rc == 0
+      changed_when: false
+  rescue:
+    - name: Fail update repository without proxy disabled (Windows)
+      when: not install_service_git_try_without_proxy | bool
+      fail:
+        msg: "git pull failed with proxy; set install_service_git_try_without_proxy=true to retry without proxy."
+    - name: Update repository (Windows, no proxy)
+      when: install_service_git_try_without_proxy | bool
+      raw: >-
+        & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+        '{{ install_service_ps_preamble_no_proxy }}git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" pull --ff-only'
+      register: install_service_git_pull_win
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_pull_win.rc == 0
+      changed_when: false
 
 - name: Fetch repository tags (POSIX)
   when: not install_service_is_windows and not install_service_skip_git_fetch_tags | bool
-  shell: git -C "{{ install_service_repo_path }}" fetch --tags --force
-  changed_when: false
-  environment: "{{ install_service_env_effective }}"
+  block:
+    - name: Fetch repository tags (POSIX, proxy)
+      shell: git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" fetch --tags --force
+      register: install_service_git_fetch_posix
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_fetch_posix.rc == 0
+      changed_when: false
+      environment: "{{ install_service_env_effective }}"
+  rescue:
+    - name: Fail fetch tags without proxy disabled (POSIX)
+      when: not install_service_git_try_without_proxy | bool
+      fail:
+        msg: "git fetch --tags failed with proxy; set install_service_git_try_without_proxy=true to retry without proxy."
+    - name: Fetch repository tags (POSIX, no proxy)
+      when: install_service_git_try_without_proxy | bool
+      shell: git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" fetch --tags --force
+      register: install_service_git_fetch_posix
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_fetch_posix.rc == 0
+      changed_when: false
+      environment: "{{ install_service_env_no_proxy }}"
 
 - name: Fetch repository tags (Windows)
   when: install_service_is_windows and install_service_repo_git_win.rc == 0 and not install_service_skip_git_fetch_tags | bool
-  raw: >-
-    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    '{{ install_service_ps_env_block }}git -C "{{ install_service_repo_path }}" fetch --tags --force'
+  block:
+    - name: Fetch repository tags (Windows, proxy)
+      raw: >-
+        & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+        '{{ install_service_ps_preamble }}git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" fetch --tags --force'
+      register: install_service_git_fetch_win
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_fetch_win.rc == 0
+      changed_when: false
+  rescue:
+    - name: Fail fetch tags without proxy disabled (Windows)
+      when: not install_service_git_try_without_proxy | bool
+      fail:
+        msg: "git fetch --tags failed with proxy; set install_service_git_try_without_proxy=true to retry without proxy."
+    - name: Fetch repository tags (Windows, no proxy)
+      when: install_service_git_try_without_proxy | bool
+      raw: >-
+        & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+        '{{ install_service_ps_preamble_no_proxy }}git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" fetch --tags --force'
+      register: install_service_git_fetch_win
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_fetch_win.rc == 0
+      changed_when: false
+
+- name: Check submodule status (POSIX)
+  when: not install_service_is_windows and install_service_update_submodules | bool
+  shell: git -C "{{ install_service_repo_path }}" submodule status
+  register: install_service_submodule_status
   changed_when: false
+  failed_when: false
+  environment: "{{ install_service_env_effective }}"
+
+- name: Decide whether to update submodules (POSIX)
+  when: not install_service_is_windows and install_service_update_submodules | bool
+  set_fact:
+    install_service_submodule_needs_update: >-
+      {{
+        install_service_force_submodule_update | bool
+        or (install_service_submodule_status.rc | default(1) != 0)
+        or (install_service_submodule_status.stdout | default('') is search('(?m)^[-+U]'))
+      }}
 
 - name: Update submodules (POSIX)
-  when: not install_service_is_windows and install_service_update_submodules | bool
-  shell: git -C "{{ install_service_repo_path }}" submodule update --init --recursive
-  changed_when: false
-  environment: "{{ install_service_env_effective }}"
+  when: not install_service_is_windows and install_service_update_submodules | bool and install_service_submodule_needs_update | bool
+  block:
+    - name: Update submodules (POSIX, proxy)
+      shell: git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" submodule update --init --recursive
+      register: install_service_git_submodule_posix
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_submodule_posix.rc == 0
+      changed_when: false
+      environment: "{{ install_service_env_effective }}"
+  rescue:
+    - name: Fail submodule update without proxy disabled (POSIX)
+      when: not install_service_git_try_without_proxy | bool
+      fail:
+        msg: "git submodule update failed with proxy; set install_service_git_try_without_proxy=true to retry without proxy."
+    - name: Update submodules (POSIX, no proxy)
+      when: install_service_git_try_without_proxy | bool
+      shell: git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" submodule update --init --recursive
+      register: install_service_git_submodule_posix
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_submodule_posix.rc == 0
+      changed_when: false
+      environment: "{{ install_service_env_no_proxy }}"
 
 - name: Determine release version (POSIX)
   when: not install_service_is_windows and install_service_release_version | length == 0
@@ -178,7 +388,7 @@
     if [ -z "${tag:-}" ]; then
       tag="v0.0.0-unknown"
     fi
-    if [ "{{ install_service_force_clean_git_describe | bool }}" = "true" ]; then
+    if [ "{{ install_service_force_clean_git_describe | bool | lower }}" = "true" ]; then
       tag=$(printf '%s' "$tag" | sed -E 's/-dirty$//')
     fi
     printf '%s\n' "$tag"
@@ -200,7 +410,7 @@
         $tag = "v0.0.$commitCount-$shortSha";
         git diff --quiet HEAD 2>$null;
         if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 128) {
-          $tag = "$tag-dirty";
+          $tag = (''{0}-dirty'' -f $tag);
         }
       }
     }
@@ -219,18 +429,49 @@
         or (install_service_release_version_cmd_win.stdout | default(''))
       | trim }}
 
+- name: Upload build script (POSIX)
+  when: not install_service_is_windows and install_service_build_script_path | default('') | length > 0
+  copy:
+    src: "{{ install_service_build_script_path }}"
+    dest: "{{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }}"
+    mode: "0755"
+
+- name: Upload build script (Windows)
+  when: install_service_is_windows and install_service_build_script_path | default('') | length > 0
+  copy:
+    src: "{{ install_service_build_script_path }}"
+    dest: "{{ install_service_build_script_remote_path | default('C:\\\\temp\\\\install-service-build.ps1') }}"
+
+- name: Run build script (POSIX)
+  when: not install_service_is_windows and install_service_build_script_path | default('') | length > 0
+  shell: |
+    if (set -o pipefail) 2>/dev/null; then :; fi
+    {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} 2>&1 | tee -a "{{ install_service_build_log_path }}"
+  args:
+    chdir: "{{ install_service_repo_path }}"
+  environment: "{{ install_service_env_effective | combine({'INSTALL_SERVICE_REPO_PATH': install_service_repo_path}) }}"
+
 - name: Run build commands
-  when: not install_service_is_windows
-  shell: "{{ item }}"
+  when: not install_service_is_windows and install_service_build_script_path | default('') | length == 0
+  shell: |
+    if (set -o pipefail) 2>/dev/null; then :; fi
+    {{ item }} 2>&1 | tee -a "{{ install_service_build_log_path }}"
   args:
     chdir: "{{ install_service_repo_path }}"
   environment: "{{ install_service_env_effective }}"
   loop: "{{ install_service_build_commands }}"
 
 - name: Run build commands (Windows)
-  when: install_service_is_windows
+  when: install_service_is_windows and install_service_build_script_path | default('') | length == 0
   raw: >-
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    '{{ install_service_ps_preamble }}Set-Location "{{ install_service_repo_path }}"; {{ item }}'
+    '{{ install_service_ps_preamble }}Set-Location "{{ install_service_repo_path }}";
+    & { {{ item }} }'
   loop: "{{ install_service_build_commands }}"
   changed_when: false
+
+- name: Run build script (Windows)
+  when: install_service_is_windows and install_service_build_script_path | default('') | length > 0
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    '{{ install_service_ps_preamble }}& "{{ install_service_build_script_remote_path | default('C:\\\\temp\\\\install-service-build.ps1') }}" -RepoPath "{{ install_service_repo_path }}" -BuildTarget cert_ctrl'

@@ -1,4 +1,44 @@
 ---
+- name: Decide sync mode
+  set_fact:
+    install_service_sync_all: "{{ install_service_release_version | default('') | trim | length == 0 }}"
+
+- name: Check assets staging root (sync all)
+  when: install_service_sync_all
+  delegate_to: localhost
+  stat:
+    path: "{{ install_service_assets_staging_root }}"
+  register: install_service_assets_staging_root_stat
+
+- name: Ensure assets staging root exists (sync all)
+  when: install_service_sync_all
+  assert:
+    that:
+      - install_service_assets_staging_root_stat.stat.exists
+      - install_service_assets_staging_root_stat.stat.isdir
+    fail_msg: "install_service_assets_staging_root does not exist or is not a directory"
+
+- name: Determine latest release version (sync all)
+  when: install_service_sync_all
+  delegate_to: localhost
+  shell: |
+    set -eu
+    staging_root="{{ install_service_assets_staging_root }}"
+    clean_versions=$(ls -1 "$staging_root" | grep -v -- '-dirty$' | sort -V || true)
+    if [ -n "$clean_versions" ]; then
+      printf '%s\n' "$clean_versions" | tail -1
+    else
+      ls -1 "$staging_root" | sort -V | tail -1
+    fi
+  register: install_service_latest_release_cmd
+  changed_when: false
+
+- name: Set release version and assets source (sync all)
+  when: install_service_sync_all
+  set_fact:
+    install_service_release_version: "{{ install_service_latest_release_cmd.stdout | trim }}"
+    install_service_assets_src: "{{ install_service_assets_staging_root }}"
+
 - name: Ensure release version provided
   assert:
     that:
@@ -36,14 +76,28 @@
 - name: Set release directory
   set_fact:
     install_service_release_dir: "{{ install_service_assets_root }}/releases/{{ install_service_release_version }}"
+    install_service_releases_root: "{{ install_service_assets_root }}/releases"
 
 - name: Set latest version
   set_fact:
-    install_service_latest_version_effective: "{{ install_service_latest_version | default('') | length > 0 | ternary(install_service_latest_version, install_service_release_version) }}"
+    install_service_latest_version_effective: >-
+      {{
+        (install_service_latest_version | default('') | trim)
+        if (install_service_latest_version | default('') | trim | length > 0)
+        else install_service_release_version
+      }}
 
 - name: Ensure assets root exists
   file:
     path: "{{ install_service_assets_root }}"
+    state: directory
+    owner: "{{ install_service_owner }}"
+    group: "{{ install_service_group }}"
+    mode: '0755'
+
+- name: Ensure releases root exists
+  file:
+    path: "{{ install_service_releases_root }}"
     state: directory
     owner: "{{ install_service_owner }}"
     group: "{{ install_service_group }}"
@@ -60,7 +114,7 @@
 - name: Synchronize release assets
   ansible.posix.synchronize:
     src: "{{ install_service_assets_src }}/"
-    dest: "{{ install_service_release_dir }}/"
+    dest: "{{ (install_service_sync_all | bool) | ternary(install_service_releases_root, install_service_release_dir) }}/"
     archive: true
     delete: false
 

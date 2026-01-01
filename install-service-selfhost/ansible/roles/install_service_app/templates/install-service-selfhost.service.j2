@@ -1,0 +1,22 @@
+[Unit]
+Description=Install Service Selfhost
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ install_service_app_root }}
+Environment=NODE_ENV=production
+Environment=PORT={{ install_service_app_port }}
+Environment=HOST={{ install_service_app_host }}
+Environment=ASSETS_ROOT={{ install_service_assets_root }}
+{% for item in install_service_app_env | default({}) | dictsort %}
+Environment={{ item.0 }}={{ item.1 }}
+{% endfor %}
+ExecStart={{ install_service_node_path }} {{ install_service_app_root }}/src/index.js
+Restart=on-failure
+RestartSec=3
+User={{ install_service_app_user }}
+Group={{ install_service_app_group }}
+
+[Install]
+WantedBy=multi-user.target

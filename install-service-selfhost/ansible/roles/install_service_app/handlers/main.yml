@@ -1,0 +1,10 @@
+---
+- name: reload systemd
+  systemd:
+    daemon_reload: true
+
+- name: restart install-service
+  systemd:
+    name: "{{ install_service_service_name }}"
+    state: restarted
+    enabled: true

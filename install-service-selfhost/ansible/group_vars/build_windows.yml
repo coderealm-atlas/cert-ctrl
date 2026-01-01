@@ -5,17 +5,9 @@ install_service_msvc_env: true
 install_service_build_env:
   INSTALL_SERVICE_PATH_EXTRA: C:\\Users\\Administrator\\AppData\\Local\\Microsoft\\WinGet\\Links;C:\\Program Files\\CMake\\bin;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0
 
-install_service_build_commands:
-  - git submodule sync --recursive external/vcpkg
-  - git submodule update --init --recursive external/vcpkg
-  - if (-not (Test-Path external\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake)) { throw vcpkg_missing }
-  - if (Test-Path external\\vcpkg\\vcpkg.exe) { takeown /f external\\vcpkg\\vcpkg.exe > $null; icacls external\\vcpkg\\vcpkg.exe /grant Administrators:F > $null }
-  - if (Test-Path external\\vcpkg\\vcpkg.exe) { if ((Get-Item external\\vcpkg\\vcpkg.exe).Length -eq 0) { Remove-Item external\\vcpkg\\vcpkg.exe -Force } }
-  - if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { throw ninja_missing }
-  - if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) { throw cmake_missing }
-  - cmake --preset w64
-  - cmake --build --preset w64
-  - cmake --install build\\w64 --config Release --prefix install\\selfhost-windows
+install_service_build_script_path: "{{ playbook_dir }}/../../scripts/build-windows-release.ps1"
+install_service_build_script_remote_path: C:\\temp\\install-service-build.ps1
+install_service_build_commands: []
 
 install_service_install_prefix: "{{ install_service_repo_path }}\\install\\selfhost-windows"
 install_service_asset_name: cert-ctrl-windows-x64

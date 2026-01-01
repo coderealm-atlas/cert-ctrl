@@ -48,3 +48,5 @@ tests/test-env
 tmp/ 
 install/
 temp/
+
+**/assets-staging/

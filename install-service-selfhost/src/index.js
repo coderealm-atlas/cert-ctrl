@@ -3,33 +3,48 @@ import morgan from 'morgan';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { getInstallTemplate } from './utils/templates.js';
+import {
+  detectPlatform,
+  detectArchitecture,
+  normalizePlatformHint,
+  normalizeArchitectureHint
+} from './utils/platform.js';
 
 const app = express();
 app.set('trust proxy', true);
 app.use(morgan('combined'));
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const templatesDir = path.resolve(__dirname, '..', 'templates');
 const assetsRoot = process.env.ASSETS_ROOT || path.resolve(process.cwd(), 'assets');
 const releasesDir = process.env.RELEASES_DIR || path.join(assetsRoot, 'releases');
 const latestFile = process.env.LATEST_FILE || path.join(assetsRoot, 'latest.json');
 const defaultVersion = process.env.DEFAULT_VERSION || 'latest';
 const port = Number.parseInt(process.env.PORT || '8787', 10);
+const host = process.env.HOST || '0.0.0.0';
+const repoOwner = process.env.GITHUB_REPO_OWNER || 'coderealm-atlas';
+const repoName = process.env.GITHUB_REPO_NAME || 'cert-ctrl';
+const analyticsEnabled = parseEnvBool(process.env.ANALYTICS_ENABLED);
+const rateLimitEnabled = parseEnvBool(process.env.RATE_LIMIT_ENABLED);
+const rateLimitMax = Number.parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '120', 10);
+const rateLimitWindowSeconds = Number.parseInt(process.env.RATE_LIMIT_WINDOW_SECONDS || '60', 10);
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type,User-Agent'
+  'Access-Control-Allow-Methods': 'GET, POST, HEAD, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+  'Access-Control-Max-Age': '86400'
 };
 
-const templateCache = new Map();
+const rateLimitBuckets = new Map();
+const analyticsStore = new Map();
 
 app.use((req, res, next) => {
   res.set(corsHeaders);
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('X-Frame-Options', 'DENY');
+  res.set('X-XSS-Protection', '1; mode=block');
   res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.vary('accept-encoding');
   if (req.method === 'OPTIONS') {
     res.status(204).end();
     return;
@@ -37,46 +52,126 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+app.use((req, res, next) => {
+  if (analyticsEnabled && req.method !== 'OPTIONS') {
+    trackRequest(req);
+  }
+  next();
 });
 
-app.get(['/install.sh', '/install.ps1', '/install-macos.sh'], async (req, res) => {
+app.get('/health', async (req, res) => {
+  const status = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    environment: process.env.ENVIRONMENT || 'production',
+    checks: {
+      releaseCache: 'unconfigured',
+      analytics: analyticsEnabled ? 'enabled' : 'disabled',
+      rateLimiting: rateLimitEnabled ? 'enabled' : 'disabled'
+    }
+  };
+
   try {
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    const version = sanitizeVersion(req.query.version || req.query.v || defaultVersion);
-    const templateName = resolveTemplateName(req.path);
-    const template = await loadTemplate(templateName);
-    const rendered = renderTemplate(template, {
-      BASE_URL: baseUrl,
-      VERSION: version
+    const latest = await readLatest();
+    status.checks.releaseCache = latest ? 'hit' : 'miss';
+  } catch (error) {
+    status.checks.releaseCache = 'error';
+    status.status = 'degraded';
+    status.error = `Cache check failed: ${error.message}`;
+  }
+
+  res.set('Cache-Control', 'no-store');
+  res.json(status);
+});
+
+app.get(['/install.sh', '/install.ps1', '/install-macos.sh'], rateLimiter, async (req, res) => {
+  try {
+    const baseUrl = getBaseUrl(req);
+    const scriptType = resolveScriptType(req.path);
+    const userAgent = req.get('User-Agent') || '';
+    const country = req.get('CF-IPCountry') || req.get('X-Country') || 'US';
+
+    const platformOverride = normalizePlatformHint(
+      readQueryString(req.query, 'platform') ||
+      readQueryString(req.query, 'os') ||
+      req.get('X-Install-Platform') ||
+      req.get('X-Platform')
+    );
+
+    const architectureOverride = normalizeArchitectureHint(
+      readQueryString(req.query, 'arch') ||
+      readQueryString(req.query, 'architecture') ||
+      req.get('X-Install-Arch') ||
+      req.get('X-Architecture')
+    );
+
+    const platformDetection = scriptType === 'macos'
+      ? { platform: 'macos', confidence: 'high' }
+      : detectPlatform(userAgent, scriptType);
+
+    const platform = platformOverride || platformDetection.platform;
+    const platformConfidence = platformOverride ? 'override' : platformDetection.confidence;
+    const architecture = architectureOverride || detectArchitecture(userAgent);
+
+    const sandboxParam = readQueryString(req.query, 'sandbox')?.toLowerCase() || '';
+    const params = {
+      version: readQueryString(req.query, 'version') || defaultVersion,
+      verbose: hasQueryFlag(req.query, 'verbose') || hasQueryFlag(req.query, 'v'),
+      force: hasQueryFlag(req.query, 'force'),
+      installDir: readQueryString(req.query, 'install-dir') || readQueryString(req.query, 'dir') || '',
+      dryRun: hasQueryFlag(req.query, 'dry-run'),
+      writableDirs: readQueryString(req.query, 'writable-dirs') || readQueryString(req.query, 'rw-dirs') || '',
+      disableSandbox:
+        hasQueryFlag(req.query, 'no-sandbox') ||
+        sandboxParam === '0' ||
+        sandboxParam === 'false'
+    };
+
+    const mirror = selectBestMirror(baseUrl);
+    const script = await getInstallTemplate(scriptType, {
+      platform,
+      platformConfidence,
+      architecture,
+      country,
+      mirror,
+      params,
+      baseUrl
     });
 
-    const contentType = req.path.endsWith('.ps1')
+    const contentType = scriptType === 'powershell'
       ? 'application/x-powershell; charset=utf-8'
       : 'application/x-sh; charset=utf-8';
 
     res.set('Content-Type', contentType);
     res.set('Cache-Control', 'private, max-age=0, no-cache, no-store');
-    res.send(rendered);
+    res.vary('User-Agent');
+    res.vary('CF-IPCountry');
+    res.set('X-Platform', platform);
+    res.set('X-Platform-Confidence', platformConfidence);
+    res.set('X-Architecture', architecture);
+    res.set('X-Mirror', mirror.name);
+    res.send(script);
   } catch (error) {
-    res.status(500).type('text/plain').send('Failed to generate install script.');
+    res.status(500).type('text/plain').send('Error generating installation script');
   }
 });
 
-app.get('/api/version/latest', async (req, res) => {
+app.get('/api/version/latest', rateLimiter, async (req, res) => {
   const latest = await readLatest();
-  if (!latest) {
+  if (!latest?.version) {
     res.status(404).json({ error: 'latest version not configured' });
     return;
   }
 
-  res.set('Cache-Control', 'public, max-age=300');
-  res.json(latest);
+  const baseUrl = getBaseUrl(req);
+  const payload = buildLatestResponse(latest, baseUrl);
+
+  res.set('Cache-Control', 'public, max-age=600');
+  res.json(payload);
 });
 
-app.get('/api/version/check', async (req, res) => {
-  const current = req.query.current || req.query.version;
+app.get('/api/version/check', rateLimiter, async (req, res) => {
+  const current = readQueryString(req.query, 'current') || readQueryString(req.query, 'version');
   if (!current) {
     res.status(400).json({ error: 'missing current version' });
     return;
@@ -88,37 +183,71 @@ app.get('/api/version/check', async (req, res) => {
     return;
   }
 
-  const compare = compareVersions(latest.version, current.toString());
+  const baseUrl = getBaseUrl(req);
+  const latestPayload = buildLatestResponse(latest, baseUrl);
+  const latestVersion = latestPayload.version;
+
+  res.set('Cache-Control', 'public, max-age=300');
   res.json({
     current_version: current,
-    latest_version: latest.version,
-    newer_version_available: compare > 0
+    latest_version: latestVersion,
+    newer_version_available: compareVersions(latestVersion, current) > 0,
+    platform: readQueryString(req.query, 'platform') || 'unknown',
+    architecture: readQueryString(req.query, 'arch') || 'unknown',
+    download_urls: latestPayload.download_urls,
+    install_commands: latestPayload.install_commands,
+    changelog_url: latestPayload.changelog_url,
+    security_update: await isSecurityUpdate(latestPayload.body),
+    minimum_supported_version: getMinimumSupportedVersion(),
+    deprecation_warnings: getDeprecationWarnings(current),
+    update_urgency: await getUpdateUrgency(current, latestVersion, latestPayload.body)
   });
 });
 
-app.head('/releases/proxy/:version/:filename', async (req, res) => {
+app.head(['/releases/proxy/:version/:filename', '/releases/proxy/latest/:filename'], rateLimiter, async (req, res) => {
   const response = await handleRelease(req, res, { headOnly: true });
   if (!response) {
     return;
   }
 });
 
-app.get('/releases/proxy/:version/:filename', async (req, res) => {
+app.get(['/releases/proxy/:version/:filename', '/releases/proxy/latest/:filename'], rateLimiter, async (req, res) => {
   const response = await handleRelease(req, res, { headOnly: false });
   if (!response) {
     return;
   }
 });
 
+app.get('/api/stats/:type', (req, res) => {
+  if (!analyticsEnabled) {
+    res.status(404).json({ error: 'Analytics disabled' });
+    return;
+  }
+
+  const payload = fetchAnalytics(req.params.type);
+  res.set('Cache-Control', 'no-store');
+  res.json(payload);
+});
+
 app.get('/', (req, res) => {
+  const baseUrl = getBaseUrl(req);
   res.json({
-    service: 'install-service-selfhost',
+    service: 'cert-ctrl-install-service',
+    version: '1.0.0',
     endpoints: {
-      install_sh: '/install.sh',
-      install_ps1: '/install.ps1',
-      install_macos: '/install-macos.sh',
-      latest: '/api/version/latest',
-      proxy: '/releases/proxy/{version}/{filename}'
+      'Unix/Linux Install': '/install.sh',
+      'macOS Install': '/install-macos.sh',
+      'Windows Install': '/install.ps1',
+      'Version Check': '/api/version/check',
+      'Latest Version': '/api/version/latest',
+      'Proxy Releases': '/releases/proxy/{version}/{filename}',
+      'Health Check': '/health'
+    },
+    usage: {
+      'Quick Install (Unix)': `curl -fsSL ${baseUrl}/install.sh | bash`,
+      'Quick Install (macOS)': `curl -fsSL ${baseUrl}/install-macos.sh | sudo bash`,
+      'Quick Install (Windows)': `iwr -useb ${baseUrl}/install.ps1 | iex`,
+      'Version Check': `curl ${baseUrl}/api/version/latest`
     }
   });
 });
@@ -127,43 +256,141 @@ app.all('*', (req, res) => {
   res.status(404).type('text/plain').send('Not Found');
 });
 
-app.listen(port, () => {
-  console.log(`install-service-selfhost listening on ${port}`);
+app.listen(port, host, () => {
+  console.log(`install-service-selfhost listening on ${host}:${port}`);
 });
 
-async function loadTemplate(name) {
-  if (templateCache.has(name)) {
-    return templateCache.get(name);
+function rateLimiter(req, res, next) {
+  if (!rateLimitEnabled) {
+    next();
+    return;
   }
 
-  const templatePath = path.join(templatesDir, name);
-  const content = await fs.readFile(templatePath, 'utf8');
-  templateCache.set(name, content);
-  return content;
+  const now = Date.now();
+  const clientKey = req.get('CF-Connecting-IP') || req.ip || 'anonymous';
+  let bucket = rateLimitBuckets.get(clientKey);
+  if (!bucket || bucket.expiresAt <= now) {
+    bucket = {
+      count: 0,
+      expiresAt: now + rateLimitWindowSeconds * 1000
+    };
+    rateLimitBuckets.set(clientKey, bucket);
+  }
+
+  bucket.count += 1;
+  if (bucket.count > rateLimitMax) {
+    const retryAfter = Math.max(1, Math.ceil((bucket.expiresAt - now) / 1000));
+    res.set('Retry-After', String(retryAfter));
+    res.status(429).type('text/plain').send('Too Many Requests');
+    return;
+  }
+
+  next();
 }
 
-function renderTemplate(content, data) {
-  return content.replace(/\{\{([A-Z_]+)\}\}/g, (match, key) => {
-    return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : match;
-  });
+function trackRequest(req) {
+  const now = new Date();
+  const dateKey = now.toISOString().slice(0, 10);
+  const userAgent = req.get('User-Agent') || '';
+  const platform = detectAnalyticsPlatform(userAgent);
+
+  const existing = analyticsStore.get(dateKey) || {
+    total: 0,
+    paths: {},
+    platforms: {},
+    updatedAt: now.toISOString()
+  };
+
+  existing.total += 1;
+  existing.paths[req.path] = (existing.paths[req.path] || 0) + 1;
+  existing.platforms[platform] = (existing.platforms[platform] || 0) + 1;
+  existing.updatedAt = now.toISOString();
+
+  analyticsStore.set(dateKey, existing);
 }
 
-function resolveTemplateName(pathname) {
+function fetchAnalytics(type) {
+  const records = Array.from(analyticsStore.entries()).map(([date, record]) => ({
+    date,
+    ...record
+  }));
+
+  if (type === 'platforms') {
+    const aggregation = {};
+    for (const record of records) {
+      for (const [platform, count] of Object.entries(record.platforms || {})) {
+        aggregation[platform] = (aggregation[platform] || 0) + count;
+      }
+    }
+    return { platforms: aggregation };
+  }
+
+  return {
+    days: records
+      .sort((a, b) => (a.date < b.date ? 1 : -1))
+      .map(record => ({
+        date: record.date,
+        total: record.total || 0,
+        paths: record.paths || {},
+        platforms: record.platforms || {}
+      }))
+  };
+}
+
+function detectAnalyticsPlatform(userAgent = '') {
+  const ua = userAgent.toLowerCase();
+  if (ua.includes('windows')) return 'windows';
+  if (ua.includes('mac os') || ua.includes('macintosh')) return 'mac';
+  if (ua.includes('freebsd')) return 'freebsd';
+  if (ua.includes('linux')) return 'linux';
+  if (ua.includes('android')) return 'android';
+  if (ua.includes('iphone') || ua.includes('ipad') || ua.includes('ios')) return 'ios';
+  return 'other';
+}
+
+function parseEnvBool(value) {
+  if (value === undefined) {
+    return false;
+  }
+  return String(value).toLowerCase() === 'true';
+}
+
+function readQueryString(query, key) {
+  const value = query?.[key];
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  if (value === undefined || value === null) {
+    return '';
+  }
+  return String(value);
+}
+
+function hasQueryFlag(query, key) {
+  return Object.prototype.hasOwnProperty.call(query || {}, key);
+}
+
+function getBaseUrl(req) {
+  return `${req.protocol}://${req.get('host')}`;
+}
+
+function resolveScriptType(pathname) {
   if (pathname.endsWith('.ps1')) {
-    return 'install.ps1.tpl';
+    return 'powershell';
   }
   if (pathname.endsWith('install-macos.sh')) {
-    return 'install-macos.sh.tpl';
+    return 'macos';
   }
-  return 'install.sh.tpl';
+  return 'bash';
 }
 
-function sanitizeVersion(value) {
-  if (!value || typeof value !== 'string') {
-    return defaultVersion;
-  }
-  const trimmed = value.trim();
-  return trimmed.length ? trimmed : defaultVersion;
+function selectBestMirror(baseUrl) {
+  const mirrorUrl = process.env.MIRROR_URL || `${baseUrl}/releases/proxy`;
+  return {
+    name: process.env.MIRROR_NAME || 'cloudflare-proxy',
+    url: mirrorUrl,
+    regions: ['all']
+  };
 }
 
 async function readLatest() {
@@ -173,6 +400,78 @@ async function readLatest() {
   } catch (error) {
     return null;
   }
+}
+
+function buildLatestResponse(latest, baseUrl) {
+  const version = latest.version || defaultVersion;
+  const changelogUrl = latest.changelog_url || (version
+    ? `https://github.com/${repoOwner}/${repoName}/releases/tag/${version}`
+    : null);
+  const downloadUrls = latest.download_urls || extractDownloadUrls(latest.assets || [], baseUrl, version);
+  const installCommands = latest.install_commands || buildInstallCommands(baseUrl);
+
+  return {
+    version,
+    published_at: latest.published_at || latest.updated_at || null,
+    prerelease: Boolean(latest.prerelease),
+    draft: Boolean(latest.draft),
+    download_urls: downloadUrls,
+    changelog_url: changelogUrl,
+    install_commands: installCommands,
+    body: latest.body || null
+  };
+}
+
+function extractDownloadUrls(assets, baseUrl, version) {
+  const urls = {};
+  const versionPrefix = version || 'latest';
+
+  assets.forEach(asset => {
+    const name = (asset.name || '').toLowerCase();
+    if (!name || name.endsWith('.sha256') || name.endsWith('.sig') || name.endsWith('.asc')) {
+      return;
+    }
+
+    const downloadUrl = `${baseUrl}/releases/proxy/${versionPrefix}/${asset.name}`;
+
+    if (name.includes('linux') && name.includes('musl') && name.includes('x64')) {
+      urls['linux-musl-x64'] = downloadUrl;
+      return;
+    }
+    if (name.includes('linux') && name.includes('x64') && name.includes('openssl3')) {
+      urls['linux-x64-openssl3'] = downloadUrl;
+      return;
+    }
+    if (name.includes('linux') && name.includes('x64')) {
+      urls['linux-x64'] = downloadUrl;
+      return;
+    }
+    if (name.includes('linux') && name.includes('arm64')) {
+      urls['linux-arm64'] = downloadUrl;
+      return;
+    }
+    if (name.includes('windows') && name.includes('x64')) {
+      urls['windows-x64'] = downloadUrl;
+      return;
+    }
+    if (name.includes('macos') && name.includes('x64')) {
+      urls['macos-x64'] = downloadUrl;
+      return;
+    }
+    if (name.includes('macos') && name.includes('arm64')) {
+      urls['macos-arm64'] = downloadUrl;
+    }
+  });
+
+  return urls;
+}
+
+function buildInstallCommands(baseUrl) {
+  return {
+    linux: `curl -fsSL "${baseUrl}/install.sh?force=1" | sudo bash`,
+    macos: `curl -fsSL "${baseUrl}/install-macos.sh?force=1" | sudo bash`,
+    windows: `irm "${baseUrl}/install.ps1?force=1" | iex`
+  };
 }
 
 async function handleRelease(req, res, options) {
@@ -203,6 +502,8 @@ async function handleRelease(req, res, options) {
     res.set('Content-Length', stats.size.toString());
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('X-Version', version);
+    res.set('X-Cache', 'MISS');
+    res.set('X-Source', 'local');
 
     if (options.headOnly) {
       res.status(200).end();
@@ -252,28 +553,131 @@ function getContentType(filename) {
   return 'application/octet-stream';
 }
 
-function compareVersions(a, b) {
-  const aParts = normalizeVersion(a);
-  const bParts = normalizeVersion(b);
-  const maxLen = Math.max(aParts.length, bParts.length);
+function compareVersions(version1 = '', version2 = '') {
+  const normalize = (raw) => {
+    const cleaned = raw.trim().replace(/^v/i, '');
+    const [core, ...rest] = cleaned.split('-');
 
-  for (let i = 0; i < maxLen; i += 1) {
-    const av = aParts[i] ?? 0;
-    const bv = bParts[i] ?? 0;
-    if (av > bv) {
-      return 1;
-    }
-    if (av < bv) {
-      return -1;
+    const toTokens = (segment) =>
+      segment
+        .split('.')
+        .filter((token) => token.length > 0)
+        .map((token) => {
+          const numeric = Number(token);
+          return Number.isNaN(numeric) ? token : numeric;
+        });
+
+    return {
+      core: toTokens(core),
+      qualifiers: rest.flatMap(toTokens)
+    };
+  };
+
+  const a = normalize(version1);
+  const b = normalize(version2);
+
+  const maxCoreLength = Math.max(a.core.length, b.core.length);
+  for (let i = 0; i < maxCoreLength; i++) {
+    const lhs = a.core[i] ?? 0;
+    const rhs = b.core[i] ?? 0;
+
+    if (typeof lhs === 'number' && typeof rhs === 'number') {
+      if (lhs > rhs) return 1;
+      if (lhs < rhs) return -1;
+    } else {
+      const lhsStr = String(lhs);
+      const rhsStr = String(rhs);
+      if (lhsStr > rhsStr) return 1;
+      if (lhsStr < rhsStr) return -1;
     }
   }
+
+  const aHasQualifiers = a.qualifiers.length > 0;
+  const bHasQualifiers = b.qualifiers.length > 0;
+
+  if (!aHasQualifiers && !bHasQualifiers) {
+    return 0;
+  }
+  if (!aHasQualifiers && bHasQualifiers) {
+    return 1;
+  }
+  if (aHasQualifiers && !bHasQualifiers) {
+    return -1;
+  }
+
+  const maxQualifierLength = Math.max(a.qualifiers.length, b.qualifiers.length);
+  for (let i = 0; i < maxQualifierLength; i++) {
+    const lhs = a.qualifiers[i];
+    const rhs = b.qualifiers[i];
+
+    if (lhs === undefined) return -1;
+    if (rhs === undefined) return 1;
+
+    const lhsIsNumber = typeof lhs === 'number';
+    const rhsIsNumber = typeof rhs === 'number';
+
+    if (lhsIsNumber && rhsIsNumber) {
+      if (lhs > rhs) return 1;
+      if (lhs < rhs) return -1;
+      continue;
+    }
+
+    if (lhsIsNumber !== rhsIsNumber) {
+      return lhsIsNumber ? -1 : 1;
+    }
+
+    const lhsStr = String(lhs);
+    const rhsStr = String(rhs);
+
+    if (lhsStr > rhsStr) return 1;
+    if (lhsStr < rhsStr) return -1;
+  }
+
   return 0;
 }
 
-function normalizeVersion(version) {
-  const cleaned = version.toString().trim().replace(/^v/i, '');
-  return cleaned
-    .split(/[.+-]/)
-    .map(part => Number.parseInt(part, 10))
-    .map(value => (Number.isNaN(value) ? 0 : value));
+async function isSecurityUpdate(releaseBody) {
+  if (!releaseBody) return false;
+
+  const securityKeywords = [
+    'security', 'vulnerability', 'cve', 'exploit',
+    'patch', 'hotfix', 'critical', 'urgent'
+  ];
+
+  const bodyLower = releaseBody.toLowerCase();
+  return securityKeywords.some(keyword => bodyLower.includes(keyword));
+}
+
+function getMinimumSupportedVersion() {
+  return process.env.MINIMUM_SUPPORTED_VERSION || 'v0.0.1';
+}
+
+function getDeprecationWarnings(currentVersion) {
+  const raw = process.env.DEPRECATION_WARNINGS_JSON;
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed[currentVersion] || [];
+  } catch (error) {
+    return [];
+  }
+}
+
+async function getUpdateUrgency(currentVersion, latestVersion, releaseBody) {
+  const versionGap = compareVersions(latestVersion, currentVersion);
+
+  if (await isSecurityUpdate(releaseBody)) {
+    return 'critical';
+  }
+
+  if (versionGap >= 2) {
+    return 'high';
+  } else if (versionGap >= 1) {
+    return 'medium';
+  }
+
+  return 'low';
 }
