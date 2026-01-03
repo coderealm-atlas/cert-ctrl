@@ -62,6 +62,9 @@ https://install.lets-script.com/
 ├── /                           # Service information
 ├── /install.sh                 # Unix installation script
 ├── /install.ps1                # Windows PowerShell script
+├── /uninstall.sh               # Unix uninstallation script
+├── /uninstall.ps1              # Windows PowerShell uninstallation script
+├── /uninstall-macos.sh         # macOS uninstallation script
 ├── /api/version/latest         # Latest version info
 ├── /api/version/check          # Version comparison
 ├── /releases/proxy/{version}/  # Proxied GitHub releases
@@ -78,6 +81,22 @@ curl -fsSL https://install.lets-script.com/install.sh | bash
 
 # Windows PowerShell
 iwr -useb https://install.lets-script.com/install.ps1 | iex
+
+```
+
+### Quick Uninstall
+
+```bash
+# Unix/Linux
+curl -fsSL https://install.lets-script.com/uninstall.sh | sudo bash
+
+# macOS
+curl -fsSL https://install.lets-script.com/uninstall-macos.sh | sudo bash
+```
+
+```powershell
+# Windows
+iwr -useb https://install.lets-script.com/uninstall.ps1 | iex
 ```
 
 > **Heads-up:** Installing to the default path `C:\Program Files\cert-ctrl` requires an elevated PowerShell (right-click → **Run as administrator**). If you prefer a different location, pass `-InstallDir` with a directory you already own.
