@@ -3,7 +3,7 @@ import morgan from 'morgan';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
-import { getInstallTemplate } from './utils/templates.js';
+import { getInstallTemplate, getUninstallTemplate } from './utils/templates.js';
 import {
   detectPlatform,
   detectArchitecture,
@@ -156,6 +156,72 @@ app.get(['/install.sh', '/install.ps1', '/install-macos.sh'], rateLimiter, async
   }
 });
 
+app.get(['/uninstall.sh', '/uninstall.ps1', '/uninstall-macos.sh'], rateLimiter, async (req, res) => {
+  try {
+    const baseUrl = getBaseUrl(req);
+    const scriptType = resolveScriptType(req.path);
+    const userAgent = req.get('User-Agent') || '';
+    const country = req.get('CF-IPCountry') || req.get('X-Country') || 'US';
+
+    const platformOverride = normalizePlatformHint(
+      readQueryString(req.query, 'platform') ||
+      readQueryString(req.query, 'os') ||
+      req.get('X-Install-Platform') ||
+      req.get('X-Platform')
+    );
+
+    const architectureOverride = normalizeArchitectureHint(
+      readQueryString(req.query, 'arch') ||
+      readQueryString(req.query, 'architecture') ||
+      req.get('X-Install-Arch') ||
+      req.get('X-Architecture')
+    );
+
+    const platformDetection = scriptType === 'macos'
+      ? { platform: 'macos', confidence: 'high' }
+      : detectPlatform(userAgent, scriptType);
+
+    const platform = platformOverride || platformDetection.platform;
+    const platformConfidence = platformOverride ? 'override' : platformDetection.confidence;
+    const architecture = architectureOverride || detectArchitecture(userAgent);
+
+    const params = {
+      version: readQueryString(req.query, 'version') || defaultVersion,
+      verbose: hasQueryFlag(req.query, 'verbose') || hasQueryFlag(req.query, 'v'),
+      force: hasQueryFlag(req.query, 'force'),
+      installDir: readQueryString(req.query, 'install-dir') || readQueryString(req.query, 'dir') || '',
+      dryRun: hasQueryFlag(req.query, 'dry-run')
+    };
+
+    const mirror = selectBestMirror(baseUrl);
+    const script = await getUninstallTemplate(scriptType, {
+      platform,
+      platformConfidence,
+      architecture,
+      country,
+      mirror,
+      params,
+      baseUrl
+    });
+
+    const contentType = scriptType === 'powershell'
+      ? 'application/x-powershell; charset=utf-8'
+      : 'application/x-sh; charset=utf-8';
+
+    res.set('Content-Type', contentType);
+    res.set('Cache-Control', 'private, max-age=0, no-cache, no-store');
+    res.vary('User-Agent');
+    res.vary('CF-IPCountry');
+    res.set('X-Platform', platform);
+    res.set('X-Platform-Confidence', platformConfidence);
+    res.set('X-Architecture', architecture);
+    res.set('X-Mirror', mirror.name);
+    res.send(script);
+  } catch (error) {
+    res.status(500).type('text/plain').send('Error generating uninstall script');
+  }
+});
+
 app.get('/api/version/latest', rateLimiter, async (req, res) => {
   const latest = await readLatest();
   if (!latest?.version) {
@@ -238,6 +304,9 @@ app.get('/', (req, res) => {
       'Unix/Linux Install': '/install.sh',
       'macOS Install': '/install-macos.sh',
       'Windows Install': '/install.ps1',
+      'Unix/Linux Uninstall': '/uninstall.sh',
+      'macOS Uninstall': '/uninstall-macos.sh',
+      'Windows Uninstall': '/uninstall.ps1',
       'Version Check': '/api/version/check',
       'Latest Version': '/api/version/latest',
       'Proxy Releases': '/releases/proxy/{version}/{filename}',
@@ -247,6 +316,9 @@ app.get('/', (req, res) => {
       'Quick Install (Unix)': `curl -fsSL ${baseUrl}/install.sh | bash`,
       'Quick Install (macOS)': `curl -fsSL ${baseUrl}/install-macos.sh | sudo bash`,
       'Quick Install (Windows)': `iwr -useb ${baseUrl}/install.ps1 | iex`,
+      'Quick Uninstall (Unix)': `curl -fsSL ${baseUrl}/uninstall.sh | sudo bash`,
+      'Quick Uninstall (macOS)': `curl -fsSL ${baseUrl}/uninstall-macos.sh | sudo bash`,
+      'Quick Uninstall (Windows)': `iwr -useb ${baseUrl}/uninstall.ps1 | iex`,
       'Version Check': `curl ${baseUrl}/api/version/latest`
     }
   });

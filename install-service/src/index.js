@@ -1,5 +1,6 @@
 import { Router } from 'itty-router';
 import { installHandler } from './handlers/install.js';
+import { uninstallHandler } from './handlers/uninstall.js';
 import { versionHandler } from './handlers/version.js';
 import { proxyHandler } from './handlers/proxy.js';
 import { analyticsHandler } from './handlers/analytics.js';
@@ -21,6 +22,11 @@ router.get('/health', healthHandler);
 router.get('/install.sh', rateLimiter, installHandler);
 router.get('/install.ps1', rateLimiter, installHandler);
 router.get('/install-macos.sh', rateLimiter, installHandler);
+
+// Uninstallation script endpoints
+router.get('/uninstall.sh', rateLimiter, uninstallHandler);
+router.get('/uninstall.ps1', rateLimiter, uninstallHandler);
+router.get('/uninstall-macos.sh', rateLimiter, uninstallHandler);
 
 // Version API endpoints
 router.get('/api/version/check', rateLimiter, versionHandler);
@@ -44,6 +50,9 @@ router.get('/', async (request, env) => {
       'Unix/Linux Install': '/install.sh',
   'macOS Install': '/install-macos.sh',
       'Windows Install': '/install.ps1',
+      'Unix/Linux Uninstall': '/uninstall.sh',
+  'macOS Uninstall': '/uninstall-macos.sh',
+      'Windows Uninstall': '/uninstall.ps1',
       'Version Check': '/api/version/check',
       'Latest Version': '/api/version/latest',
       'Proxy Releases': '/releases/proxy/{version}/{filename}',
@@ -53,6 +62,9 @@ router.get('/', async (request, env) => {
       'Quick Install (Unix)': 'curl -fsSL https://install.lets-script.com/install.sh | bash',
   'Quick Install (macOS)': 'curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash',
       'Quick Install (Windows)': 'iwr -useb https://install.lets-script.com/install.ps1 | iex',
+      'Quick Uninstall (Unix)': 'curl -fsSL https://install.lets-script.com/uninstall.sh | sudo bash',
+  'Quick Uninstall (macOS)': 'curl -fsSL https://install.lets-script.com/uninstall-macos.sh | sudo bash',
+      'Quick Uninstall (Windows)': 'iwr -useb https://install.lets-script.com/uninstall.ps1 | iex',
       'Version Check': 'curl https://install.lets-script.com/api/version/latest'
     }
   };

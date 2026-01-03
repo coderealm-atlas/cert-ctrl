@@ -4,6 +4,7 @@ Self-hosted replacement for the Cloudflare Worker install service.
 
 ## What it provides
 - `/install.sh`, `/install.ps1`, `/install-macos.sh` installers
+- `/uninstall.sh`, `/uninstall.ps1`, `/uninstall-macos.sh` uninstallers
 - `/api/version/latest` and `/api/version/check`
 - `/releases/proxy/{version}/{filename}` for release assets
 
@@ -11,6 +12,18 @@ Self-hosted replacement for the Cloudflare Worker install service.
 ```bash
 npm install
 PORT=8787 ASSETS_ROOT=/opt/install-service/assets npm start
+```
+
+## Quick uninstall
+```bash
+# Linux / Unix
+curl -fsSL http://localhost:8787/uninstall.sh | sudo bash
+
+# macOS
+curl -fsSL http://localhost:8787/uninstall-macos.sh | sudo bash
+
+# Windows (PowerShell)
+iwr -useb http://localhost:8787/uninstall.ps1 | iex
 ```
 
 Place assets under:

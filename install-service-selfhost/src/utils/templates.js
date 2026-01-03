@@ -1,6 +1,9 @@
 import { bashTemplate } from '../../templates/install.sh.js';
 import { powershellTemplate } from '../../templates/install.ps1.js';
 import { macosTemplate } from '../../templates/install-macos.sh.js';
+import { bashUninstallTemplate } from '../../templates/uninstall.sh.js';
+import { powershellUninstallTemplate } from '../../templates/uninstall.ps1.js';
+import { macosUninstallTemplate } from '../../templates/uninstall-macos.sh.js';
 
 export async function getInstallTemplate(scriptType, options) {
   const {
@@ -60,6 +63,65 @@ export async function getInstallTemplate(scriptType, options) {
   } else {
     return interpolateTemplate(bashTemplate, templateVars);
   }
+}
+
+export async function getUninstallTemplate(scriptType, options) {
+  const {
+    platform,
+    platformConfidence = 'high',
+    architecture,
+    country,
+    mirror,
+    params,
+    baseUrl
+  } = options;
+
+  const defaults = {
+    configDir: '/etc/certctrl',
+    stateDir: '/var/lib/certctrl',
+    installDir: params.installDir || '',
+    serviceLabel: '',
+    logDir: '/var/log'
+  };
+
+  if (scriptType === 'macos') {
+    defaults.configDir = '/Library/Application Support/certctrl';
+    defaults.stateDir = '/Library/Application Support/certctrl/state';
+    defaults.installDir = params.installDir || '/usr/local/bin';
+    defaults.serviceLabel = 'com.coderealm.certctrl';
+    defaults.logDir = '/var/log';
+  }
+
+  const templateVars = {
+    PLATFORM: platform,
+    ARCHITECTURE: architecture,
+    PLATFORM_CONFIDENCE: platformConfidence,
+    COUNTRY: country,
+    MIRROR_URL: mirror?.url || '',
+    MIRROR_NAME: mirror?.name || '',
+    BASE_URL: baseUrl,
+    VERSION: params.version || 'latest',
+    VERBOSE: params.verbose ? 'true' : 'false',
+    FORCE: params.force ? 'true' : 'false',
+    INSTALL_DIR: defaults.installDir,
+    CONFIG_DIR: defaults.configDir,
+    STATE_DIR: defaults.stateDir,
+    SERVICE_LABEL: defaults.serviceLabel,
+    LOG_DIR: defaults.logDir,
+    DRY_RUN: params.dryRun ? 'true' : 'false',
+    WRITABLE_DIRS: '',
+    SANDBOX_DISABLED: 'false',
+    GITHUB_REPO_OWNER: 'coderealm-atlas',
+    GITHUB_REPO_NAME: 'cert-ctrl'
+  };
+
+  if (scriptType === 'powershell') {
+    return interpolateTemplate(powershellUninstallTemplate, templateVars);
+  } else if (scriptType === 'macos') {
+    return interpolateTemplate(macosUninstallTemplate, templateVars);
+  }
+
+  return interpolateTemplate(bashUninstallTemplate, templateVars);
 }
 
 function interpolateTemplate(template, vars) {
