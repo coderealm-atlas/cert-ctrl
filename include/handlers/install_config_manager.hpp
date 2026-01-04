@@ -79,6 +79,14 @@ public:
   monad::IO<void>
   apply_copy_actions_for_signal(const ::data::DeviceUpdateSignal &signal);
 
+  // Best-effort execution of the centrally-managed after_update_script.
+  // - Controlled by application config allowlist: events_trigger_script.
+  // - auto_apply_config gates plan/config update events, but is bypassed for
+  //   cert/CA material events.
+  // - Failures only log; never fail the caller.
+  monad::IO<void> maybe_run_after_update_script_for_signal(
+      const ::data::DeviceUpdateSignal &signal);
+
   monad::IO<void> handle_ca_assignment(
       std::int64_t ca_id, std::optional<std::string> ca_name);
     monad::IO<void> handle_ca_unassignment(

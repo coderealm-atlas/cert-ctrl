@@ -1,12 +1,18 @@
 {
     "auto_apply_config": true,
     "verbose": "info",
+    "events_trigger_script": [
+        "install.updated",
+        "cert.updated",
+        "cert.wrap_ready",
+        "cert.unassigned"
+    ],
     "interval_seconds": 300,
     "url_base": "https://api.cjj365.cc",
     "update_check_url": "https://install.lets-script.com/api/version/check",
     "runtime_dir": "/var/lib/certctrl",
     "short_poll": {
-        "enabled": fase,
+        "enabled": false,
         "poll_url": null,
         "idle_interval_seconds": 30,
         "interval_seconds": 5,

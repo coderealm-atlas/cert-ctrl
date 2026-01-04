@@ -43,6 +43,19 @@ Notes:
   - `ctest --test-dir build/debug-asan -R WebsocketClientIntegrationTest --output-on-failure`
 - Run a single gtest binary:
 
+## Python (Harnesses / E2E)
+
+Some long-running quality checks are implemented as small Python harnesses (e.g. websocket end-to-end drivers under `tests/e2e/`).
+
+On some minimal Linux images, `python3 -m venv` or `python3 -m pip` may not be available by default. Prefer using `uv` for Python-related tasks.
+
+- Check uv:
+  - `uv --version`
+- Run a one-off script with ephemeral deps (no venv needed):
+  - `uv run --with websockets>=12,<14 python tests/e2e/ws_e2e_harness.py --bin ./build/debug-asan/cert_ctrl_debug`
+
+If `uv` is not installed, install it via your standard tooling (for example, your distro package manager or the upstream installer), then rerun the command above.
+
 ## ASAN Notes
 
 - The preset already sets `ASAN_OPTIONS=allocator_may_return_null=1` during configure.

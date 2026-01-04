@@ -156,8 +156,17 @@ public:
 
     // Initialize signal dispatcher with handlers
     auto runtime_dir = config_sources_.paths_.back();
+    auto post_success_hook = [mgr = install_config_manager_](
+                                 const ::data::DeviceUpdateSignal &signal)
+        -> monad::IO<void> {
+      if (!mgr) {
+        return monad::IO<void>::pure();
+      }
+      return mgr->maybe_run_after_update_script_for_signal(signal);
+    };
     signal_dispatcher_ =
-      std::make_unique<SignalDispatcher>(runtime_dir, &state_store_);
+      std::make_unique<SignalDispatcher>(runtime_dir, &state_store_,
+                                         std::move(post_success_hook));
 
     signal_dispatcher_->register_handler(
         std::make_shared<signal_handlers::ConfigUpdatedHandler>(

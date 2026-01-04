@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
+#include <vector>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -37,6 +38,9 @@ struct ShortPollConfig {
 struct CertctrlConfig {
   bool auto_apply_config{true};
   std::string verbose{};
+  // Allowlist of signal types that should trigger after_update_script.
+  // Missing/empty means disabled.
+  std::vector<std::string> events_trigger_script;
   std::string base_url{"https://api.cjj365.cc"};
   std::string update_check_url{
       "https://install.lets-script.com/api/version/check"};
@@ -63,6 +67,16 @@ struct CertctrlConfig {
           cc.update_check_url = p->as_string().c_str();
         if (auto *p = jo_p->if_contains("runtime_dir"))
           cc.runtime_dir = fs::path(p->as_string().c_str());
+
+        if (auto *p = jo_p->if_contains("events_trigger_script")) {
+          if (p->is_array()) {
+            for (const auto &v : p->as_array()) {
+              if (v.is_string()) {
+                cc.events_trigger_script.emplace_back(v.as_string().c_str());
+              }
+            }
+          }
+        }
 
         if (auto *p = jo_p->if_contains("interval_seconds"))
           cc.interval_seconds = p->to_number<int>();

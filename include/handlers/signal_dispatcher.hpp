@@ -3,17 +3,19 @@
 #include "data/data_shape.hpp"
 #include "signal_handlers/signal_handler_base.hpp"
 #include "state/device_state_store.hpp"
-#include "util/my_logging.hpp"
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <boost/json.hpp>
+#include <boost/log/sources/severity_logger.hpp>
+#include <boost/log/trivial.hpp>
 
 namespace certctrl {
 
@@ -27,13 +29,16 @@ private:
                        std::shared_ptr<signal_handlers::ISignalHandler>> handlers_;
     std::filesystem::path state_dir_;
     certctrl::IDeviceStateStore *state_store_{nullptr};
+    std::function<monad::IO<void>(const ::data::DeviceUpdateSignal &)> post_success_hook_;
     std::unordered_set<std::string> processed_signals_;
-    src::severity_logger<trivial::severity_level> lg_;
+    boost::log::sources::severity_logger<boost::log::trivial::severity_level> lg_;
     
 public:
     explicit SignalDispatcher(const std::filesystem::path& config_dir,
-                              certctrl::IDeviceStateStore *state_store = nullptr)
-        : state_dir_(config_dir / "state"), state_store_(state_store) {
+                                                            certctrl::IDeviceStateStore *state_store = nullptr,
+                                                            std::function<monad::IO<void>(const ::data::DeviceUpdateSignal &)> post_success_hook = {})
+                : state_dir_(config_dir / "state"), state_store_(state_store),
+                    post_success_hook_(std::move(post_success_hook)) {
         // Ensure state directory exists
         std::filesystem::create_directories(state_dir_);
         load_processed_signals();
@@ -45,7 +50,7 @@ public:
      */
     void register_handler(std::shared_ptr<signal_handlers::ISignalHandler> handler) {
         handlers_[handler->signal_type()] = handler;
-        BOOST_LOG_SEV(lg_, trivial::trace)
+        BOOST_LOG_SEV(lg_, boost::log::trivial::trace)
             << "Registered handler for: " << handler->signal_type();
     }
     
@@ -58,12 +63,14 @@ public:
         *         errors so callers can decide whether to ack/advance cursors.
      */
     monad::IO<void> dispatch(const ::data::DeviceUpdateSignal& signal) {
+        // Copy for async continuations.
+        const ::data::DeviceUpdateSignal signal_copy = signal;
         // Generate unique signal ID for deduplication
         std::string signal_id = make_signal_id(signal);
         
         // Check if already processed
         if (is_processed(signal_id)) {
-            BOOST_LOG_SEV(lg_, trivial::trace)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::trace)
                 << "Signal already processed: " << signal_id;
             return monad::IO<void>::pure();
         }
@@ -72,16 +79,25 @@ public:
         auto it = handlers_.find(signal.type);
         if (it == handlers_.end()) {
             // Unknown signal type - log and ignore (forward compatibility)
-            BOOST_LOG_SEV(lg_, trivial::warning)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::warning)
                 << "Unknown signal type: " << signal.type << " (ignored)";
-            // Treat as successfully processed for delivery progress.
-            mark_as_processed(signal_id);
-            return monad::IO<void>::pure();
+                        // Treat as successfully processed for delivery progress.
+                        // Still allow a post-success hook (e.g. after_update_script) to run.
+                        auto hook = post_success_hook_ ? post_success_hook_(signal_copy)
+                                                                                     : monad::IO<void>::pure();
+                        return hook.catch_then([this](monad::Error) {
+                                                // Best-effort: hook errors should not block progress.
+                                                return monad::IO<void>::pure();
+                                            })
+                                .then([this, signal_id]() {
+                                    mark_as_processed(signal_id);
+                                    return monad::IO<void>::pure();
+                                });
         }
         
         // Check if handler wants to process this signal
         if (!it->second->should_process(signal)) {
-            BOOST_LOG_SEV(lg_, trivial::debug)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::debug)
                 << "Handler skipped signal: " << signal.type;
             mark_as_processed(signal_id); // Still mark as processed to avoid retries
             return monad::IO<void>::pure();
@@ -89,16 +105,26 @@ public:
         
         // Execute handler
         return it->second->handle(signal)
-            .then([this, signal_id, type = signal.type]() {
-                // Mark as successfully processed
-                mark_as_processed(signal_id);
-                BOOST_LOG_SEV(lg_, trivial::info)
-                    << "Signal processed successfully: " << type;
-                return monad::IO<void>::pure();
+            .then([this, signal_id, type = signal.type, signal_copy]() {
+                auto hook = post_success_hook_ ? post_success_hook_(signal_copy)
+                                               : monad::IO<void>::pure();
+                return hook.catch_then([this, type](monad::Error) {
+                          // Best-effort: hook errors should not block progress.
+                          BOOST_LOG_SEV(lg_, boost::log::trivial::warning)
+                              << "Post-success hook failed for type=" << type;
+                          return monad::IO<void>::pure();
+                        })
+                    .then([this, signal_id, type]() {
+                      // Mark as successfully processed
+                      mark_as_processed(signal_id);
+                      BOOST_LOG_SEV(lg_, boost::log::trivial::info)
+                          << "Signal processed successfully: " << type;
+                      return monad::IO<void>::pure();
+                    });
             })
             .catch_then([this, type = signal.type](monad::Error e) {
                 // Don't mark as processed - allow retry/redelivery.
-                BOOST_LOG_SEV(lg_, trivial::error)
+                BOOST_LOG_SEV(lg_, boost::log::trivial::error)
                     << "Signal handler failed: type=" << type
                     << " error=" << e.what;
                 return monad::IO<void>::fail(std::move(e));
@@ -150,7 +176,7 @@ private:
         if (state_store_) {
             if (auto stored = state_store_->get_processed_signals_json()) {
                 if (!stored->empty() && hydrate_from_serialized(*stored)) {
-                    BOOST_LOG_SEV(lg_, trivial::info)
+                    BOOST_LOG_SEV(lg_, boost::log::trivial::info)
                         << "Loaded " << processed_signals_.size()
                         << " processed signals from SQLite";
                     remove_legacy_processed_signals_file();
@@ -160,7 +186,7 @@ private:
         }
 
         if (load_from_legacy_file()) {
-            BOOST_LOG_SEV(lg_, trivial::info)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::info)
                 << "Loaded " << processed_signals_.size()
                 << " processed signals from disk";
             migrate_file_payload_to_store();
@@ -176,7 +202,7 @@ private:
             auto serialized = serialize_processed_signals();
             persist_processed_signals(serialized);
         } catch (const std::exception &e) {
-            BOOST_LOG_SEV(lg_, trivial::error)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::error)
                 << "Failed to save processed signals: " << e.what();
         }
     }
@@ -191,7 +217,7 @@ private:
             }
             return true;
         } catch (const std::exception &e) {
-            BOOST_LOG_SEV(lg_, trivial::error)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::error)
                 << "Failed to parse processed signals payload: " << e.what();
             return false;
         }
@@ -200,7 +226,7 @@ private:
     bool load_from_legacy_file() {
         auto file = state_dir_ / "processed_signals.json";
         if (!std::filesystem::exists(file)) {
-            BOOST_LOG_SEV(lg_, trivial::debug)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::debug)
                 << "No processed signals file found (first run)";
             return false;
         }
@@ -211,7 +237,7 @@ private:
                                 std::istreambuf_iterator<char>());
             return hydrate_from_serialized(content);
         } catch (const std::exception &e) {
-            BOOST_LOG_SEV(lg_, trivial::error)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::error)
                 << "Failed to load processed signals: " << e.what();
             return false;
         }
@@ -257,7 +283,7 @@ private:
         if (state_store_) {
             const std::optional<std::string> serialized(payload);
             if (auto err = state_store_->save_processed_signals_json(serialized)) {
-                BOOST_LOG_SEV(lg_, trivial::error)
+                BOOST_LOG_SEV(lg_, boost::log::trivial::error)
                     << "Failed to write processed signals to SQLite: " << *err;
             } else {
                 saved = true;
@@ -278,7 +304,7 @@ private:
         const auto payload = serialize_processed_signals();
         const std::optional<std::string> serialized(payload);
         if (auto err = state_store_->save_processed_signals_json(serialized)) {
-            BOOST_LOG_SEV(lg_, trivial::warning)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::warning)
                 << "Failed to migrate processed signals to SQLite: " << *err;
             return;
         }
@@ -301,7 +327,7 @@ private:
                 file, std::filesystem::perms::owner_read |
                           std::filesystem::perms::owner_write);
         } catch (const std::exception &e) {
-            BOOST_LOG_SEV(lg_, trivial::error)
+            BOOST_LOG_SEV(lg_, boost::log::trivial::error)
                 << "Failed to save processed signals to file: " << e.what();
         }
     }

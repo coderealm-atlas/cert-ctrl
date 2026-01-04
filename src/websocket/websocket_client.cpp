@@ -1196,8 +1196,17 @@ WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
 
   const auto config_dir = config_sources_.paths_.back();
   instance_lock_path_ = config_dir / "state" / "websocket_instance.lock";
+  auto post_success_hook = [mgr = install_config_manager_](
+                               const ::data::DeviceUpdateSignal &signal)
+      -> monad::IO<void> {
+    if (!mgr) {
+      return monad::IO<void>::pure();
+    }
+    return mgr->maybe_run_after_update_script_for_signal(signal);
+  };
   signal_dispatcher_ =
-    std::make_unique<certctrl::SignalDispatcher>(config_dir, &state_store_);
+    std::make_unique<certctrl::SignalDispatcher>(
+        config_dir, &state_store_, std::move(post_success_hook));
 
   auto on_ws_config_updated = [this]() {
     net::dispatch(ioc_, [this]() {

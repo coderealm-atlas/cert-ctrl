@@ -1,9 +1,7 @@
 #include "handlers/install_config_manager.hpp"
 #include "handlers/install_actions/copy_action.hpp"
 #include "handlers/install_actions/exec_action.hpp"
-#include "handlers/install_actions/function_adapters.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
-#include "handlers/install_actions/install_resource_materializer.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/beast/http.hpp>
@@ -14,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cstring>
 #include <fmt/format.h>
 #include <fstream>
@@ -23,12 +22,21 @@
 #include <sstream>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include <sodium.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <codecvt>
+#include <locale>
+#endif
 #ifndef _WIN32
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 #include "base64.h"
@@ -110,6 +118,319 @@ std::string to_lower_copy(const std::string &value) {
       lower.begin(), lower.end(), lower.begin(),
       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   return lower;
+}
+
+struct ScriptBundleParseResult {
+  bool had_blocks{false};
+  std::unordered_map<std::string, std::string> blocks; // key is lower-case
+};
+
+static std::string trim_copy(std::string value) {
+  auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+  value.erase(value.begin(),
+              std::find_if(value.begin(), value.end(), not_space));
+  value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(),
+              value.end());
+  return value;
+}
+
+static ScriptBundleParseResult parse_script_bundle(const std::string &content) {
+  ScriptBundleParseResult result;
+
+  std::istringstream iss(content);
+  std::string line;
+
+  bool in_block = false;
+  std::string current_name;
+  std::ostringstream current_body;
+
+  while (std::getline(iss, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+
+    if (!in_block) {
+      constexpr std::string_view kBegin = "@@@BEGIN";
+      if (line.rfind(kBegin.data(), 0) == 0) {
+        std::string name = trim_copy(line.substr(kBegin.size()));
+        if (!name.empty() && name.front() == ' ') {
+          name = trim_copy(name);
+        }
+        if (!name.empty()) {
+          in_block = true;
+          result.had_blocks = true;
+          current_name = to_lower_copy(name);
+          current_body.str(std::string());
+          current_body.clear();
+        }
+      }
+      continue;
+    }
+
+    constexpr std::string_view kEnd = "@@@END";
+    if (line.rfind(kEnd.data(), 0) == 0) {
+      if (!current_name.empty()) {
+        result.blocks[current_name] = current_body.str();
+      }
+      in_block = false;
+      current_name.clear();
+      continue;
+    }
+
+    current_body << line << '\n';
+  }
+
+  // If an unterminated block exists, keep it as-is.
+  if (in_block && !current_name.empty()) {
+    result.blocks[current_name] = current_body.str();
+  }
+
+  return result;
+}
+
+static bool is_bypass_auto_apply_event(const std::string &type) {
+  // Cert/CA material events should bypass auto_apply_config.
+  return type == "cert.updated" || type == "cert.unassigned" ||
+         type == "cert.wrap_ready" || type == "ca.assigned" ||
+         type == "ca.unassigned";
+}
+
+static std::optional<std::pair<std::string, std::string>>
+select_platform_script(const std::string &bundle_content) {
+  auto parsed = parse_script_bundle(bundle_content);
+
+  if (!parsed.had_blocks) {
+#ifdef _WIN32
+    return std::make_pair(std::string("windows.pwsh"), bundle_content);
+#else
+    return std::make_pair(std::string("posix.sh"), bundle_content);
+#endif
+  }
+
+#ifdef _WIN32
+  static const char *kCandidates[] = {"windows.pwsh", "windows.powershell",
+                                      "windows.cmd"};
+  for (const auto *name : kCandidates) {
+    auto it = parsed.blocks.find(name);
+    if (it != parsed.blocks.end() && !it->second.empty()) {
+      return std::make_pair(std::string(name), it->second);
+    }
+  }
+  return std::nullopt;
+#else
+  auto it = parsed.blocks.find("posix.sh");
+  if (it != parsed.blocks.end() && !it->second.empty()) {
+    return std::make_pair(std::string("posix.sh"), it->second);
+  }
+  return std::nullopt;
+#endif
+}
+
+static std::optional<std::string>
+persist_after_update_script_atomic(const std::filesystem::path &state_dir,
+                                  const std::string &variant_name,
+                                  const std::string &content) {
+  try {
+    std::error_code ec;
+    std::filesystem::create_directories(state_dir, ec);
+
+    std::filesystem::path target = state_dir;
+#ifdef _WIN32
+    if (variant_name == "windows.cmd") {
+      target /= "after_update_script.cmd";
+    } else {
+      target /= "after_update_script.ps1";
+    }
+#else
+    (void)variant_name;
+    target /= "after_update_script.sh";
+#endif
+
+    auto tmp = target;
+    tmp += ".tmp-";
+    tmp += generate_temp_suffix();
+
+    {
+      std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+      if (!ofs.is_open()) {
+        return std::optional<std::string>("failed to open temp script file");
+      }
+      ofs << content;
+    }
+
+    std::filesystem::rename(tmp, target, ec);
+    if (ec) {
+      return std::optional<std::string>(
+          std::string("failed to rename script file: ") + ec.message());
+    }
+
+#ifndef _WIN32
+    std::filesystem::permissions(target,
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace,
+                                 ec);
+#endif
+
+    return std::nullopt;
+  } catch (const std::exception &ex) {
+    return std::optional<std::string>(ex.what());
+  }
+}
+
+static std::optional<std::string>
+run_script_file_best_effort(const std::filesystem::path &script_path,
+                            const std::string &variant_name,
+                            const std::string &event_name) {
+#ifdef _WIN32
+  // On Windows, use a best-effort approach. We construct argv in a way that
+  // avoids relying on shebang/executable bits.
+  std::vector<std::string> argv;
+  if (variant_name == "windows.cmd") {
+    // cmd.exe /C "<script>" "<event>"
+    argv = {"cmd.exe", "/C",
+            fmt::format("\"{}\" \"{}\"", script_path.string(), event_name)};
+  } else if (variant_name == "windows.powershell") {
+    argv = {"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            script_path.string(), event_name};
+  } else {
+    // windows.pwsh (default)
+    argv = {"pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            script_path.string(), event_name};
+  }
+
+  // Use CreateProcessW similarly to ExecActionHandler (simplified; no env).
+  std::wstring cmd_line;
+  for (std::size_t i = 0; i < argv.size(); ++i) {
+    if (i != 0) {
+      cmd_line.push_back(L' ');
+    }
+    // Naive quoting: wrap args containing spaces or quotes.
+    std::wstring warg;
+    {
+      std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+      warg = conv.from_bytes(argv[i]);
+    }
+    const bool needs_quote =
+        (warg.find(L' ') != std::wstring::npos ||
+         warg.find(L'\t') != std::wstring::npos ||
+         warg.find(L'\"') != std::wstring::npos);
+    if (!needs_quote) {
+      cmd_line += warg;
+      continue;
+    }
+    cmd_line.push_back(L'\"');
+    for (wchar_t ch : warg) {
+      if (ch == L'\"') {
+        cmd_line += L"\\\"";
+      } else {
+        cmd_line.push_back(ch);
+      }
+    }
+    cmd_line.push_back(L'\"');
+  }
+
+  std::vector<wchar_t> cmd_buffer(cmd_line.begin(), cmd_line.end());
+  cmd_buffer.push_back(L'\0');
+
+  STARTUPINFOW si;
+  ZeroMemory(&si, sizeof(si));
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi;
+  ZeroMemory(&pi, sizeof(pi));
+
+  BOOL created = CreateProcessW(nullptr, cmd_buffer.data(), nullptr, nullptr,
+                                FALSE, 0, nullptr, nullptr, &si, &pi);
+  if (!created) {
+    return std::optional<std::string>("CreateProcess failed");
+  }
+
+  const DWORD timeout_ms = 30000;
+  DWORD wait_result = WaitForSingleObject(pi.hProcess, timeout_ms);
+  if (wait_result == WAIT_TIMEOUT) {
+    TerminateProcess(pi.hProcess, 1u);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return std::optional<std::string>("script timed out");
+  }
+  if (wait_result != WAIT_OBJECT_0) {
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return std::optional<std::string>("WaitForSingleObject failed");
+  }
+
+  DWORD exit_code = 0;
+  if (!GetExitCodeProcess(pi.hProcess, &exit_code)) {
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return std::optional<std::string>("GetExitCodeProcess failed");
+  }
+
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+
+  if (exit_code != 0) {
+    return std::optional<std::string>(
+        fmt::format("script exited with code {}", exit_code));
+  }
+  return std::nullopt;
+#else
+  (void)variant_name;
+  std::vector<std::string> argv = {"sh", script_path.string(), event_name};
+
+  std::vector<char *> cargv;
+  cargv.reserve(argv.size() + 1);
+  for (auto &s : argv) {
+    cargv.push_back(const_cast<char *>(s.c_str()));
+  }
+  cargv.push_back(nullptr);
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    return std::optional<std::string>(std::string("fork failed: ") +
+                                      std::strerror(errno));
+  }
+
+  if (pid == 0) {
+    execvp(cargv[0], cargv.data());
+    _exit(127);
+  }
+
+  int status = 0;
+  auto start = std::chrono::steady_clock::now();
+  const auto timeout = std::chrono::milliseconds(30000);
+  while (true) {
+    pid_t w = waitpid(pid, &status, WNOHANG);
+    if (w == pid) {
+      break;
+    }
+    if (w == -1) {
+      return std::optional<std::string>(std::string("waitpid failed: ") +
+                                        std::strerror(errno));
+    }
+    if (std::chrono::steady_clock::now() - start >= timeout) {
+      kill(pid, SIGKILL);
+      waitpid(pid, &status, 0);
+      return std::optional<std::string>("script timed out");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  if (WIFEXITED(status)) {
+    int rc = WEXITSTATUS(status);
+    if (rc != 0) {
+      return std::optional<std::string>(
+          fmt::format("script exited with code {}", rc));
+    }
+    return std::nullopt;
+  }
+  if (WIFSIGNALED(status)) {
+    return std::optional<std::string>(
+        fmt::format("script killed by signal {}", WTERMSIG(status)));
+  }
+  return std::optional<std::string>("unknown script result");
+#endif
 }
 
 std::optional<std::string>
@@ -1053,6 +1374,90 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
   }
 
   return ReturnIO::pure();
+}
+
+monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
+    const ::data::DeviceUpdateSignal &signal) {
+  using ReturnIO = monad::IO<void>;
+
+  try {
+    const auto &cfg = config_provider_.get();
+
+    // Allowlist gating.
+    if (cfg.events_trigger_script.empty()) {
+      return ReturnIO::pure();
+    }
+    const bool allowlisted =
+        std::find(cfg.events_trigger_script.begin(),
+                  cfg.events_trigger_script.end(),
+                  signal.type) != cfg.events_trigger_script.end();
+    if (!allowlisted) {
+      return ReturnIO::pure();
+    }
+
+    // auto_apply_config gating, bypassed for cert/CA material events.
+    if (!cfg.auto_apply_config && !is_bypass_auto_apply_event(signal.type)) {
+      BOOST_LOG_SEV(lg, trivial::debug)
+          << "auto_apply_config disabled; after_update_script skipped for type="
+          << signal.type;
+      return ReturnIO::pure();
+    }
+
+    auto config_ptr = cached_config_snapshot();
+    if (!config_ptr) {
+      BOOST_LOG_SEV(lg, trivial::debug)
+          << "after_update_script skipped: install config not cached";
+      return ReturnIO::pure();
+    }
+
+    if (!config_ptr->after_update_script ||
+        config_ptr->after_update_script->empty()) {
+      return ReturnIO::pure();
+    }
+
+    auto selected = select_platform_script(*config_ptr->after_update_script);
+    if (!selected || selected->second.empty()) {
+      BOOST_LOG_SEV(lg, trivial::debug)
+          << "after_update_script bundle has no matching platform block";
+      return ReturnIO::pure();
+    }
+
+    const auto &variant_name = selected->first;
+    const auto &script_content = selected->second;
+
+    const auto script_path =
+#ifdef _WIN32
+        (variant_name == "windows.cmd")
+            ? (state_dir() / "after_update_script.cmd")
+            : (state_dir() / "after_update_script.ps1");
+#else
+        (state_dir() / "after_update_script.sh");
+#endif
+
+    if (auto err = persist_after_update_script_atomic(state_dir(), variant_name,
+                                                      script_content)) {
+      BOOST_LOG_SEV(lg, trivial::warning)
+          << "after_update_script persist failed: " << *err;
+      return ReturnIO::pure();
+    }
+
+    if (auto err = run_script_file_best_effort(script_path, variant_name,
+                                               signal.type)) {
+      BOOST_LOG_SEV(lg, trivial::warning)
+          << "after_update_script execution failed for type=" << signal.type
+          << " variant=" << variant_name << " error=" << *err;
+      return ReturnIO::pure();
+    }
+
+    BOOST_LOG_SEV(lg, trivial::info)
+        << "after_update_script executed for type=" << signal.type
+        << " variant=" << variant_name;
+    return ReturnIO::pure();
+  } catch (const std::exception &ex) {
+    BOOST_LOG_SEV(lg, trivial::warning)
+        << "after_update_script unexpected error: " << ex.what();
+    return ReturnIO::pure();
+  }
 }
 
 monad::IO<void>

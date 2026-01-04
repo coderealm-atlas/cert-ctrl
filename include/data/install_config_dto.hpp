@@ -48,6 +48,9 @@ struct DeviceInstallConfigDto {
   std::int64_t version{};                  // version (0 for default)
   std::vector<InstallItem> installs;        // the v0 plan items
   std::string installs_hash;                // optional hash (empty for default)
+  // A multi-platform script bundle (text) executed after selected update events.
+  // See docs/ and runtime selection rules.
+  std::optional<std::string> after_update_script;
   std::optional<std::string> updated_by;    // optional user name/id
   std::int64_t created_at{};               // epoch seconds
   std::int64_t updated_at{};               // epoch seconds
@@ -256,6 +259,17 @@ inline DeviceInstallConfigDto tag_invoke(
       }
     }
 
+    if (auto const* script_p = obj->if_contains("after_update_script")) {
+      if (script_p->is_string()) {
+        auto value = json::value_to<std::string>(*script_p);
+        if (!value.empty()) {
+          cfg.after_update_script = std::move(value);
+        }
+      } else if (script_p->is_null()) {
+        cfg.after_update_script = std::nullopt;
+      }
+    }
+
     if (auto const* updated_by_p = obj->if_contains("updated_by")) {
       if (updated_by_p->is_string()) {
         auto value = json::value_to<std::string>(*updated_by_p);
@@ -297,6 +311,9 @@ inline void tag_invoke(boost::json::value_from_tag, boost::json::value& v,
   // Back-compat for older clients/tests expecting a string field
   o["installs_json"] = boost::json::serialize(json::value_from(x.installs));
   o["installs_hash"] = x.installs_hash;
+  if (x.after_update_script && !x.after_update_script->empty()) {
+    o["after_update_script"] = *x.after_update_script;
+  }
   if (x.updated_by && !x.updated_by->empty()) o["updated_by"] = *x.updated_by;
   o["created_at"] = static_cast<std::int64_t>(x.created_at);
   o["updated_at"] = static_cast<std::int64_t>(x.updated_at);

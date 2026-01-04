@@ -5,6 +5,11 @@ interval_seconds: 300                # Single cadence; no long/short split
 url_base: https://api.cjj365.cc # Base API; poll endpoint derived if poll_url is null
 update_check_url: https://install.lets-script.com/api/version/check
 runtime_dir: /var/lib/certctrl
+events_trigger_script:
+	- install.updated
+	- cert.updated
+	- cert.wrap_ready
+	- cert.unassigned
 
 short_poll:
 	enabled: true                   # Preserve nested shape for compatibility; defaults mirror top-level
