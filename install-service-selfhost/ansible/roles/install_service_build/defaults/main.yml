@@ -20,3 +20,4 @@ install_service_build_log_path_posix: /tmp/install-service-build.log
 install_service_build_log_path_win: C:\\temp\\install-service-build.log
 install_service_force_build: false
 install_service_force_submodule_update: false
+install_service_reconfig_cmake: false

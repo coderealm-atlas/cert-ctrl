@@ -21,6 +21,7 @@ if (-not $BuildTarget) {
 }
 
 $forceBuild = $env:INSTALL_SERVICE_FORCE_BUILD
+$reconfigCmake = $env:INSTALL_SERVICE_RECONFIG_CMAKE
 $stampFile = "build\\w64\\.install-service-build.stamp"
 
 function Normalize-Lf {
@@ -91,8 +92,10 @@ if (-not $forceBuild -and -not $gitStatus.Dirty -and -not $gitStatus.SubmoduleDi
   $existing = Normalize-Lf (Get-Content $stampFile -Raw)
   $expected = Normalize-Lf $stampContent
   if ($existing -eq $expected) {
-    Write-Host "No source changes detected; skipping build."
-    exit 0
+    if (-not $reconfigCmake -or ($reconfigCmake -ne "1" -and $reconfigCmake -ne "true" -and $reconfigCmake -ne "True")) {
+      Write-Host "No source changes detected; skipping build."
+      exit 0
+    }
   }
 }
 
@@ -103,7 +106,7 @@ if (-not (Test-Path "external\vcpkg\scripts\buildsystems\vcpkg.cmake")) {
   throw "vcpkg_missing"
 }
 
-if (-not $hasCache -or $cmakeFresh) {
+if (-not $hasCache -or $cmakeFresh -or ($reconfigCmake -and ($reconfigCmake -eq "1" -or $reconfigCmake -eq "true" -or $reconfigCmake -eq "True"))) {
   if ($cmakeFresh) {
     cmake --preset w64 $cmakeFresh
   } else {

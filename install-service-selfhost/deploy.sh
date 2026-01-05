@@ -16,6 +16,7 @@ release_version=""
 run_publish="false"
 run_github_release="false"
 github_release_override="false"
+reconfig_cmake="false"
 
 usage() {
   cat <<'EOF'
@@ -35,6 +36,7 @@ Options
   --publish-github-release
   --skip-github-release
   --force-build
+  --reconfig-cmake
   --skip-git-pull
   --skip-git-fetch-tags
   -h|--help
@@ -122,6 +124,10 @@ while [[ $# -gt 0 ]]; do
       extra_vars+=("install_service_force_build=true")
       shift
       ;;
+    --reconfig-cmake)
+      reconfig_cmake="true"
+      shift
+      ;;
     --docker-buildkit)
       docker_buildkit="$2"
       shift 2
@@ -152,6 +158,10 @@ done
 
 if [[ -n "$release_version" && "$release_version" != "latest" ]]; then
   extra_vars+=("install_service_release_version=$release_version")
+fi
+
+if [[ "$reconfig_cmake" == "true" ]]; then
+  extra_vars+=("install_service_reconfig_cmake=true")
 fi
 
 if [[ "$release_version" == "latest" ]]; then

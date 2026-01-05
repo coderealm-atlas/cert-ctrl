@@ -15,6 +15,7 @@ BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build/freebsd-${BUILD_TYPE}}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-${REPO_ROOT}/install/freebsd-${BUILD_TYPE}}"
 BUILD_TARGET="${BUILD_TARGET:-cert_ctrl}"
 FORCE_BUILD="${INSTALL_SERVICE_FORCE_BUILD:-0}"
+RECONFIG_CMAKE="${INSTALL_SERVICE_RECONFIG_CMAKE:-0}"
 STAMP_FILE="${BUILD_DIR}/.install-service-build.stamp"
 
 if [[ -n "${INSTALL_SERVICE_INSTALL_PREFIX:-}" ]]; then
@@ -72,7 +73,8 @@ if printf "%s\n" "${submodule_status}" | grep -q '^[+-U]'; then
   submodule_dirty="1"
 fi
 
-if [[ "${FORCE_BUILD}" != "1" && "${FORCE_BUILD}" != "true" && "${FORCE_BUILD}" != "True" ]]; then
+if [[ "${FORCE_BUILD}" != "1" && "${FORCE_BUILD}" != "true" && "${FORCE_BUILD}" != "True" \
+  && "${RECONFIG_CMAKE}" != "1" && "${RECONFIG_CMAKE}" != "true" && "${RECONFIG_CMAKE}" != "True" ]]; then
   if [[ "${git_dirty}" == "0" && "${submodule_dirty}" == "0" && -f "${STAMP_FILE}" ]]; then
     BIN_PATH="${INSTALL_PREFIX}/bin/${BUILD_TARGET}"
     if [[ ! -x "${BIN_PATH}" && -x "${INSTALL_PREFIX}/bin/cert_ctrl" ]]; then

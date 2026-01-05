@@ -34,22 +34,9 @@ ansible-playbook -i inventory.ini playbooks/prepare_assets.yml \
 
 ## Variables
 Common variables (see `vars.yml` for defaults):
-- `install_service_release_version`
-- `install_service_repo_path`
-- `install_service_repo_url`
-- `install_service_assets_root`
-- `install_service_assets_staging_root`
-- `install_service_remote_staging_root`
-- `install_service_latest_version`
-- `install_service_skip_git_pull`
-- `install_service_proxy_env` (per-host proxy env; omit or empty values to disable)
-- `install_service_skip_git_fetch_tags` (skip `git fetch --tags` if network/proxy is slow)
+- `install_service_reconfig_cmake` (optional): forces a CMake reconfigure step on build hosts (useful when only tags changed and you need the embedded `git describe` version refreshed)
 
 Per-host/group variables:
-- `install_service_build_commands`
-- `install_service_install_prefix`
-- `install_service_asset_name`
-- `install_service_archive_ext`
 
 Linux Docker builds use `install_service_linux_docker_jobs` to define multiple artifacts per host.
 The Linux Docker host must have Docker installed and access to the cert-ctrl repo path.

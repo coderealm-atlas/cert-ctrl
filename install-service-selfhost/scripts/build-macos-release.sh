@@ -31,6 +31,7 @@ fi
 
 build_target="${BUILD_TARGET:-cert_ctrl}"
 force_build="${INSTALL_SERVICE_FORCE_BUILD:-0}"
+reconfig_cmake="${INSTALL_SERVICE_RECONFIG_CMAKE:-0}"
 build_dir="build/macos-release"
 install_prefix="install/selfhost-macos"
 need_configure="1"
@@ -61,7 +62,12 @@ else
   fi
 fi
 
-if [[ "${force_build}" != "1" && "${force_build}" != "true" && "${force_build}" != "True" ]]; then
+if [[ "${reconfig_cmake}" == "1" || "${reconfig_cmake}" == "true" || "${reconfig_cmake}" == "True" ]]; then
+  need_configure="1"
+fi
+
+if [[ "${force_build}" != "1" && "${force_build}" != "true" && "${force_build}" != "True" \
+  && "${reconfig_cmake}" != "1" && "${reconfig_cmake}" != "true" && "${reconfig_cmake}" != "True" ]]; then
   if [[ "${git_dirty}" == "0" && "${submodule_dirty}" == "0" && -d "${build_dir}" ]]; then
     stamp_tmp="${build_dir}/.install-service-build.stamp.tmp"
     printf "git_head=%s\n" "${git_head}" > "${stamp_tmp}"
