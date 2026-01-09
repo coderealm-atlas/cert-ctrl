@@ -47,6 +47,24 @@
     mode: '0755'
     remote_src: true
 
+- name: Verify staged binary version matches release version
+  shell: |
+    set -eu
+    bin="{{ install_service_package_tmp }}/{{ install_service_binary_basename }}"
+    actual=$("$bin" --version 2>/dev/null | head -n1 || true)
+    expected="{{ install_service_release_version }}"
+    if [ -z "$actual" ]; then
+      echo "error: unable to execute staged binary for version check" >&2
+      exit 1
+    fi
+    if [ "$actual" != "$expected" ]; then
+      echo "error: packaged binary version mismatch" >&2
+      echo "  expected: $expected" >&2
+      echo "  actual:   $actual" >&2
+      exit 1
+    fi
+  changed_when: false
+
 - name: Create archive
   command: >-
     tar -czf "{{ install_service_archive_path }}"

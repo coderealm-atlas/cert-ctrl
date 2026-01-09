@@ -48,11 +48,9 @@ function Get-GitStatus {
     SubmoduleDirty = $submoduleDirty
   }
 }
-if (Test-Path "build\\w64\\CMakeCache.txt") {
-  $hasCache = $true
-} else {
-  $hasCache = $false
-}
+# Note: Always run the CMake configure step before building (unless we early-exit
+# due to an unchanged stamp). This avoids stale configure-time metadata such as
+# version.h (git describe) when the repo updates.
 if ($forceBuild -and ($forceBuild -eq "1" -or $forceBuild -eq "true" -or $forceBuild -eq "True")) {
   Remove-Item -Recurse -Force "build\\w64" -ErrorAction SilentlyContinue
   Remove-Item -Recurse -Force "install\\selfhost-windows" -ErrorAction SilentlyContinue
@@ -106,12 +104,10 @@ if (-not (Test-Path "external\vcpkg\scripts\buildsystems\vcpkg.cmake")) {
   throw "vcpkg_missing"
 }
 
-if (-not $hasCache -or $cmakeFresh -or ($reconfigCmake -and ($reconfigCmake -eq "1" -or $reconfigCmake -eq "true" -or $reconfigCmake -eq "True"))) {
-  if ($cmakeFresh) {
-    cmake --preset w64 $cmakeFresh
-  } else {
-    cmake --preset w64
-  }
+if ($cmakeFresh) {
+  cmake --preset w64 $cmakeFresh
+} else {
+  cmake --preset w64
 }
 cmake --build --preset w64 --target $BuildTarget
 cmake --install build\w64 --config Release --prefix install\selfhost-windows

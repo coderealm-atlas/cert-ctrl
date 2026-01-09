@@ -8,6 +8,33 @@
       - install_service_archive_ext | length > 0
     fail_msg: install_service_release_version, install_service_install_prefix, install_service_asset_name, and install_service_archive_ext are required
 
+- name: Verify built binary version matches release version
+  win_shell: |
+    $ErrorActionPreference = "Stop"
+    $expected = "{{ install_service_release_version }}"
+    $candidates = @(
+      "{{ install_service_install_prefix }}\\bin\\{{ install_service_binary_basename }}.exe",
+      "{{ install_service_install_prefix }}\\bin\\cert_ctrl.exe",
+      "{{ install_service_install_prefix }}\\{{ install_service_binary_basename }}.exe",
+      "{{ install_service_install_prefix }}\\cert_ctrl.exe"
+    )
+    $bin = $null
+    foreach ($c in $candidates) {
+      if (Test-Path $c) { $bin = $c; break }
+    }
+    if (-not $bin) {
+      throw "unable to locate built binary under install prefix: {{ install_service_install_prefix }}"
+    }
+    $actual = & $bin --version 2>$null | Select-Object -First 1
+    if (-not $actual) {
+      throw "unable to execute built binary for version check: $bin"
+    }
+    $actual = $actual.Trim()
+    if ($actual -ne $expected) {
+      throw ("binary version mismatch: expected={0} actual={1} (bin={2})" -f $expected, $actual, $bin)
+    }
+  changed_when: false
+
 - name: Upload packaging script
   copy:
     src: "{{ playbook_dir }}/../../scripts/package-windows-release.ps1"

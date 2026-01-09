@@ -34,7 +34,6 @@ force_build="${INSTALL_SERVICE_FORCE_BUILD:-0}"
 reconfig_cmake="${INSTALL_SERVICE_RECONFIG_CMAKE:-0}"
 build_dir="build/macos-release"
 install_prefix="install/selfhost-macos"
-need_configure="1"
 
 git_head="$(git rev-parse HEAD 2>/dev/null || true)"
 git_dirty="0"
@@ -57,13 +56,6 @@ if [[ "${force_build}" == "1" || "${force_build}" == "true" || "${force_build}" 
   cmake_fresh_flag="--fresh"
 else
   cmake_fresh_flag=""
-  if [[ -f "${build_dir}/CMakeCache.txt" ]]; then
-    need_configure="0"
-  fi
-fi
-
-if [[ "${reconfig_cmake}" == "1" || "${reconfig_cmake}" == "true" || "${reconfig_cmake}" == "True" ]]; then
-  need_configure="1"
 fi
 
 if [[ "${force_build}" != "1" && "${force_build}" != "true" && "${force_build}" != "True" \
@@ -85,13 +77,10 @@ if [[ "${force_build}" != "1" && "${force_build}" != "true" && "${force_build}" 
     fi
   fi
 fi
-
-if [[ "${need_configure}" == "1" ]]; then
-  "${cmake_bin}" --preset macos-release ${cmake_fresh_flag} \
-    -DCMAKE_PROGRAM_PATH="${cmake_program_path}" \
-    -DAUTOCONF="${AUTOCONF}" \
-    -DAUTORECONF="${AUTORECONF}"
-fi
+"${cmake_bin}" --preset macos-release ${cmake_fresh_flag} \
+  -DCMAKE_PROGRAM_PATH="${cmake_program_path}" \
+  -DAUTOCONF="${AUTOCONF}" \
+  -DAUTORECONF="${AUTORECONF}"
 "${cmake_bin}" --build --preset macos-release --target "${build_target}"
 "${cmake_bin}" --install build/macos-release --prefix "${install_prefix}"
 
