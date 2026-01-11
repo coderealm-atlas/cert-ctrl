@@ -636,9 +636,8 @@ private:
         ssl_ctx_.set_default_verify_paths();
         ws_.next_layer().set_verify_mode(ssl::verify_peer);
       } catch (const std::exception &ex) {
-        client_.output_.logger().warning()
-            << "Websocket TLS verify setup failed, continuing: " << ex.what()
-            << std::endl;
+        BOOST_LOG_SEV(client_.lg, trivial::warning)
+            << "Websocket TLS verify setup failed, continuing: " << ex.what();
       }
     } else {
       ws_.next_layer().set_verify_mode(ssl::verify_none);
@@ -646,8 +645,8 @@ private:
   }
 
   void Resolve() {
-    client_.output_.logger().info() << "Websocket resolving " << endpoint_.host
-                                    << ':' << endpoint_.port << std::endl;
+    BOOST_LOG_SEV(client_.lg, trivial::info)
+      << "Websocket resolving " << endpoint_.host << ':' << endpoint_.port;
     resolver_.async_resolve(
         endpoint_.host, endpoint_.port,
         beast::bind_front_handler(&Session::OnResolve, shared_from_this()));
@@ -743,9 +742,9 @@ private:
       Fail("ws_handshake", ec);
       return;
     }
-    client_.output_.logger().info()
+    BOOST_LOG_SEV(client_.lg, trivial::info)
         << "Websocket websocket established to " << endpoint_.host
-        << endpoint_.target << std::endl;
+        << endpoint_.target;
     client_.HandleSessionConnected();
     StartRead();
     SchedulePing();
@@ -762,8 +761,8 @@ private:
         return;
       }
       if (ec == websocket::error::closed) {
-        client_.output_.logger().warning()
-            << "Websocket websocket closed by peer" << std::endl;
+        BOOST_LOG_SEV(client_.lg, trivial::warning)
+            << "Websocket websocket closed by peer";
         NotifyClosed(true);
         return;
       }
@@ -776,23 +775,23 @@ private:
       auto message = json::parse(payload);
       HandleMessage(message);
     } catch (const std::exception &ex) {
-      client_.output_.logger().error()
-          << "Websocket received invalid JSON: " << ex.what() << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::error)
+          << "Websocket received invalid JSON: " << ex.what();
     }
     StartRead();
   }
 
   void HandleMessage(const json::value &jv) {
     if (!jv.is_object()) {
-      client_.output_.logger().warning()
-          << "Websocket received non-object payload" << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::warning)
+          << "Websocket received non-object payload";
       return;
     }
     const auto &obj = jv.as_object();
     const auto *type_field = obj.if_contains("type");
     if (!type_field || !type_field->is_string()) {
-      client_.output_.logger().warning()
-          << "Websocket payload missing type field" << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::warning)
+          << "Websocket payload missing type field";
       return;
     }
     const std::string type = std::string(type_field->as_string().c_str());
@@ -808,17 +807,15 @@ private:
 
         auto legacy = certctrl::TryConvertEventEnvelopeToLegacyMessage(env);
         if (!legacy) {
-          client_.output_.logger().debug()
-              << "Websocket ignoring unknown event name: " << env.name
-              << std::endl;
+          BOOST_LOG_SEV(client_.lg, trivial::debug)
+              << "Websocket ignoring unknown event name: " << env.name;
           return;
         }
         HandleMessage(*legacy);
         return;
       } catch (const std::exception &ex) {
-        client_.output_.logger().warning()
-            << "Websocket received invalid event envelope: " << ex.what()
-            << std::endl;
+        BOOST_LOG_SEV(client_.lg, trivial::warning)
+            << "Websocket received invalid event envelope: " << ex.what();
         return;
       }
     }
@@ -832,16 +829,15 @@ private:
     } else if (type == "pong") {
       HandlePong(jv);
     } else {
-      client_.output_.logger().debug()
-          << "Websocket ignoring message type: " << type << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::debug)
+          << "Websocket ignoring message type: " << type;
     }
   }
 
   void HandleUpdatesSignal(const certctrl::WebsocketEventEnvelope &env) {
     if (!client_.signal_dispatcher_) {
-      client_.output_.logger().warning()
-          << "Websocket received updates.signal but signal dispatcher is not initialized"
-          << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::warning)
+          << "Websocket received updates.signal but signal dispatcher is not initialized";
       return;
     }
 
@@ -849,8 +845,8 @@ private:
     const auto resume_token = env.resume_token;
 
     if (!env.payload.is_object()) {
-      client_.output_.logger().warning()
-          << "Websocket updates.signal payload must be an object" << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::warning)
+          << "Websocket updates.signal payload must be an object";
       return;
     }
 
@@ -858,20 +854,34 @@ private:
     try {
       signal = json::value_to<::data::DeviceUpdateSignal>(env.payload);
     } catch (const std::exception &ex) {
-      client_.output_.logger().warning()
-          << "Websocket failed to parse updates.signal payload: " << ex.what()
-          << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::warning)
+          << "Websocket failed to parse updates.signal payload: " << ex.what();
       return;
+    }
+
+    // Visibility: confirm receipt of ACME control signals even if handlers
+    // are quiet or filtered by log level.
+    if (signal.type.rfind("acme.", 0) == 0) {
+      std::string cid;
+      if (auto *cid_v = signal.ref.if_contains("challenge_id")) {
+        if (cid_v->is_string()) {
+          cid = std::string(cid_v->as_string().c_str());
+        }
+      }
+      BOOST_LOG_SEV(client_.lg, trivial::info)
+          << "Websocket received ACME updates.signal type=" << signal.type
+          << " challenge_id=" << (cid.empty() ? std::string{"<none>"} : cid)
+          << " ack_id="
+          << (ack_id && !ack_id->empty() ? *ack_id : std::string{"<none>"});
     }
 
     auto self = shared_from_this();
     client_.signal_dispatcher_->dispatch(signal).run(
-        [self, logger = &client_.output_.logger(), type = signal.type, ack_id,
-         resume_token](auto r) {
+      [self, type = signal.type, ack_id, resume_token](auto r) {
           if (r.is_err()) {
-            logger->warning()
-                << "updates.signal dispatch failed for type=" << type
-                << " error=" << r.error().what << std::endl;
+        BOOST_LOG_SEV(self->client_.lg, trivial::warning)
+          << "updates.signal dispatch failed for type=" << type
+          << " error=" << r.error().what;
             return;
           }
 
@@ -880,9 +890,8 @@ private:
               if (auto err =
                       self->client_.state_store_.save_websocket_resume_token(
                           resume_token)) {
-                self->client_.output_.logger().warning()
-                    << "Failed to persist websocket resume token: " << *err
-                    << std::endl;
+                BOOST_LOG_SEV(self->client_.lg, trivial::warning)
+                    << "Failed to persist websocket resume token: " << *err;
               }
             }
             if (ack_id && !ack_id->empty()) {
@@ -908,14 +917,13 @@ private:
       auto hello = json::value_to<WebsocketHello>(jv);
       hello_received_ = true;
       websocket_id_ = hello.connection_id;
-      client_.output_.logger().info()
-          << "Websocket handshake hello for websocket_id=" << websocket_id_
-          << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::info)
+          << "Websocket handshake hello for websocket_id=" << websocket_id_;
 
       SendHelloAck();
     } catch (const std::exception &ex) {
-      client_.output_.logger().error()
-          << "Failed to parse websocket hello: " << ex.what() << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::error)
+          << "Failed to parse websocket hello: " << ex.what();
     }
   }
 
@@ -933,8 +941,8 @@ private:
     try {
       req = json::value_to<WebsocketRequest>(jv);
     } catch (const std::exception &ex) {
-      client_.output_.logger().error()
-          << "Failed to parse websocket request: " << ex.what() << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::error)
+          << "Failed to parse websocket request: " << ex.what();
       return;
     }
 
@@ -971,19 +979,19 @@ private:
       pong.ts = ping.ts ? ping.ts : NowMillis();
       Enqueue(json::value_from(pong));
     } catch (const std::exception &ex) {
-      client_.output_.logger().warning()
-          << "Failed to parse websocket ping: " << ex.what() << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::warning)
+          << "Failed to parse websocket ping: " << ex.what();
     }
   }
 
   void HandlePong(const json::value &jv) {
     try {
       auto pong = json::value_to<WebsocketPong>(jv);
-      client_.output_.logger().debug()
-          << "Websocket pong ts=" << pong.ts << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::debug)
+          << "Websocket pong ts=" << pong.ts;
     } catch (const std::exception &ex) {
-      client_.output_.logger().warning()
-          << "Failed to parse websocket pong: " << ex.what() << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::warning)
+          << "Failed to parse websocket pong: " << ex.what();
     }
   }
 
@@ -1008,8 +1016,8 @@ private:
   void OnPingTimer(const beast::error_code &ec) {
     if (ec) {
       if (ec != net::error::operation_aborted) {
-        client_.output_.logger().warning()
-            << "Websocket ping timer error: " << ec.message() << std::endl;
+        BOOST_LOG_SEV(client_.lg, trivial::warning)
+            << "Websocket ping timer error: " << ec.message();
       }
       return;
     }
@@ -1104,8 +1112,8 @@ private:
 
   void OnClose(const beast::error_code &ec) {
     if (ec && ec != net::error::operation_aborted) {
-      client_.output_.logger().warning()
-          << "Websocket websocket close error: " << ec.message() << std::endl;
+      BOOST_LOG_SEV(client_.lg, trivial::warning)
+          << "Websocket websocket close error: " << ec.message();
     }
     NotifyClosed(false);
   }
@@ -1115,8 +1123,8 @@ private:
       NotifyClosed(false);
       return;
     }
-    client_.output_.logger().error()
-        << "Websocket " << context << " error: " << ec.message() << std::endl;
+    BOOST_LOG_SEV(client_.lg, trivial::error)
+      << "Websocket " << context << " error: " << ec.message();
 
     if (std::string_view(context) == "ws_handshake") {
       const std::string msg = ec.message();
@@ -1126,12 +1134,11 @@ private:
           (msg.find("upgrade") != std::string::npos);
 
       if (looks_like_rejection) {
-        client_.output_.logger().warning()
-            << "Websocket handshake failed. This is often caused by authorization "
-               "failure (token expired / device not registered) or a server/proxy "
-               "rejecting the WebSocket upgrade. If this device should be online, "
-               "re-run the device onboarding/registration flow to obtain a fresh token."
-            << std::endl;
+        BOOST_LOG_SEV(client_.lg, trivial::warning)
+          << "Websocket handshake failed. This is often caused by authorization "
+            "failure (token expired / device not registered) or a server/proxy "
+            "rejecting the WebSocket upgrade. If this device should be online, "
+            "re-run the device onboarding/registration flow to obtain a fresh token.";
       }
     }
 
@@ -1188,9 +1195,8 @@ WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
       session_refresher_(std::move(session_refresher)),
       reconnect_timer_(ioc_), rng_(std::random_device{}()) {
   if (config_sources_.paths_.empty()) {
-  output_.logger().warning()
-    << "Signal dispatcher not initialized: no config source directories"
-    << std::endl;
+  BOOST_LOG_SEV(lg, trivial::warning)
+    << "Signal dispatcher not initialized: no config source directories";
   return;
   }
 
@@ -1213,9 +1219,8 @@ WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
       if (!running_ || stop_requested_) {
         return;
       }
-      output_.logger().info()
-          << "websocket config updated; restarting websocket session"
-          << std::endl;
+      BOOST_LOG_SEV(lg, trivial::info)
+          << "websocket config updated; restarting websocket session";
       reconnect_timer_.cancel();
       if (session_) {
         session_->Stop();
@@ -1248,9 +1253,8 @@ WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
         acme_tlsalpn01_mgr));
 
   if (!install_config_manager_) {
-  output_.logger().warning()
-    << "InstallConfigManager dependency missing; updates.signal will be ignored"
-    << std::endl;
+  BOOST_LOG_SEV(lg, trivial::warning)
+    << "InstallConfigManager dependency missing; updates.signal will be ignored";
   } else {
   signal_dispatcher_->register_handler(
     std::make_shared<certctrl::signal_handlers::InstallUpdatedHandler>(
@@ -1273,9 +1277,9 @@ WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
       install_config_manager_, output_));
   }
 
-  output_.logger().info() << "Websocket signal dispatcher ready (handlers="
-              << signal_dispatcher_->handler_count() << ")"
-              << std::endl;
+  BOOST_LOG_SEV(lg, trivial::info)
+      << "Websocket signal dispatcher ready (handlers="
+      << signal_dispatcher_->handler_count() << ")";
 }
 
 WebsocketClient::~WebsocketClient() { Stop(); }
@@ -1286,9 +1290,8 @@ bool WebsocketClient::AcquireSingleInstanceLock() {
   }
 
   if (instance_lock_path_.empty()) {
-    output_.logger().warning()
-        << "Websocket single-instance lock disabled: lock path missing"
-        << std::endl;
+    BOOST_LOG_SEV(lg, trivial::warning)
+        << "Websocket single-instance lock disabled: lock path missing";
     return true;
   }
 
@@ -1307,9 +1310,9 @@ bool WebsocketClient::AcquireSingleInstanceLock() {
     instance_lock_ = std::move(lock);
     return true;
   } catch (const std::exception &ex) {
-    output_.logger().warning()
+    BOOST_LOG_SEV(lg, trivial::warning)
         << "Websocket single-instance lock failed (continuing without lock): "
-        << ex.what() << std::endl;
+        << ex.what();
     return true;
   }
 }
@@ -1320,19 +1323,18 @@ void WebsocketClient::Start() {
       << "WebsocketClient::Start invoked (enabled=" << std::boolalpha
       << config.enabled << ", running=" << running_ << std::noboolalpha << ")";
   if (!config.enabled) {
-    output_.logger().debug()
-        << "Websocket client start skipped: feature disabled" << std::endl;
+    BOOST_LOG_SEV(lg, trivial::debug)
+        << "Websocket client start skipped: feature disabled";
     return;
   }
 
   if (!AcquireSingleInstanceLock()) {
-    output_.logger().info()
-        << "Websocket client start skipped: another agent instance already holds the websocket lock"
-        << std::endl;
+    BOOST_LOG_SEV(lg, trivial::info)
+        << "Websocket client start skipped: another agent instance already holds the websocket lock";
     return;
   }
   if (running_) {
-    output_.logger().debug() << "Websocket client already running" << std::endl;
+    BOOST_LOG_SEV(lg, trivial::debug) << "Websocket client already running";
     return;
   }
   running_ = true;
@@ -1341,9 +1343,9 @@ void WebsocketClient::Start() {
   BOOST_LOG_SEV(lg, trivial::debug)
       << "Starting websocket client toward " << config.remote_endpoint
       << " forwarding to " << config.tunnel.local_base_url;
-    output_.logger().info()
-      << "Websocket client (preview) enabling for " << config.remote_endpoint
-      << " -> " << config.tunnel.local_base_url << std::endl;
+    BOOST_LOG_SEV(lg, trivial::info)
+      << "Websocket client enabling for " << config.remote_endpoint
+      << " -> " << config.tunnel.local_base_url;
 
   WebsocketConfig config_copy = config;
   net::dispatch(ioc_, [this, config_copy]() mutable {
@@ -1365,18 +1367,16 @@ void WebsocketClient::Stop() {
       session_.reset();
     }
   });
-  output_.logger().info() << "Websocket client stopped" << std::endl;
   BOOST_LOG_SEV(lg, trivial::info) << "Websocket client stopped";
 }
 
 void WebsocketClient::LogConfiguration(const WebsocketConfig &config) {
-  output_.logger().debug() << fmt::format("websocket cfg: ping={}s, timeout={}s, "
-                                          "max_concurrent={}, max_payload={}B",
-                                          config.ping_interval_seconds,
-                                          config.request_timeout_seconds,
-                                          config.max_concurrent_requests,
-                                          config.max_payload_bytes)
-                           << std::endl;
+  BOOST_LOG_SEV(lg, trivial::debug)
+      << fmt::format("websocket cfg: ping={}s, timeout={}s, max_concurrent={}, max_payload={}B",
+                     config.ping_interval_seconds,
+                     config.request_timeout_seconds,
+                     config.max_concurrent_requests,
+                     config.max_payload_bytes);
   BOOST_LOG_SEV(lg, trivial::trace) << fmt::format(
       "cfg ping={} timeout={} concurrent={} payload={}B verify_tls={}",
       config.ping_interval_seconds, config.request_timeout_seconds,
@@ -1398,8 +1398,6 @@ void WebsocketClient::StartSession(WebsocketConfig config, bool allow_refresh) {
     remote_endpoint = ParseEndpoint(config.remote_endpoint);
     local_endpoint = ParseLocalEndpoint(config.tunnel.local_base_url);
   } catch (const std::exception &ex) {
-    output_.logger().error()
-        << "Websocket configuration error: " << ex.what() << std::endl;
     BOOST_LOG_SEV(lg, trivial::error)
         << "Websocket configuration error: " << ex.what();
     ScheduleReconnect();
@@ -1420,10 +1418,9 @@ void WebsocketClient::StartSession(WebsocketConfig config, bool allow_refresh) {
   }
 
   if (device_id.empty()) {
-    output_.logger().warning()
+    BOOST_LOG_SEV(lg, trivial::warning)
         << "Websocket start skipped: cached access token missing device_id claim; "
-           "run 'cert-ctrl login' to obtain a fresh device token."
-        << std::endl;
+           "run 'cert-ctrl login' to obtain a fresh device token.";
     ScheduleReconnect();
     return;
   }
@@ -1431,27 +1428,24 @@ void WebsocketClient::StartSession(WebsocketConfig config, bool allow_refresh) {
     remote_endpoint.target =
       EnsureDeviceIdPath(std::move(remote_endpoint.target), device_id);
 
-  output_.logger().info() << "Websocket connecting to "
-                          << fmt::format("wss://{}:{}{}", remote_endpoint.host,
-                                         remote_endpoint.port,
-                                         remote_endpoint.target)
-                          << std::endl;
+  BOOST_LOG_SEV(lg, trivial::info)
+      << "Websocket connecting to "
+      << fmt::format("wss://{}:{}{}", remote_endpoint.host, remote_endpoint.port,
+                     remote_endpoint.target);
   // Ensure token is fresh enough; if not, refresh using the stored refresh
   // token and retry the connection.
   static constexpr std::chrono::seconds kSkew{60};
   if (allow_refresh && IsJwtExpiringSoon(auth_token, kSkew)) {
     if (!session_refresher_) {
-      output_.logger().warning()
+      BOOST_LOG_SEV(lg, trivial::warning)
           << "Websocket access token is expired/expiring, but SessionRefresher is unavailable; "
-             "run 'cert-ctrl login' or ensure refresh is configured."
-          << std::endl;
+             "run 'cert-ctrl login' or ensure refresh is configured.";
       ScheduleReconnect();
       return;
     }
 
-    output_.logger().info()
-        << "Websocket access token expired/expiring; refreshing session tokens before connect."
-        << std::endl;
+    BOOST_LOG_SEV(lg, trivial::info)
+        << "Websocket access token expired/expiring; refreshing session tokens before connect.";
 
     auto self = shared_from_this();
     session_refresher_->refresh("websocket connect")
@@ -1462,9 +1456,8 @@ void WebsocketClient::StartSession(WebsocketConfig config, bool allow_refresh) {
               return;
             }
             if (result.is_err()) {
-              self->output_.logger().warning()
-                  << "Websocket token refresh failed: " << result.error().what
-                  << std::endl;
+              BOOST_LOG_SEV(self->lg, trivial::warning)
+                  << "Websocket token refresh failed: " << result.error().what;
               self->ScheduleReconnect();
               return;
             }
@@ -1491,7 +1484,7 @@ void WebsocketClient::HandleSessionClosed(bool should_retry) {
       << "Websocket session closed (retry=" << std::boolalpha << should_retry
       << ", stop_requested=" << stop_requested_ << std::noboolalpha << ")";
   if (!should_retry || stop_requested_) {
-    output_.logger().info() << "Websocket session closed" << std::endl;
+    BOOST_LOG_SEV(lg, trivial::info) << "Websocket session closed";
     return;
   }
   ScheduleReconnect();
@@ -1509,8 +1502,6 @@ void WebsocketClient::ScheduleReconnect() {
   WebsocketConfig cfg = config_provider_.get();
   backoff_.UpdateOptions(BuildBackoffOptions(cfg));
   auto delay = backoff_.NextDelay(rng_);
-  output_.logger().warning()
-      << fmt::format("Websocket reconnect in {} ms", delay.count()) << std::endl;
   BOOST_LOG_SEV(lg, trivial::warning)
       << "Websocket reconnect scheduled in " << delay.count() << " ms";
   reconnect_timer_.expires_after(delay);
