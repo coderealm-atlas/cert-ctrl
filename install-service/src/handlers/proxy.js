@@ -65,23 +65,6 @@ export async function proxyHandler(request, env) {
 
     const githubUrl = resolution.downloadUrl;
 
-    // Check cache first
-    const cacheKey = `release:${actualVersion}:${filename}`;
-    let cachedResponse = await env.RELEASE_CACHE.get(cacheKey, 'arrayBuffer');
-    
-    if (cachedResponse) {
-      // Serve from cache
-      return new Response(cachedResponse, {
-        headers: {
-          'Content-Type': getContentType(filename),
-          'Cache-Control': 'public, max-age=86400', // 24 hours
-          'X-Cache': 'HIT',
-          'X-Version': actualVersion,
-          ...corsHeaders
-        }
-      });
-    }
-
     // Fetch from GitHub
     // For HEAD requests return header metadata without downloading the full asset
     if (request.method === 'HEAD') {
@@ -156,6 +139,39 @@ export async function proxyHandler(request, env) {
       });
     }
 
+    // Cache key must change when GitHub assets are replaced.
+    // `gh release upload --clobber` keeps the tag name stable but changes the
+    // underlying asset id/updated_at; without this, we can serve stale bytes for
+    // the full TTL.
+    const cacheKeyParts = [`release`, actualVersion, filename];
+    const hasAssetIdentity = Boolean(resolution?.asset?.id || resolution?.asset?.updated_at);
+    if (resolution?.asset?.id) {
+      cacheKeyParts.push(`id=${resolution.asset.id}`);
+    }
+    if (resolution?.asset?.updated_at) {
+      cacheKeyParts.push(`u=${resolution.asset.updated_at}`);
+    }
+    const cacheKey = cacheKeyParts.join(':');
+
+    // Only use KV cache when we have a stable asset identity.
+    // If metadata lookup fails and we fall back to direct URL probing, caching by
+    // version+filename is unsafe when assets are clobbered in-place.
+    if (hasAssetIdentity) {
+      const cachedResponse = await env.RELEASE_CACHE.get(cacheKey, 'arrayBuffer');
+      if (cachedResponse) {
+        return new Response(cachedResponse, {
+          headers: {
+            'Content-Type': getContentType(filename),
+            'Cache-Control': 'public, max-age=86400', // 24 hours
+            'X-Cache': 'HIT',
+            'X-Version': actualVersion,
+            ...(resolution?.source ? { 'X-Source': resolution.source } : {}),
+            ...corsHeaders
+          }
+        });
+      }
+    }
+
     const githubResponse = await fetch(githubUrl, {
       headers: buildGithubHeaders(env)
     });
@@ -189,7 +205,7 @@ export async function proxyHandler(request, env) {
     const contentType = githubResponse.headers.get('Content-Type') || getContentType(filename);
 
     // Cache the response (for smaller files only, e.g., < 10MB)
-    if (content.byteLength < 10 * 1024 * 1024) {
+    if (hasAssetIdentity && content.byteLength < 10 * 1024 * 1024) {
       await env.RELEASE_CACHE.put(cacheKey, content, {
         expirationTtl: 86400 // 24 hours
       });
@@ -206,7 +222,7 @@ export async function proxyHandler(request, env) {
         'Content-Type': contentType,
         'Content-Length': content.byteLength.toString(),
         'Cache-Control': 'public, max-age=86400', // 24 hours
-        'X-Cache': 'MISS',
+        'X-Cache': hasAssetIdentity ? 'MISS' : 'BYPASS',
         'X-Version': actualVersion,
         'X-Content-Length': content.byteLength.toString(),
         ...(resolution?.source ? { 'X-Source': resolution.source } : {}),
