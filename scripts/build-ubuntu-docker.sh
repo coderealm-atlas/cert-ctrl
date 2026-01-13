@@ -142,6 +142,10 @@ if [ ! -x "\${TMP_VCPKG}/vcpkg" ]; then
 fi
 if [ "${FORCE_BUILD}" = "1" ] || [ "${FORCE_BUILD}" = "true" ] || [ "${FORCE_BUILD}" = "True" ]; then
   rm -rf /work/build
+fi
+
+if [ "${FORCE_BUILD}" = "1" ] || [ "${FORCE_BUILD}" = "true" ] || [ "${FORCE_BUILD}" = "True" ] \
+  || [ "${RECONFIG_CMAKE}" = "1" ] || [ "${RECONFIG_CMAKE}" = "true" ] || [ "${RECONFIG_CMAKE}" = "True" ]; then
   cmake --preset "${PRESET}" --fresh -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
 else
   cmake --preset "${PRESET}" -DCMAKE_TOOLCHAIN_FILE="\${TMP_VCPKG}/scripts/buildsystems/vcpkg.cmake"
