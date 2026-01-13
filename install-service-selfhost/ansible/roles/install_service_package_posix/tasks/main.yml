@@ -26,16 +26,29 @@
 - name: Locate installed binary
   shell: |
     set -eu
+    expected="{{ install_service_release_version }}"
+    first_found=""
     for candidate in \
       "{{ install_service_install_prefix }}/bin/{{ install_service_binary_basename }}" \
       "{{ install_service_install_prefix }}/bin/cert_ctrl" \
       "{{ install_service_install_prefix }}/{{ install_service_binary_basename }}" \
       "{{ install_service_install_prefix }}/cert_ctrl"; do
       if [ -f "$candidate" ]; then
-        echo "$candidate"
-        exit 0
+        if [ -z "$first_found" ]; then
+          first_found="$candidate"
+        fi
+        # Prefer the candidate whose embedded version matches the release.
+        actual=$("$candidate" --version 2>/dev/null | head -n1 || true)
+        if [ -n "$actual" ] && [ "$actual" = "$expected" ]; then
+          echo "$candidate"
+          exit 0
+        fi
       fi
     done
+    if [ -n "$first_found" ]; then
+      echo "$first_found"
+      exit 0
+    fi
     exit 1
   register: install_service_binary_path
   changed_when: false
@@ -51,16 +64,60 @@
   shell: |
     set -eu
     bin="{{ install_service_package_tmp }}/{{ install_service_binary_basename }}"
-    actual=$("$bin" --version 2>/dev/null | head -n1 || true)
+    actual=$("$bin" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
     expected="{{ install_service_release_version }}"
     if [ -z "$actual" ]; then
       echo "error: unable to execute staged binary for version check" >&2
       exit 1
     fi
+
+    if [ "$actual" != "$expected" ]; then
+      # If multiple binaries exist in the install prefix (e.g. cert-ctrl vs
+      # cert_ctrl), try to restage the one that matches the expected version.
+      for candidate in \
+        "{{ install_service_install_prefix }}/bin/{{ install_service_binary_basename }}" \
+        "{{ install_service_install_prefix }}/bin/cert_ctrl" \
+        "{{ install_service_install_prefix }}/{{ install_service_binary_basename }}" \
+        "{{ install_service_install_prefix }}/cert_ctrl"; do
+        if [ -x "$candidate" ]; then
+          cand_ver=$("$candidate" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
+          if [ -n "$cand_ver" ] && [ "$cand_ver" = "$expected" ]; then
+            cp -f "$candidate" "$bin"
+            chmod 0755 "$bin" || true
+            actual=$("$bin" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
+            break
+          fi
+        fi
+      done
+    fi
+
     if [ "$actual" != "$expected" ]; then
       echo "error: packaged binary version mismatch" >&2
       echo "  expected: $expected" >&2
       echo "  actual:   $actual" >&2
+
+      echo "debug: install prefix={{ install_service_install_prefix }}" >&2
+      echo "debug: staged bin=$bin" >&2
+      echo "debug: candidate binaries and versions:" >&2
+      for candidate in \
+        "{{ install_service_install_prefix }}/bin/{{ install_service_binary_basename }}" \
+        "{{ install_service_install_prefix }}/bin/cert_ctrl" \
+        "{{ install_service_install_prefix }}/{{ install_service_binary_basename }}" \
+        "{{ install_service_install_prefix }}/cert_ctrl"; do
+        if [ -e "$candidate" ]; then
+          ls -l "$candidate" >&2 || true
+          v=$("$candidate" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
+          echo "  $candidate -> ${v:-<no version output>}" >&2
+        else
+          echo "  $candidate -> <missing>" >&2
+        fi
+      done
+
+      if [ -d "{{ install_service_repo_path | default('') }}" ]; then
+        echo "debug: repo={{ install_service_repo_path }}" >&2
+        (cd "{{ install_service_repo_path }}" && git rev-parse HEAD 2>/dev/null | sed -e 's/^/  git_head=/' >&2) || true
+        (cd "{{ install_service_repo_path }}" && git describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>/dev/null | sed -e 's/^/  git_describe=/' >&2) || true
+      fi
       exit 1
     fi
   changed_when: false

@@ -19,5 +19,7 @@ install_service_docker_buildkit: ""
 install_service_build_log_path_posix: /tmp/install-service-build.log
 install_service_build_log_path_win: C:\\temp\\install-service-build.log
 install_service_force_build: false
+install_service_auto_force_build_on_release_version: true
+install_service_checkout_release_ref: true
 install_service_force_submodule_update: false
 install_service_reconfig_cmake: false

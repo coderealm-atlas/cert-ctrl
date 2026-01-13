@@ -27,7 +27,13 @@
           | ternary({'DOCKER_BUILDKIT': (install_service_docker_buildkit | string)}, {})
         )
         | combine(
-          (install_service_force_build | bool)
+          (
+            (install_service_force_build | bool)
+            or (
+              (install_service_auto_force_build_on_release_version | default(true) | bool)
+              and (install_service_release_version | default('') | trim | length > 0)
+            )
+          )
           | ternary({'INSTALL_SERVICE_FORCE_BUILD': '1'}, {'INSTALL_SERVICE_FORCE_BUILD': '0'})
         )
         | combine(
@@ -298,6 +304,57 @@
       until: install_service_git_fetch_posix.rc == 0
       changed_when: false
       environment: "{{ install_service_env_no_proxy }}"
+
+- name: Derive desired git ref from release version
+  when: install_service_checkout_release_ref | default(true) | bool and install_service_release_version | default('') | trim | length > 0
+  set_fact:
+    install_service_release_git_sha: >-
+      {{
+        (install_service_release_version | trim)
+        | regex_search('g([0-9a-fA-F]{7,40})$', '\\1')
+        | default('')
+        | lower
+      }}
+
+- name: Detect shallow git clone (POSIX)
+  when: not install_service_is_windows and install_service_checkout_release_ref | default(true) | bool and install_service_release_version | default('') | trim | length > 0
+  stat:
+    path: "{{ install_service_repo_path }}/.git/shallow"
+  register: install_service_repo_shallow
+  changed_when: false
+
+- name: Normalize shallow clone detection (POSIX)
+  when: not install_service_is_windows and install_service_checkout_release_ref | default(true) | bool and install_service_release_version | default('') | trim | length > 0
+  set_fact:
+    install_service_repo_is_shallow: >-
+      {{
+        (
+          install_service_repo_shallow is defined
+          and install_service_repo_shallow.stat is defined
+          and (install_service_repo_shallow.stat.exists | default(false))
+        ) | bool
+      }}
+
+- name: Unshallow fetch before checkout (POSIX)
+  when: not install_service_is_windows and (install_service_repo_is_shallow | default(false) | bool) and install_service_checkout_release_ref | default(true) | bool and install_service_release_version | default('') | trim | length > 0
+  shell: git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" fetch --unshallow --tags --force
+  changed_when: false
+  failed_when: false
+  environment: "{{ install_service_env_effective }}"
+
+- name: Checkout requested release commit or tag (POSIX)
+  when: not install_service_is_windows and install_service_checkout_release_ref | default(true) | bool and install_service_release_version | default('') | trim | length > 0
+  shell: |
+    set -eu
+    cd "{{ install_service_repo_path }}"
+    ref="{{ (install_service_release_git_sha | default('') | trim) if ((install_service_release_git_sha | default('') | trim) | length > 0) else (install_service_release_version | trim) }}"
+    # If ref looks like a commit sha, verify it exists; otherwise treat as tag/branch.
+    if echo "$ref" | grep -Eq '^[0-9a-f]{7,40}$'; then
+      git cat-file -e "$ref^{commit}"
+    fi
+    git checkout -f "$ref"
+  changed_when: false
+  environment: "{{ install_service_env_effective }}"
 
 - name: Fetch repository tags (Windows)
   when: install_service_is_windows and install_service_repo_git_win.rc == 0 and not install_service_skip_git_fetch_tags | bool

@@ -22,7 +22,6 @@
 #include <sstream>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -33,6 +32,8 @@
 #include <locale>
 #endif
 #ifndef _WIN32
+#include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -285,6 +286,26 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
 #ifdef _WIN32
   // On Windows, use a best-effort approach. We construct argv in a way that
   // avoids relying on shebang/executable bits.
+  auto append_limited = [](std::string &dst, const char *data, std::size_t n) {
+    static constexpr std::size_t kMax = 64 * 1024;
+    if (n == 0) return;
+    if (dst.size() >= kMax) return;
+    const std::size_t room = kMax - dst.size();
+    dst.append(data, data + std::min(room, n));
+  };
+
+  auto fmt_output = [](std::string_view s) -> std::string {
+    if (s.empty()) return {};
+    std::string out{s};
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) {
+      out.pop_back();
+    }
+    if (out.size() >= 64 * 1024) {
+      out += "\n<output truncated>";
+    }
+    return out;
+  };
+
   std::vector<std::string> argv;
   if (variant_name == "windows.cmd") {
     // cmd.exe /C "<script>" "<event>"
@@ -300,6 +321,29 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   }
 
   // Use CreateProcessW similarly to ExecActionHandler (simplified; no env).
+  SECURITY_ATTRIBUTES sa;
+  ZeroMemory(&sa, sizeof(sa));
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+
+  HANDLE out_read = nullptr;
+  HANDLE out_write = nullptr;
+  HANDLE err_read = nullptr;
+  HANDLE err_write = nullptr;
+
+  if (!CreatePipe(&out_read, &out_write, &sa, 0)) {
+    return std::optional<std::string>("CreatePipe(stdout) failed");
+  }
+  if (!CreatePipe(&err_read, &err_write, &sa, 0)) {
+    CloseHandle(out_read);
+    CloseHandle(out_write);
+    return std::optional<std::string>("CreatePipe(stderr) failed");
+  }
+
+  // Ensure the parent-side read handles are NOT inheritable.
+  (void)SetHandleInformation(out_read, HANDLE_FLAG_INHERIT, 0);
+  (void)SetHandleInformation(err_read, HANDLE_FLAG_INHERIT, 0);
+
   std::wstring cmd_line;
   for (std::size_t i = 0; i < argv.size(); ++i) {
     if (i != 0) {
@@ -336,29 +380,91 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   STARTUPINFOW si;
   ZeroMemory(&si, sizeof(si));
   si.cb = sizeof(si);
+  si.dwFlags |= STARTF_USESTDHANDLES;
+  si.hStdOutput = out_write;
+  si.hStdError = err_write;
+  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
   PROCESS_INFORMATION pi;
   ZeroMemory(&pi, sizeof(pi));
 
   BOOL created = CreateProcessW(nullptr, cmd_buffer.data(), nullptr, nullptr,
                                 FALSE, 0, nullptr, nullptr, &si, &pi);
   if (!created) {
+    CloseHandle(out_read);
+    CloseHandle(out_write);
+    CloseHandle(err_read);
+    CloseHandle(err_write);
     return std::optional<std::string>("CreateProcess failed");
   }
 
+  // Parent: close write ends so reads can see EOF.
+  CloseHandle(out_write);
+  CloseHandle(err_write);
+  out_write = nullptr;
+  err_write = nullptr;
+
+  std::string out_text;
+  std::string err_text;
+
+  auto drain_pipe = [&](HANDLE h, std::string &dst) {
+    while (true) {
+      DWORD avail = 0;
+      if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) {
+        break;
+      }
+      if (avail == 0) {
+        break;
+      }
+      char buf[4096];
+      DWORD to_read = (avail < sizeof(buf)) ? avail : static_cast<DWORD>(sizeof(buf));
+      DWORD read_n = 0;
+      if (!ReadFile(h, buf, to_read, &read_n, nullptr) || read_n == 0) {
+        break;
+      }
+      append_limited(dst, buf, static_cast<std::size_t>(read_n));
+      // Stop if we hit cap.
+      if (dst.size() >= 64 * 1024) {
+        break;
+      }
+    }
+  };
+
   const DWORD timeout_ms = 30000;
-  DWORD wait_result = WaitForSingleObject(pi.hProcess, timeout_ms);
+  DWORD wait_result = WaitForSingleObject(pi.hProcess, 50);
+  DWORD waited = 0;
+  while (wait_result == WAIT_TIMEOUT && waited < timeout_ms) {
+    drain_pipe(out_read, out_text);
+    drain_pipe(err_read, err_text);
+    waited += 50;
+    wait_result = WaitForSingleObject(pi.hProcess, 50);
+  }
+
   if (wait_result == WAIT_TIMEOUT) {
     TerminateProcess(pi.hProcess, 1u);
     WaitForSingleObject(pi.hProcess, INFINITE);
+    drain_pipe(out_read, out_text);
+    drain_pipe(err_read, err_text);
+    CloseHandle(out_read);
+    CloseHandle(err_read);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return std::optional<std::string>("script timed out");
   }
   if (wait_result != WAIT_OBJECT_0) {
+    drain_pipe(out_read, out_text);
+    drain_pipe(err_read, err_text);
+    CloseHandle(out_read);
+    CloseHandle(err_read);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return std::optional<std::string>("WaitForSingleObject failed");
   }
+
+  // Process exited; final drain.
+  drain_pipe(out_read, out_text);
+  drain_pipe(err_read, err_text);
+  CloseHandle(out_read);
+  CloseHandle(err_read);
 
   DWORD exit_code = 0;
   if (!GetExitCodeProcess(pi.hProcess, &exit_code)) {
@@ -370,6 +476,19 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
 
+  const auto out_for_log = fmt_output(out_text);
+  const auto err_for_log = fmt_output(err_text);
+  if (!out_for_log.empty()) {
+    BOOST_LOG_TRIVIAL(info)
+        << "after_update_script stdout (event=" << event_name
+        << "):\n" << out_for_log;
+  }
+  if (!err_for_log.empty()) {
+    BOOST_LOG_TRIVIAL(info)
+        << "after_update_script stderr (event=" << event_name
+        << "):\n" << err_for_log;
+  }
+
   if (exit_code != 0) {
     return std::optional<std::string>(
         fmt::format("script exited with code {}", exit_code));
@@ -377,6 +496,59 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   return std::nullopt;
 #else
   (void)variant_name;
+
+  struct ScriptRunResult {
+    std::optional<std::string> error;
+    std::string stdout_text;
+    std::string stderr_text;
+  };
+
+  auto append_limited = [](std::string &dst, const char *data, std::size_t n) {
+    static constexpr std::size_t kMax = 64 * 1024;
+    if (n == 0) return;
+    if (dst.size() >= kMax) return;
+    const std::size_t room = kMax - dst.size();
+    dst.append(data, data + std::min(room, n));
+  };
+
+  auto set_nonblocking = [](int fd) -> bool {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return false;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+  };
+
+  auto drain_fd = [&](int fd, std::string &out) {
+    char buf[4096];
+    while (true) {
+      ssize_t r = read(fd, buf, sizeof(buf));
+      if (r > 0) {
+        append_limited(out, buf, static_cast<std::size_t>(r));
+        continue;
+      }
+      if (r == 0) {
+        break;
+      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        break;
+      }
+      // Any other error: stop reading.
+      break;
+    }
+  };
+
+  auto fmt_output = [](std::string_view s) -> std::string {
+    if (s.empty()) return {};
+    std::string out{s};
+    // Make logs friendlier; keep it minimal.
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) {
+      out.pop_back();
+    }
+    if (out.size() >= 64 * 1024) {
+      out += "\n<output truncated>";
+    }
+    return out;
+  };
+
   std::vector<std::string> argv = {"sh", script_path.string(), event_name};
 
   std::vector<char *> cargv;
@@ -386,42 +558,122 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   }
   cargv.push_back(nullptr);
 
+  int out_pipe[2] = {-1, -1};
+  int err_pipe[2] = {-1, -1};
+  if (pipe(out_pipe) != 0) {
+    return std::optional<std::string>(std::string("pipe(stdout) failed: ") +
+                                      std::strerror(errno));
+  }
+  if (pipe(err_pipe) != 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    return std::optional<std::string>(std::string("pipe(stderr) failed: ") +
+                                      std::strerror(errno));
+  }
+
+  // Parent reads from [0], child writes to [1].
+  (void)set_nonblocking(out_pipe[0]);
+  (void)set_nonblocking(err_pipe[0]);
+
   pid_t pid = fork();
   if (pid < 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[0]);
+    close(err_pipe[1]);
     return std::optional<std::string>(std::string("fork failed: ") +
                                       std::strerror(errno));
   }
 
   if (pid == 0) {
+    // Child: hook stdout/stderr to pipes.
+    dup2(out_pipe[1], STDOUT_FILENO);
+    dup2(err_pipe[1], STDERR_FILENO);
+
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[0]);
+    close(err_pipe[1]);
+
     execvp(cargv[0], cargv.data());
     _exit(127);
   }
+
+  // Parent.
+  close(out_pipe[1]);
+  close(err_pipe[1]);
+
+  ScriptRunResult run_result;
 
   int status = 0;
   auto start = std::chrono::steady_clock::now();
   const auto timeout = std::chrono::milliseconds(30000);
   while (true) {
+    // Drain any available output without blocking.
+    drain_fd(out_pipe[0], run_result.stdout_text);
+    drain_fd(err_pipe[0], run_result.stderr_text);
+
     pid_t w = waitpid(pid, &status, WNOHANG);
     if (w == pid) {
       break;
     }
     if (w == -1) {
+      close(out_pipe[0]);
+      close(err_pipe[0]);
       return std::optional<std::string>(std::string("waitpid failed: ") +
                                         std::strerror(errno));
     }
     if (std::chrono::steady_clock::now() - start >= timeout) {
       kill(pid, SIGKILL);
       waitpid(pid, &status, 0);
+      drain_fd(out_pipe[0], run_result.stdout_text);
+      drain_fd(err_pipe[0], run_result.stderr_text);
+      close(out_pipe[0]);
+      close(err_pipe[0]);
       return std::optional<std::string>("script timed out");
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Wait briefly for more output or process exit.
+    struct pollfd fds[2];
+    fds[0].fd = out_pipe[0];
+    fds[0].events = POLLIN;
+    fds[0].revents = 0;
+    fds[1].fd = err_pipe[0];
+    fds[1].events = POLLIN;
+    fds[1].revents = 0;
+    (void)poll(fds, 2, 50);
+  }
+
+  // Final drain after exit.
+  drain_fd(out_pipe[0], run_result.stdout_text);
+  drain_fd(err_pipe[0], run_result.stderr_text);
+  close(out_pipe[0]);
+  close(err_pipe[0]);
+
+  const auto out_for_log = fmt_output(run_result.stdout_text);
+  const auto err_for_log = fmt_output(run_result.stderr_text);
+  if (!out_for_log.empty()) {
+    BOOST_LOG_TRIVIAL(info)
+        << "after_update_script stdout (event=" << event_name
+        << "):\n" << out_for_log;
+  }
+  if (!err_for_log.empty()) {
+    BOOST_LOG_TRIVIAL(info)
+        << "after_update_script stderr (event=" << event_name
+        << "):\n" << err_for_log;
   }
 
   if (WIFEXITED(status)) {
     int rc = WEXITSTATUS(status);
     if (rc != 0) {
-      return std::optional<std::string>(
-          fmt::format("script exited with code {}", rc));
+      std::string msg = fmt::format("script exited with code {}", rc);
+      if (!err_for_log.empty()) {
+        msg += "; stderr captured";
+      }
+      if (!out_for_log.empty()) {
+        msg += "; stdout captured";
+      }
+      return std::optional<std::string>(std::move(msg));
     }
     return std::nullopt;
   }
