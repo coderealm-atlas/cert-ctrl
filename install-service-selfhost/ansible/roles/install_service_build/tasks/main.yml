@@ -490,6 +490,78 @@
         or (install_service_release_version_cmd_win.stdout | default(''))
       | trim }}
 
+- name: Refresh effective environment after release version is known
+  set_fact:
+    install_service_build_env_effective: >-
+      {{
+        (install_service_build_env | default({}))
+        | combine(
+          (
+            install_service_docker_buildkit is not none and
+            (install_service_docker_buildkit | string | length) > 0
+          )
+          | ternary({'DOCKER_BUILDKIT': (install_service_docker_buildkit | string)}, {})
+        )
+        | combine(
+          (
+            (install_service_force_build | bool)
+            or (
+              (install_service_auto_force_build_on_release_version | default(true) | bool)
+              and (install_service_release_version | default('') | trim | length > 0)
+            )
+          )
+          | ternary({'INSTALL_SERVICE_FORCE_BUILD': '1'}, {'INSTALL_SERVICE_FORCE_BUILD': '0'})
+        )
+        | combine(
+          (install_service_reconfig_cmake | default(false) | bool)
+          | ternary({'INSTALL_SERVICE_RECONFIG_CMAKE': '1'}, {'INSTALL_SERVICE_RECONFIG_CMAKE': '0'})
+        )
+      }}
+    install_service_env_effective: >-
+      {{
+        (install_service_proxy_env_effective | default({}))
+        | combine(install_service_build_env_effective | default({}))
+      }}
+
+- name: Refresh environment variants after release version is known
+  set_fact:
+    install_service_proxy_env_keys_all: >-
+      {{
+        (
+          (install_service_proxy_env_effective.keys() | list)
+          + (install_service_proxy_env_effective.keys() | list | map('upper') | list)
+          + (install_service_proxy_env_effective.keys() | list | map('lower') | list)
+        ) | unique
+      }}
+    install_service_env_no_proxy: >-
+      {{
+        (install_service_env_effective | default({}))
+        | dict2items
+        | rejectattr('key', 'in', install_service_proxy_env_keys_all | default([]))
+        | items2dict
+      }}
+    install_service_ps_env_block: >-
+      {%- set ns = namespace(parts=[]) -%}
+      {%- for item in install_service_env_effective | default({}) | dict2items -%}
+      {%- set value = item.value | replace("\"", "`\"") -%}
+      {%- set _ = ns.parts.append("$env:" ~ item.key ~ " = \"" ~ value ~ "\"") -%}
+      {%- endfor -%}
+      {{ ns.parts | join('; ') }}{% if ns.parts | length > 0 %}; {% endif %}
+    install_service_ps_env_block_no_proxy: >-
+      {%- set ns = namespace(parts=[]) -%}
+      {%- for item in install_service_env_no_proxy | default({}) | dict2items -%}
+      {%- set value = item.value | replace("\"", "`\"") -%}
+      {%- set _ = ns.parts.append("$env:" ~ item.key ~ " = \"" ~ value ~ "\"") -%}
+      {%- endfor -%}
+      {%- for key in install_service_proxy_env_keys_all | default([]) -%}
+      {%- set _ = ns.parts.append("Remove-Item Env:" ~ key ~ " -ErrorAction SilentlyContinue") -%}
+      {%- endfor -%}
+      {{ ns.parts | join('; ') }}{% if ns.parts | length > 0 %}; {% endif %}
+    install_service_ps_preamble: >-
+      {{ install_service_ps_env_block }}{{ install_service_ps_msvc_block }}{{ install_service_ps_path_block }}
+    install_service_ps_preamble_no_proxy: >-
+      {{ install_service_ps_env_block_no_proxy }}{{ install_service_ps_msvc_block }}{{ install_service_ps_path_block }}
+
 - name: Upload build script (POSIX)
   when: not install_service_is_windows and install_service_build_script_path | default('') | length > 0
   copy:
