@@ -27,6 +27,23 @@
   shell: |
     set -eu
     expected="{{ install_service_release_version }}"
+    asset_name="{{ install_service_asset_name }}"
+    is_musl=0
+    case "$asset_name" in
+      *musl*) is_musl=1 ;;
+    esac
+
+    get_ver() {
+      candidate="$1"
+      v=$("$candidate" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
+      if [ -z "$v" ] && [ "$is_musl" = "1" ] && command -v docker >/dev/null 2>&1; then
+        cand_dir=$(dirname "$candidate")
+        cand_base=$(basename "$candidate")
+        v=$(docker run --rm -v "$cand_dir:/staged:ro" alpine:3.19 sh -lc "/staged/$cand_base --version 2>/dev/null | head -n1 | tr -d '\\r'" 2>/dev/null || true)
+      fi
+      printf '%s' "$v"
+    }
+
     first_found=""
     for candidate in \
       "{{ install_service_install_prefix }}/bin/{{ install_service_binary_basename }}" \
@@ -38,7 +55,7 @@
           first_found="$candidate"
         fi
         # Prefer the candidate whose embedded version matches the release.
-        actual=$("$candidate" --version 2>/dev/null | head -n1 || true)
+        actual=$(get_ver "$candidate")
         if [ -n "$actual" ] && [ "$actual" = "$expected" ]; then
           echo "$candidate"
           exit 0
@@ -64,10 +81,37 @@
   shell: |
     set -eu
     bin="{{ install_service_package_tmp }}/{{ install_service_binary_basename }}"
-    actual=$("$bin" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
     expected="{{ install_service_release_version }}"
+    asset_name="{{ install_service_asset_name }}"
+    is_musl=0
+    case "$asset_name" in
+      *musl*) is_musl=1 ;;
+    esac
+
+    get_ver() {
+      candidate="$1"
+      v=$("$candidate" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
+      if [ -z "$v" ] && [ "$is_musl" = "1" ] && command -v docker >/dev/null 2>&1; then
+        cand_dir=$(dirname "$candidate")
+        cand_base=$(basename "$candidate")
+        v=$(docker run --rm -v "$cand_dir:/staged:ro" alpine:3.19 sh -lc "/staged/$cand_base --version 2>/dev/null | head -n1 | tr -d '\\r'" 2>/dev/null || true)
+      fi
+      printf '%s' "$v"
+    }
+
+    actual=$(get_ver "$bin")
     if [ -z "$actual" ]; then
       echo "error: unable to execute staged binary for version check" >&2
+      echo "debug: staged bin=$bin" >&2
+      if command -v file >/dev/null 2>&1; then
+        file "$bin" >&2 || true
+      fi
+      if [ "$is_musl" = "1" ]; then
+        echo "debug: musl binary may not run on host; version check will run inside alpine container when docker is available." >&2
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "debug: docker not found; cannot run musl version check." >&2
+        fi
+      fi
       exit 1
     fi
 
@@ -80,11 +124,11 @@
         "{{ install_service_install_prefix }}/{{ install_service_binary_basename }}" \
         "{{ install_service_install_prefix }}/cert_ctrl"; do
         if [ -x "$candidate" ]; then
-          cand_ver=$("$candidate" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
+          cand_ver=$(get_ver "$candidate")
           if [ -n "$cand_ver" ] && [ "$cand_ver" = "$expected" ]; then
             cp -f "$candidate" "$bin"
             chmod 0755 "$bin" || true
-            actual=$("$bin" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
+            actual=$(get_ver "$bin")
             break
           fi
         fi
@@ -106,7 +150,7 @@
         "{{ install_service_install_prefix }}/cert_ctrl"; do
         if [ -e "$candidate" ]; then
           ls -l "$candidate" >&2 || true
-          v=$("$candidate" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
+          v=$(get_ver "$candidate")
           echo "  $candidate -> ${v:-<no version output>}" >&2
         else
           echo "  $candidate -> <missing>" >&2
