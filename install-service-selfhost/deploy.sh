@@ -264,6 +264,29 @@ if [[ "$release_version" == "latest" ]]; then
     exit 1
   fi
   extra_vars+=("install_service_release_version=$latest_version")
+  release_version="$latest_version"
+fi
+
+# Publishing a GitHub release must be reproducible. Remote build hosts only see
+# committed/pushed sources, so a dirty controller working tree will produce
+# mismatched version strings (e.g. expected "...-dirty" but built binaries are
+# clean).
+if [[ "$run_github_release" == "true" ]]; then
+  if [[ "$release_version" == *-dirty ]]; then
+    echo "error: refusing to publish a GitHub release for a -dirty version ($release_version)." >&2
+    echo "hint: commit/push your changes, then rerun without -dirty." >&2
+    exit 1
+  fi
+  repo_root="$(cd "${ROOT_DIR}/.." && pwd)"
+  if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    dirty_lines="$(git -C "$repo_root" status --porcelain || true)"
+    if [[ -n "$dirty_lines" ]]; then
+      echo "error: repository has uncommitted changes; commit/push (or use --skip-github-release)." >&2
+      echo "debug: dirty files:" >&2
+      printf '%s\n' "$dirty_lines" >&2
+      exit 1
+    fi
+  fi
 fi
 
 # Validate that --builds and --limit are not used together

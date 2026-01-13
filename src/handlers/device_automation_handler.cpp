@@ -262,6 +262,14 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
     const ActionOptions &options) {
   using namespace monad;
 
+  // NOTE: Server-side semantics (bbserver): the request body is a JSON array of
+  // "patch" objects. Each patch is matched against an existing install step by
+  // (ob_type, ob_id) (and optionally "id"), then merged into the stored
+  // install-config payload. Only a limited set of patch keys is applied by the
+  // server (e.g. "type", "enabled", "cmd", "cmd_argv", "timeout_ms", "env");
+  // unknown keys are ignored. That is why we only validate the match keys and
+  // basic JSON types here.
+
   if (!options.api_key || options.api_key->empty()) {
     return show_usage("--apikey is required for install-config-update.");
   }
@@ -338,20 +346,16 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
           fmt::format("Payload entry {} missing numeric ob_id.", idx)));
     }
 
-    if (auto *changes = obj.if_contains("changes")) {
-      if (!changes->is_object()) {
-        return IO<void>::fail(monad::make_error(
-            my_errors::GENERAL::INVALID_ARGUMENT,
-            fmt::format("Payload entry {} has non-object changes.", idx)));
-      }
+    std::int64_t ob_id_value = 0;
+    if (ob_id->is_int64()) {
+      ob_id_value = ob_id->as_int64();
+    } else if (ob_id->is_uint64()) {
+      ob_id_value = static_cast<std::int64_t>(ob_id->as_uint64());
     }
-
-    if (auto *details = obj.if_contains("details")) {
-      if (!details->is_object()) {
-        return IO<void>::fail(monad::make_error(
-            my_errors::GENERAL::INVALID_ARGUMENT,
-            fmt::format("Payload entry {} has non-object details.", idx)));
-      }
+    if (ob_id_value <= 0) {
+      return IO<void>::fail(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT,
+          fmt::format("Payload entry {} has invalid ob_id (must be > 0).", idx)));
     }
   }
 

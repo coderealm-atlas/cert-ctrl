@@ -186,10 +186,8 @@ cat > /tmp/install-steps.json <<'JSON'
   {
     "ob_type": "install_steps",
     "ob_id": 1,
-    "changes": {
-      "insert_steps": ["custom_script"],
-      "remove_steps": ["legacy_step"]
-    }
+    "enabled": false,
+    "timeout_ms": 600000
   }
 ]
 JSON
@@ -200,8 +198,10 @@ cert-ctrl device install-config-update \
 ```
 
 Every entry in the payload array must include `ob_type` and numeric `ob_id`.
-Optional `changes` / `details` objects will be forwarded verbatim so the server
-can merge them into the saved install configuration.
+The server treats each entry as a patch: it locates the matching install item
+and merges in a limited set of supported keys (for example `type`, `enabled`,
+`continue_on_error`, `depends_on`, `tags`, `cmd`, `cmd_argv`, `timeout_ms`,
+`run_as`, `env`). Extra keys are ignored by the server.
 
 ## Certificate authority inspection
 

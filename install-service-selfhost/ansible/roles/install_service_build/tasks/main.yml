@@ -490,6 +490,13 @@
         or (install_service_release_version_cmd_win.stdout | default(''))
       | trim }}
 
+- name: Normalize release version (strip -dirty)
+  when: install_service_force_clean_git_describe | default(false) | bool
+  set_fact:
+    install_service_release_version: >-
+      {{ (install_service_release_version | default('') | trim)
+         | regex_replace('-dirty$', '') }}
+
 - name: Refresh effective environment after release version is known
   set_fact:
     install_service_build_env_effective: >-
