@@ -56,6 +56,16 @@ struct CertctrlConfig {
     try {
       if (auto *jo_p = jv.if_object()) {
         CertctrlConfig cc{};
+
+        // Backward-compat: older configs omitted this key but still expected
+        // the after-update hook to run for common update signals.
+        static const std::vector<std::string> kDefaultEventsTriggerScript{
+            "install.updated",
+            "cert.updated",
+            "cert.wrap_ready",
+            "cert.unassigned",
+        };
+
         if (auto *p = jo_p->if_contains("auto_apply_config")) {
           cc.auto_apply_config = p->as_bool();
         }
@@ -75,7 +85,13 @@ struct CertctrlConfig {
                 cc.events_trigger_script.emplace_back(v.as_string().c_str());
               }
             }
+          } else if (p->is_null()) {
+            // Explicit null disables the hook.
+            cc.events_trigger_script.clear();
           }
+        } else {
+          // Missing key: use backward-compatible defaults.
+          cc.events_trigger_script = kDefaultEventsTriggerScript;
         }
 
         if (auto *p = jo_p->if_contains("interval_seconds"))
