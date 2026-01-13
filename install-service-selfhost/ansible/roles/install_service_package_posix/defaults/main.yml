@@ -1,0 +1,5 @@
+---
+# When true, packaging requires build-info.json to exist and match
+# install_service_release_version. This avoids executing target binaries during
+# packaging and hard-fails on missing/incorrect manifests.
+install_service_require_build_info: true

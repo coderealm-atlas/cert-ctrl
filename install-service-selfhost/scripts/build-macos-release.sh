@@ -35,6 +35,34 @@ reconfig_cmake="${INSTALL_SERVICE_RECONFIG_CMAKE:-0}"
 build_dir="build/macos-release"
 install_prefix="install/selfhost-macos"
 
+write_build_info() {
+  local prefix="$1"
+  local target="$2"
+  local head="$3"
+  local dirty="$4"
+  local sub_dirty="$5"
+
+  local describe
+  describe="$(git describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>/dev/null || true)"
+  if [[ -z "${describe}" ]]; then
+    describe="$(git describe --tags --long --dirty --abbrev=8 2>/dev/null || true)"
+  fi
+
+  mkdir -p "${prefix}"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  cat > "${prefix}/build-info.json" <<EOF
+{
+  "git_head": "${head}",
+  "git_describe": "${describe}",
+  "git_dirty": ${dirty},
+  "submodule_dirty": ${sub_dirty},
+  "build_target": "${target}",
+  "platform": "macos",
+  "timestamp_utc": "${ts}"
+}
+EOF
+}
+
 git_head="$(git rev-parse HEAD 2>/dev/null || true)"
 git_dirty="0"
 if ! git diff --quiet --ignore-submodules -- 2>/dev/null; then
@@ -70,6 +98,7 @@ if [[ "${force_build}" != "1" && "${force_build}" != "true" && "${force_build}" 
         "${install_prefix}/bin/cert_ctrl"; do
         if [[ -f "${candidate}" ]]; then
           echo "No source changes detected; skipping build."
+          write_build_info "${install_prefix}" "${build_target}" "${git_head}" "${git_dirty}" "${submodule_dirty}"
           rm -f "${stamp_tmp}"
           exit 0
         fi
@@ -83,6 +112,8 @@ fi
   -DAUTORECONF="${AUTORECONF}"
 "${cmake_bin}" --build --preset macos-release --target "${build_target}"
 "${cmake_bin}" --install build/macos-release --prefix "${install_prefix}"
+
+write_build_info "${install_prefix}" "${build_target}" "${git_head}" "${git_dirty}" "${submodule_dirty}"
 
 if [[ -z "${stamp_tmp}" ]]; then
   mkdir -p "${build_dir}"

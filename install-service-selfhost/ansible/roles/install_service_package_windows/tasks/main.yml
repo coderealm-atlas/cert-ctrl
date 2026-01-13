@@ -6,12 +6,46 @@
       - install_service_install_prefix | length > 0
       - install_service_asset_name | length > 0
       - install_service_archive_ext | length > 0
+      - install_service_binary_basename | length > 0
     fail_msg: install_service_release_version, install_service_install_prefix, install_service_asset_name, and install_service_archive_ext are required
 
 - name: Verify built binary version matches release version
   win_shell: |
     $ErrorActionPreference = "Stop"
     $expected = "{{ install_service_release_version }}"
+
+    if ("{{ install_service_require_build_info | default(true) | bool }}" -eq "True") {
+      $manifest = Join-Path "{{ install_service_install_prefix }}" "build-info.json"
+      if (-not (Test-Path $manifest)) {
+        throw "build-info.json is required but missing under install prefix: {{ install_service_install_prefix }}"
+      }
+      try {
+        $info = Get-Content $manifest -Raw | ConvertFrom-Json
+      } catch {
+        throw "build-info.json exists but is not valid JSON: $manifest"
+      }
+      if (-not $info -or -not $info.git_describe) {
+        throw "build-info.json missing git_describe field: $manifest"
+      }
+      $actual = $info.git_describe.Trim()
+      if ($actual -ne $expected) {
+        throw ("build-info.json version mismatch: expected={0} actual={1} (manifest={2})" -f $expected, $actual, $manifest)
+      }
+      exit 0
+    }
+
+    $manifest = Join-Path "{{ install_service_install_prefix }}" "build-info.json"
+    if (Test-Path $manifest) {
+      try {
+        $info = Get-Content $manifest -Raw | ConvertFrom-Json
+        if ($info -and $info.git_describe -and ($info.git_describe.Trim() -eq $expected)) {
+          exit 0
+        }
+      } catch {
+        # fall back to executing the binary
+      }
+    }
+
     $candidates = @(
       "{{ install_service_install_prefix }}\\bin\\{{ install_service_binary_basename }}.exe",
       "{{ install_service_install_prefix }}\\bin\\cert_ctrl.exe",

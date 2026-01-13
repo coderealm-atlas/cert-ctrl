@@ -23,6 +23,7 @@ if (-not $BuildTarget) {
 $forceBuild = $env:INSTALL_SERVICE_FORCE_BUILD
 $reconfigCmake = $env:INSTALL_SERVICE_RECONFIG_CMAKE
 $stampFile = "build\\w64\\.install-service-build.stamp"
+$installPrefix = "install\\selfhost-windows"
 
 function Normalize-Lf {
   param([string]$Value)
@@ -48,12 +49,44 @@ function Get-GitStatus {
     SubmoduleDirty = $submoduleDirty
   }
 }
+
+function Write-BuildInfo {
+  param(
+    [string]$InstallPrefix,
+    [string]$BuildTarget,
+    $GitStatus
+  )
+
+  $describe = $null
+  try {
+    $describe = (git describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>$null).Trim()
+  } catch { }
+  if (-not $describe) {
+    try { $describe = (git describe --tags --long --dirty --abbrev=8 2>$null).Trim() } catch { }
+  }
+
+  $info = [ordered]@{
+    git_head        = $GitStatus.Head
+    git_describe    = $describe
+    git_dirty       = [bool]$GitStatus.Dirty
+    submodule_dirty = [bool]$GitStatus.SubmoduleDirty
+    build_target    = $BuildTarget
+    platform        = "windows"
+    timestamp_utc   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  }
+
+  if (-not (Test-Path $InstallPrefix)) {
+    New-Item -ItemType Directory -Path $InstallPrefix -Force | Out-Null
+  }
+  $outPath = Join-Path $InstallPrefix "build-info.json"
+  ($info | ConvertTo-Json -Depth 4) | Out-File -FilePath $outPath -Encoding utf8
+}
 # Note: Always run the CMake configure step before building (unless we early-exit
 # due to an unchanged stamp). This avoids stale configure-time metadata such as
 # version.h (git describe) when the repo updates.
 if ($forceBuild -and ($forceBuild -eq "1" -or $forceBuild -eq "true" -or $forceBuild -eq "True")) {
   Remove-Item -Recurse -Force "build\\w64" -ErrorAction SilentlyContinue
-  Remove-Item -Recurse -Force "install\\selfhost-windows" -ErrorAction SilentlyContinue
+  Remove-Item -Recurse -Force $installPrefix -ErrorAction SilentlyContinue
   $cmakeFresh = "--fresh"
 } else {
   $cmakeFresh = $null
@@ -84,7 +117,7 @@ $binaryName = $BuildTarget
 if (-not $binaryName.ToLower().EndsWith(".exe")) {
   $binaryName = "${binaryName}.exe"
 }
-$binaryPath = Join-Path "install\\selfhost-windows\\bin" $binaryName
+$binaryPath = Join-Path "$installPrefix\\bin" $binaryName
 if (-not $forceBuild -and -not $gitStatus.Dirty -and -not $gitStatus.SubmoduleDirty -and (Test-Path $stampFile) -and (Test-Path $binaryPath)) {
   $stampContent = "git_head=$($gitStatus.Head)`nsubmodules=$($gitStatus.Submodules)`n"
   $existing = Normalize-Lf (Get-Content $stampFile -Raw)
@@ -92,6 +125,7 @@ if (-not $forceBuild -and -not $gitStatus.Dirty -and -not $gitStatus.SubmoduleDi
   if ($existing -eq $expected) {
     if (-not $reconfigCmake -or ($reconfigCmake -ne "1" -and $reconfigCmake -ne "true" -and $reconfigCmake -ne "True")) {
       Write-Host "No source changes detected; skipping build."
+      Write-BuildInfo -InstallPrefix $installPrefix -BuildTarget $BuildTarget -GitStatus $gitStatus
       exit 0
     }
   }
@@ -110,8 +144,10 @@ if ($cmakeFresh) {
   cmake --preset w64
 }
 cmake --build --preset w64 --target $BuildTarget
-cmake --install build\w64 --config Release --prefix install\selfhost-windows
+cmake --install build\w64 --config Release --prefix $installPrefix
 
 $gitStatus = Get-GitStatus
 $stampContent = "git_head=$($gitStatus.Head)`nsubmodules=$($gitStatus.Submodules)`n"
 Set-Content -NoNewline -Path $stampFile -Value $stampContent
+
+Write-BuildInfo -InstallPrefix $installPrefix -BuildTarget $BuildTarget -GitStatus $gitStatus

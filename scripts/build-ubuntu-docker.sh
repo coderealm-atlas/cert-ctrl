@@ -80,6 +80,10 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 git_head="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+git_describe="$(git -C "${REPO_ROOT}" describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>/dev/null || true)"
+if [[ -z "${git_describe}" ]]; then
+  git_describe="$(git -C "${REPO_ROOT}" describe --tags --long --dirty --abbrev=8 2>/dev/null || true)"
+fi
 git_dirty="0"
 if ! git -C "${REPO_ROOT}" diff --quiet --ignore-submodules -- 2>/dev/null; then
   git_dirty="1"
@@ -91,6 +95,16 @@ submodule_status="$(git -C "${REPO_ROOT}" submodule status 2>/dev/null || true)"
 submodule_dirty="0"
 if printf "%s\n" "${submodule_status}" | grep -q '^[+-U]'; then
   submodule_dirty="1"
+fi
+
+# If HEAD changed since the last build, we must ensure the CMake configure step
+# refreshes generated version metadata (git-describe is typically captured at
+# configure time). Treat this as a reconfigure request.
+if [[ -f "${STAMP_FILE}" && "${FORCE_BUILD}" != "1" && "${FORCE_BUILD}" != "true" && "${FORCE_BUILD}" != "True" ]]; then
+  prev_head="$(sed -n 's/^git_head=//p' "${STAMP_FILE}" 2>/dev/null | head -n1 || true)"
+  if [[ -n "${git_head}" && -n "${prev_head}" && "${git_head}" != "${prev_head}" ]]; then
+    RECONFIG_CMAKE=1
+  fi
 fi
 
 if [[ "${FORCE_BUILD}" != "1" && "${FORCE_BUILD}" != "true" && "${FORCE_BUILD}" != "True" \
@@ -109,6 +123,19 @@ if [[ "${FORCE_BUILD}" != "1" && "${FORCE_BUILD}" != "true" && "${FORCE_BUILD}" 
       } > "${stamp_tmp}"
       if cmp -s "${stamp_tmp}" "${STAMP_FILE}"; then
         echo "[ubuntu-build] No source changes detected; skipping docker build."
+        mkdir -p "${HOST_INSTALL_PREFIX}"
+        ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+        cat > "${HOST_INSTALL_PREFIX}/build-info.json" <<EOF
+{
+  "git_head": "${git_head}",
+  "git_describe": "${git_describe}",
+  "git_dirty": ${git_dirty},
+  "submodule_dirty": ${submodule_dirty},
+  "build_target": "${BUILD_TARGET}",
+  "platform": "linux-ubuntu-docker",
+  "timestamp_utc": "${ts}"
+}
+EOF
         rm -f "${stamp_tmp}"
         exit 0
       fi
@@ -191,6 +218,20 @@ fi
 DOCKER_ARGS+=("${EXTRA_DOCKER_ENV[@]}")
 
 docker run "${DOCKER_ARGS[@]}" "${IMAGE_NAME}" bash -c "${RUN_CMD}"
+
+mkdir -p "${HOST_INSTALL_PREFIX}"
+ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+cat > "${HOST_INSTALL_PREFIX}/build-info.json" <<EOF
+{
+  "git_head": "${git_head}",
+  "git_describe": "${git_describe}",
+  "git_dirty": ${git_dirty},
+  "submodule_dirty": ${submodule_dirty},
+  "build_target": "${BUILD_TARGET}",
+  "platform": "linux-ubuntu-docker",
+  "timestamp_utc": "${ts}"
+}
+EOF
 
 mkdir -p "${HOST_BUILD_DIR}"
 {

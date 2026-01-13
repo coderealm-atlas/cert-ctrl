@@ -1,0 +1,30 @@
+---
+# Local smoke test: verify packaging prefers build-info.json over executing binaries.
+# Usage:
+#   ansible-playbook -i localhost, -c local playbooks/verify_local_package_posix.yml \
+#     -e release_version="$(git describe --tags --long --dirty --abbrev=8 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*')" \
+#     -e install_prefix=/abs/path/to/install/prefix
+#
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    install_service_release_version: "{{ release_version }}"
+    install_service_install_prefix: "{{ install_prefix }}"
+    install_service_asset_name: "{{ asset_name | default('local-test') }}"
+    install_service_archive_ext: "{{ archive_ext | default('.tar.gz') }}"
+    install_service_remote_staging_root: "{{ staging_root | default('/tmp/install-service-staging-local') }}"
+    install_service_binary_basename: "{{ binary_basename | default('cert_ctrl') }}"
+    install_service_repo_path: "{{ repo_path | default('') }}"
+
+  tasks:
+    - name: Verify variables provided
+      assert:
+        that:
+          - install_service_release_version | length > 0
+          - install_service_install_prefix | length > 0
+        fail_msg: "Pass -e release_version=... and -e install_prefix=/abs/path"
+
+    - name: Run POSIX packaging role locally
+      import_role:
+        name: install_service_package_posix

@@ -1,0 +1,4 @@
+---
+# When true, the role will set owner/group (requires privilege on POSIX).
+# Set false for local smoke-tests running without become.
+install_service_manage_ownership: true

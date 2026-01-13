@@ -39,8 +39,16 @@ if (-not $binaryPath) {
 $stagedBinary = Join-Path $tmpDir "$BinaryBasename.exe"
 Copy-Item $binaryPath $stagedBinary -Force
 
+$manifestPath = Join-Path $InstallPrefix "build-info.json"
+if (-not (Test-Path $manifestPath)) {
+  throw "build-info.json is required but missing under $InstallPrefix"
+}
+
+$stagedManifest = Join-Path $tmpDir "build-info.json"
+Copy-Item $manifestPath $stagedManifest -Force
+
 if (Test-Path $archivePath) { Remove-Item $archivePath -Force }
-Compress-Archive -Path $stagedBinary -DestinationPath $archivePath -Force
+Compress-Archive -Path (Join-Path $tmpDir "*") -DestinationPath $archivePath -Force
 
 $hash = (Get-FileHash -Algorithm SHA256 -Path $archivePath).Hash.ToLower()
 $shaLine = $hash + "  " + [System.IO.Path]::GetFileName($archivePath)

@@ -18,6 +18,33 @@ FORCE_BUILD="${INSTALL_SERVICE_FORCE_BUILD:-0}"
 RECONFIG_CMAKE="${INSTALL_SERVICE_RECONFIG_CMAKE:-0}"
 STAMP_FILE="${BUILD_DIR}/.install-service-build.stamp"
 
+write_build_info() {
+  local prefix="$1"
+  local target="$2"
+  local head="$3"
+  local dirty="$4"
+  local sub_dirty="$5"
+
+  local describe
+  describe="$(git -C "${REPO_ROOT}" describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>/dev/null || true)"
+  if [[ -z "${describe}" ]]; then
+    describe="$(git -C "${REPO_ROOT}" describe --tags --long --dirty --abbrev=8 2>/dev/null || true)"
+  fi
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  mkdir -p "${prefix}"
+  cat > "${prefix}/build-info.json" <<EOF
+{
+  "git_head": "${head}",
+  "git_describe": "${describe}",
+  "git_dirty": ${dirty},
+  "submodule_dirty": ${sub_dirty},
+  "build_target": "${target}",
+  "platform": "freebsd",
+  "timestamp_utc": "${ts}"
+}
+EOF
+}
+
 if [[ -n "${INSTALL_SERVICE_INSTALL_PREFIX:-}" ]]; then
   INSTALL_PREFIX="${INSTALL_SERVICE_INSTALL_PREFIX}"
 fi
@@ -89,6 +116,7 @@ if [[ "${FORCE_BUILD}" != "1" && "${FORCE_BUILD}" != "true" && "${FORCE_BUILD}" 
       } > "${stamp_tmp}"
       if cmp -s "${stamp_tmp}" "${STAMP_FILE}"; then
         echo "[freebsd-build] No source changes detected; skipping build."
+        write_build_info "${INSTALL_PREFIX}" "${BUILD_TARGET}" "${git_head}" "${git_dirty}" "${submodule_dirty}"
         rm -f "${stamp_tmp}"
         exit 0
       fi
@@ -176,6 +204,8 @@ cmake --build "${BUILD_DIR}" --target "${BUILD_TARGET}"
 
 echo "[freebsd-build] Installing to ${INSTALL_PREFIX}..."
 cmake --install "${BUILD_DIR}" --prefix "${INSTALL_PREFIX}"
+
+write_build_info "${INSTALL_PREFIX}" "${BUILD_TARGET}" "${git_head}" "${git_dirty}" "${submodule_dirty}"
 
 BIN_NAME="cert_ctrl"
 BIN_SRC="${INSTALL_PREFIX}/bin/${BIN_NAME}"

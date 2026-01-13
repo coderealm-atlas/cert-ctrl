@@ -91,24 +91,24 @@
   file:
     path: "{{ install_service_assets_root }}"
     state: directory
-    owner: "{{ install_service_owner }}"
-    group: "{{ install_service_group }}"
+    owner: "{{ (install_service_manage_ownership | default(true) | bool) | ternary(install_service_owner, omit) }}"
+    group: "{{ (install_service_manage_ownership | default(true) | bool) | ternary(install_service_group, omit) }}"
     mode: '0755'
 
 - name: Ensure releases root exists
   file:
     path: "{{ install_service_releases_root }}"
     state: directory
-    owner: "{{ install_service_owner }}"
-    group: "{{ install_service_group }}"
+    owner: "{{ (install_service_manage_ownership | default(true) | bool) | ternary(install_service_owner, omit) }}"
+    group: "{{ (install_service_manage_ownership | default(true) | bool) | ternary(install_service_group, omit) }}"
     mode: '0755'
 
 - name: Ensure release directory exists
   file:
     path: "{{ install_service_release_dir }}"
     state: directory
-    owner: "{{ install_service_owner }}"
-    group: "{{ install_service_group }}"
+    owner: "{{ (install_service_manage_ownership | default(true) | bool) | ternary(install_service_owner, omit) }}"
+    group: "{{ (install_service_manage_ownership | default(true) | bool) | ternary(install_service_group, omit) }}"
     mode: '0755'
 
 - name: Synchronize release assets
@@ -119,6 +119,7 @@
     delete: false
 
 - name: Fix release ownership
+  when: install_service_manage_ownership | default(true) | bool
   file:
     path: "{{ install_service_release_dir }}"
     state: directory
@@ -141,8 +142,8 @@
   template:
     src: latest.json.j2
     dest: "{{ install_service_assets_root }}/latest.json"
-    owner: "{{ install_service_owner }}"
-    group: "{{ install_service_group }}"
+    owner: "{{ (install_service_manage_ownership | default(true) | bool) | ternary(install_service_owner, omit) }}"
+    group: "{{ (install_service_manage_ownership | default(true) | bool) | ternary(install_service_group, omit) }}"
     mode: '0644'
 
 - name: Update latest release symlink

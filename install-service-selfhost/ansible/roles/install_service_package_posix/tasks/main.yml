@@ -6,7 +6,30 @@
       - install_service_install_prefix | length > 0
       - install_service_asset_name | length > 0
       - install_service_archive_ext | length > 0
+      - install_service_binary_basename | length > 0
     fail_msg: install_service_release_version, install_service_install_prefix, install_service_asset_name, and install_service_archive_ext are required
+
+- name: Read build manifest (strict)
+  when: install_service_require_build_info | default(true) | bool
+  block:
+    - name: Load build-info.json
+      slurp:
+        src: "{{ install_service_install_prefix }}/build-info.json"
+      register: install_service_build_info_slurp
+
+    - name: Parse build-info.json
+      set_fact:
+        install_service_build_info: "{{ install_service_build_info_slurp.content | b64decode | from_json }}"
+
+    - name: Verify build-info.json matches release version
+      assert:
+        that:
+          - install_service_build_info.git_describe is defined
+          - (install_service_build_info.git_describe | string | trim) == (install_service_release_version | string | trim)
+        fail_msg: >-
+          build-info.json mismatch under {{ install_service_install_prefix }}.
+          Expected git_describe={{ install_service_release_version }},
+          got git_describe={{ install_service_build_info.git_describe | default('') }}
 
 - name: Set staging paths
   set_fact:
@@ -23,61 +46,87 @@
     - "{{ install_service_release_dir }}"
     - "{{ install_service_package_tmp }}"
 
-- name: Locate installed binary
-  shell: |
-    set -eu
-    expected="{{ install_service_release_version }}"
-    asset_name="{{ install_service_asset_name }}"
-    is_musl=0
-    case "$asset_name" in
-      *musl*) is_musl=1 ;;
-    esac
+- name: Set candidate binary paths
+  set_fact:
+    install_service_binary_candidates: >-
+      {{
+        (
+          ([install_service_install_prefix ~ '/bin/' ~ (install_service_build_info.build_target | default('') | string | trim)]
+            if (install_service_build_info is defined and (install_service_build_info.build_target | default('') | string | trim | length > 0))
+            else [])
+          + [
+            install_service_install_prefix ~ '/bin/' ~ install_service_binary_basename,
+            install_service_install_prefix ~ '/bin/cert_ctrl',
+            install_service_install_prefix ~ '/' ~ install_service_binary_basename,
+            install_service_install_prefix ~ '/cert_ctrl'
+          ]
+        )
+      }}
 
-    get_ver() {
-      candidate="$1"
-      v=$("$candidate" --version 2>/dev/null | head -n1 | tr -d '\r' || true)
-      if [ -z "$v" ] && [ "$is_musl" = "1" ] && command -v docker >/dev/null 2>&1; then
-        cand_dir=$(dirname "$candidate")
-        cand_base=$(basename "$candidate")
-        v=$(docker run --rm -v "$cand_dir:/staged:ro" alpine:3.19 sh -lc "/staged/$cand_base --version 2>/dev/null | head -n1 | tr -d '\\r'" 2>/dev/null || true)
-      fi
-      printf '%s' "$v"
-    }
+- name: Stat candidate binaries
+  stat:
+    path: "{{ item }}"
+  loop: "{{ install_service_binary_candidates }}"
+  register: install_service_binary_candidate_stats
 
-    first_found=""
-    for candidate in \
-      "{{ install_service_install_prefix }}/bin/{{ install_service_binary_basename }}" \
-      "{{ install_service_install_prefix }}/bin/cert_ctrl" \
-      "{{ install_service_install_prefix }}/{{ install_service_binary_basename }}" \
-      "{{ install_service_install_prefix }}/cert_ctrl"; do
-      if [ -f "$candidate" ]; then
-        if [ -z "$first_found" ]; then
-          first_found="$candidate"
-        fi
-        # Prefer the candidate whose embedded version matches the release.
-        actual=$(get_ver "$candidate")
-        if [ -n "$actual" ] && [ "$actual" = "$expected" ]; then
-          echo "$candidate"
-          exit 0
-        fi
-      fi
-    done
-    if [ -n "$first_found" ]; then
-      echo "$first_found"
-      exit 0
-    fi
-    exit 1
-  register: install_service_binary_path
-  changed_when: false
+- name: Select first existing binary
+  set_fact:
+    install_service_binary_path_effective: >-
+      {{
+        (install_service_binary_candidate_stats.results
+          | selectattr('stat.exists')
+          | map(attribute='item')
+          | list
+          | first) | default('')
+      }}
+
+- name: Ensure installed binary exists
+  assert:
+    that:
+      - install_service_binary_path_effective | length > 0
+    fail_msg: >-
+      Unable to locate built binary under install prefix {{ install_service_install_prefix }}.
+      Candidates: {{ install_service_binary_candidates | join(', ') }}
+
+- name: Stage build info (if present)
+  copy:
+    src: "{{ install_service_install_prefix }}/build-info.json"
+    dest: "{{ install_service_package_tmp }}/build-info.json"
+    mode: '0644'
+    remote_src: true
+  ignore_errors: "{{ not (install_service_require_build_info | default(true) | bool) }}"
 
 - name: Stage binary for packaging
   copy:
-    src: "{{ install_service_binary_path.stdout }}"
+    src: "{{ install_service_binary_path_effective }}"
     dest: "{{ install_service_package_tmp }}/{{ install_service_binary_basename }}"
     mode: '0755'
     remote_src: true
 
+- name: Verify staged manifest matches release version (strict)
+  when: install_service_require_build_info | default(true) | bool
+  block:
+    - name: Load staged build-info.json
+      slurp:
+        src: "{{ install_service_package_tmp }}/build-info.json"
+      register: install_service_staged_build_info_slurp
+
+    - name: Parse staged build-info.json
+      set_fact:
+        install_service_staged_build_info: "{{ install_service_staged_build_info_slurp.content | b64decode | from_json }}"
+
+    - name: Assert staged build-info.json matches expected release version
+      assert:
+        that:
+          - install_service_staged_build_info.git_describe is defined
+          - (install_service_staged_build_info.git_describe | string | trim) == (install_service_release_version | string | trim)
+        fail_msg: >-
+          Staged build-info.json mismatch under {{ install_service_package_tmp }}.
+          Expected git_describe={{ install_service_release_version }},
+          got git_describe={{ install_service_staged_build_info.git_describe | default('') }}
+
 - name: Verify staged binary version matches release version
+  when: not (install_service_require_build_info | default(true) | bool)
   shell: |
     set -eu
     bin="{{ install_service_package_tmp }}/{{ install_service_binary_basename }}"
@@ -98,6 +147,20 @@
       fi
       printf '%s' "$v"
     }
+
+    manifest="{{ install_service_package_tmp }}/build-info.json"
+    if [ -f "$manifest" ]; then
+      mver=""
+      if command -v python3 >/dev/null 2>&1; then
+        mver=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])) or {}).get("git_describe",""))' "$manifest" 2>/dev/null || true)
+      fi
+      if [ -z "$mver" ]; then
+        mver=$(sed -n 's/.*"git_describe"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' "$manifest" | head -n1 || true)
+      fi
+      if [ -n "$mver" ] && [ "$mver" = "$expected" ]; then
+        exit 0
+      fi
+    fi
 
     actual=$(get_ver "$bin")
     if [ -z "$actual" ]; then
@@ -167,10 +230,10 @@
   changed_when: false
 
 - name: Create archive
-  command: >-
-    tar -czf "{{ install_service_archive_path }}"
-    -C "{{ install_service_package_tmp }}"
-    "{{ install_service_binary_basename }}"
+  shell: |
+    set -eu
+    tar -czf "{{ install_service_archive_path }}" -C "{{ install_service_package_tmp }}" .
+  changed_when: false
 
 - name: Generate checksum
   shell: |
