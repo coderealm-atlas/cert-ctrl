@@ -25,6 +25,7 @@
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "data/data_shape.hpp"
+#include <jwt-cpp/jwt.h>
 #include "handlers/i_handler.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "handlers/session_refresher.hpp"
@@ -242,6 +243,19 @@ public:
       });
     }
 
+    // Check if token is expired or expiring soon (within 60 seconds)
+    static constexpr std::chrono::seconds kSkew{60};
+    if (access_token_opt && !access_token_opt->empty() && 
+        allow_refresh_retry && is_jwt_expiring_soon(*access_token_opt, kSkew)) {
+      output_hub_.logger().info()
+          << "Access token is expired/expiring; attempting refresh before device notify."
+          << std::endl;
+      auto self = shared_from_this();
+      return refresh_access_token("device notify token expired").then([self]() {
+        return self->report_agent_version_once(false);
+      });
+    }
+
     if (!access_token_opt || access_token_opt->empty()) {
       output_hub_.logger().warning()
           << "Skipping agent version notify: no cached session tokens were found. "
@@ -311,6 +325,21 @@ public:
   }
 
 private:
+  bool is_jwt_expiring_soon(const std::string &token, std::chrono::seconds skew) const {
+    try {
+      auto decoded = jwt::decode(token);
+      if (!decoded.has_payload_claim("exp")) {
+        return false;
+      }
+      const auto exp_time = decoded.get_payload_claim("exp").as_date();
+      const auto now = std::chrono::system_clock::now();
+      return exp_time <= now + skew;
+    } catch (...) {
+      // If token cannot be decoded, treat it as unusable and attempt refresh.
+      return true;
+    }
+  }
+
   std::optional<std::string> load_access_token_from_state() {
     auto token = state_store_.get_access_token();
     if (token && !token->empty()) {

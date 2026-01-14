@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cctype>
 #include <cstring>
 #include <fmt/format.h>
@@ -51,7 +52,90 @@ namespace certctrl {
 
 namespace {
 
+// Password for the materialized PKCS#12 bundle (PFX), exposed to child
+// processes as an environment variable.
+//
+// What it is:
+// - When a cert is materialized, we may generate and persist a PKCS#12/PFX file
+//   (typically named bundle.pfx / bundle.p12 in the materialized resource).
+// - That file is encrypted with a random password; the password is stored in
+//   the in-memory password manager and injected into install actions/scripts.
+//
+// How to use it (examples):
+// - OpenSSL: `openssl pkcs12 -in bundle.pfx -passin env:CERTCTRL_PFX_PASSWORD`
+// - In shell scripts: read from `$CERTCTRL_PFX_PASSWORD`.
+//
+// Security notes:
+// - Treat this value as a secret; avoid printing it.
+// - The variable is set only for relevant cert-related events where the agent
+//   can resolve the cert_id and find the stored password.
 constexpr const char kPfxPasswordEnvVar[] = "CERTCTRL_PFX_PASSWORD";
+
+static std::optional<std::unordered_map<std::string, std::string>>
+resolve_after_update_script_env(
+    certctrl::install_actions::IMaterializePasswordManager &password_manager,
+    const ::data::DeviceUpdateSignal &signal) {
+  // For legacy exec cmd/cmd_argv, we inject CERTCTRL_PFX_PASSWORD when a cert
+  // PKCS#12 bundle is materialized. Keep parity for after_update_script so
+  // user scripts can import/decrypt the generated bundle without having to
+  // store passwords anywhere else.
+  auto parse_cert_id_from_ref = [&]() -> std::optional<std::int64_t> {
+    if (auto *v = signal.ref.if_contains("cert_id")) {
+      try {
+        if (v->is_int64()) {
+          return v->as_int64();
+        }
+        if (v->is_uint64()) {
+          return static_cast<std::int64_t>(v->as_uint64());
+        }
+        if (v->is_double()) {
+          return static_cast<std::int64_t>(v->as_double());
+        }
+        if (v->is_string()) {
+          const auto s = v->as_string();
+          std::string_view sv{s.data(), s.size()};
+          std::int64_t out{};
+          auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), out);
+          if (ec == std::errc{} && ptr == sv.data() + sv.size()) {
+            return out;
+          }
+        }
+      } catch (...) {
+      }
+    }
+    return std::nullopt;
+  };
+
+  std::optional<std::int64_t> cert_id;
+  if (signal.type == "cert.updated") {
+    if (auto typed = ::data::get_cert_updated(signal)) {
+      cert_id = typed->cert_id;
+    }
+  } else if (signal.type == "cert.unassigned") {
+    if (auto typed = ::data::get_cert_unassigned(signal)) {
+      cert_id = typed->cert_id;
+    }
+  }
+
+  // For forward-compatible/new signal types (e.g. cert.wrap_ready), try to
+  // extract cert_id directly from the raw ref object.
+  if (!cert_id) {
+    cert_id = parse_cert_id_from_ref();
+  }
+
+  if (!cert_id || *cert_id <= 0) {
+    return std::nullopt;
+  }
+
+  auto password = password_manager.lookup("cert", *cert_id);
+  if (!password || password->empty()) {
+    return std::nullopt;
+  }
+
+  std::unordered_map<std::string, std::string> env;
+  env.emplace(kPfxPasswordEnvVar, *password);
+  return env;
+}
 
 struct CertActionScanResult {
   bool has_matching_items{false};
@@ -268,7 +352,8 @@ persist_after_update_script_atomic(const std::filesystem::path &state_dir,
 #ifndef _WIN32
     std::filesystem::permissions(target,
                                  std::filesystem::perms::owner_read |
-                                     std::filesystem::perms::owner_write,
+                   std::filesystem::perms::owner_write |
+                   std::filesystem::perms::owner_exec,
                                  std::filesystem::perm_options::replace,
                                  ec);
 #endif
@@ -282,8 +367,10 @@ persist_after_update_script_atomic(const std::filesystem::path &state_dir,
 static std::optional<std::string>
 run_script_file_best_effort(const std::filesystem::path &script_path,
                             const std::string &variant_name,
-                            const std::string &event_name) {
+                            const std::string &event_name,
+                            const std::optional<std::unordered_map<std::string, std::string>> &extra_env) {
 #ifdef _WIN32
+  (void)extra_env;
   // On Windows, use a best-effort approach. We construct argv in a way that
   // avoids relying on shebang/executable bits.
   auto append_limited = [](std::string &dst, const char *data, std::size_t n) {
@@ -549,14 +636,25 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
     return out;
   };
 
-  std::vector<std::string> argv = {"sh", script_path.string(), event_name};
+  auto wants_bash = [&]() -> bool {
+    // Historically we ran scripts via `sh <script> <event>` regardless of
+    // shebang. That makes bash-only options (e.g. `set -o pipefail`) fail on
+    // distros where /bin/sh is dash. To be more forgiving, detect a bash
+    // shebang and prefer bash.
+    std::ifstream ifs(script_path);
+    if (!ifs.is_open()) {
+      return false;
+    }
+    std::string first_line;
+    std::getline(ifs, first_line);
+    if (first_line.rfind("#!", 0) != 0) {
+      return false;
+    }
+    auto lower = to_lower_copy(first_line);
+    return (lower.find("bash") != std::string::npos);
+  };
 
-  std::vector<char *> cargv;
-  cargv.reserve(argv.size() + 1);
-  for (auto &s : argv) {
-    cargv.push_back(const_cast<char *>(s.c_str()));
-  }
-  cargv.push_back(nullptr);
+  const bool use_bash = wants_bash();
 
   int out_pipe[2] = {-1, -1};
   int err_pipe[2] = {-1, -1};
@@ -595,8 +693,33 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
     close(err_pipe[0]);
     close(err_pipe[1]);
 
-    execvp(cargv[0], cargv.data());
-    _exit(127);
+    // Apply extra environment (best-effort). We intentionally do not clear the
+    // inherited environment for after_update_script.
+    if (extra_env) {
+      for (const auto &kv : *extra_env) {
+        if (!kv.first.empty()) {
+          ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+        }
+      }
+    }
+
+            // Prefer executing the script directly so the kernel honors its shebang
+            // (supports bash, dash, busybox, python, etc). Fall back to shells for
+            // cases like missing exec bit, CRLF shebang issues, or older persisted
+            // scripts.
+            execl(script_path.c_str(), script_path.c_str(), event_name.c_str(),
+              (char *)nullptr);
+
+            // If direct exec fails, try bash for bash-shebang scripts; otherwise sh.
+            // Note: if the interpreter referenced by the shebang is missing, direct
+            // exec will fail; falling back to sh may still work for POSIX scripts.
+            if (use_bash) {
+          execlp("bash", "bash", script_path.c_str(), event_name.c_str(),
+             (char *)nullptr);
+            }
+            execlp("sh", "sh", script_path.c_str(), event_name.c_str(),
+              (char *)nullptr);
+        _exit(127);
   }
 
   // Parent.
@@ -1693,8 +1816,10 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
       return ReturnIO::pure();
     }
 
+    const auto script_env =
+      resolve_after_update_script_env(password_manager_, signal);
     if (auto err = run_script_file_best_effort(script_path, variant_name,
-                                               signal.type)) {
+                           signal.type, script_env)) {
       BOOST_LOG_SEV(lg, trivial::warning)
           << "after_update_script execution failed for type=" << signal.type
           << " variant=" << variant_name << " error=" << *err;
@@ -1800,6 +1925,8 @@ InstallConfigManager::resolve_exec_env_for_item(const dto::InstallItem &item) {
   }
 
   std::unordered_map<std::string, std::string> env;
+  // Expose the generated PKCS#12/PFX password to legacy exec actions. Commands
+  // can consume it using `env:CERTCTRL_PFX_PASSWORD` (OpenSSL) or `$CERTCTRL_PFX_PASSWORD`.
   env.emplace(kPfxPasswordEnvVar, *password);
   return env;
 }
