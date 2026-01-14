@@ -270,6 +270,9 @@ private:
               int status = ex->response->result_int();
               std::string body = ex->response->body();
 
+                const bool wrap_pending =
+                  (status == 409 && body.find("WRAP_PENDING") != std::string::npos);
+
               if (status == 200) {
                 BOOST_LOG_SEV(lg, trivial::trace)
                     << "fetch_http_body succeeded for url=" << url
@@ -280,11 +283,13 @@ private:
 
               auto err = monad::make_error(
                   my_errors::NETWORK::READ_ERROR,
-                  fmt::format("Resource fetch HTTP {}", status));
+                  wrap_pending ? fmt::format("Resource fetch HTTP {} WRAP_PENDING",
+                                             status)
+                               : fmt::format("Resource fetch HTTP {}", status));
               err.response_status = status;
               err.params["response_body_preview"] = body.substr(0, 512);
 
-              if (status == 503) {
+              if (status == 503 || wrap_pending) {
                 BOOST_LOG_SEV(lg, trivial::warning)
                     << "fetch_http_body retry for url=" << url
                     << " context=" << context_label
@@ -299,7 +304,17 @@ private:
             });
 
     auto should_retry = [attempt_counter, kMaxAttempts](const monad::Error &err) {
-      return err.response_status == 503 && *attempt_counter < kMaxAttempts;
+      if (*attempt_counter >= kMaxAttempts) {
+        return false;
+      }
+      if (err.response_status == 503) {
+        return true;
+      }
+      if (err.response_status == 409 &&
+          err.what.find("WRAP_PENDING") != std::string::npos) {
+        return true;
+      }
+      return false;
     };
 
     return std::move(fetch_once)
