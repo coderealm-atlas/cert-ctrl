@@ -633,7 +633,70 @@ private:
   void ConfigureSsl() {
     if (config_.verify_tls) {
       try {
+        // Default verify paths work on many Unix-like systems, but on Windows
+        // OpenSSL builds often ship without a usable default CA bundle.
         ssl_ctx_.set_default_verify_paths();
+
+        bool loaded_any_ca = false;
+        for (const auto &path : config_.verify_paths) {
+          if (path.empty()) {
+            continue;
+          }
+          try {
+            std::error_code ec;
+            const bool is_dir = std::filesystem::is_directory(path, ec);
+            if (!ec && is_dir) {
+              ssl_ctx_.add_verify_path(path);
+            } else {
+              ssl_ctx_.load_verify_file(path);
+            }
+            loaded_any_ca = true;
+          } catch (const std::exception &ex) {
+            BOOST_LOG_SEV(client_.lg, trivial::warning)
+                << "Websocket TLS verify path load failed (path='" << path
+                << "'), continuing: " << ex.what();
+          }
+        }
+
+        // If no explicit verify_paths are configured, try a predictable bundled
+        // CA bundle name in the configured directories.
+        if (!loaded_any_ca && config_.verify_paths.empty()) {
+          std::vector<std::filesystem::path> candidates;
+          candidates.reserve(client_.config_sources_.paths_.size() * 2);
+          for (const auto &dir : client_.config_sources_.paths_) {
+            candidates.push_back(dir / "cacert.pem");
+            candidates.push_back(dir / "certs" / "cacert.pem");
+          }
+
+          for (const auto &candidate : candidates) {
+            std::error_code ec;
+            if (!std::filesystem::exists(candidate, ec) || ec) {
+              continue;
+            }
+            if (!std::filesystem::is_regular_file(candidate, ec) || ec) {
+              continue;
+            }
+            try {
+              ssl_ctx_.load_verify_file(candidate.string());
+              loaded_any_ca = true;
+              BOOST_LOG_SEV(client_.lg, trivial::info)
+                  << "Websocket loaded CA bundle: " << candidate.string();
+              break;
+            } catch (const std::exception &ex) {
+              BOOST_LOG_SEV(client_.lg, trivial::warning)
+                  << "Websocket CA bundle load failed (path='"
+                  << candidate.string() << "'), continuing: " << ex.what();
+            }
+          }
+
+          if (!loaded_any_ca) {
+            BOOST_LOG_SEV(client_.lg, trivial::warning)
+                << "Websocket TLS verification enabled but no CA bundle was loaded. "
+                   "On Windows/OpenSSL this commonly causes certificate verify failed. "
+                   "Fix by setting websocket_config.verify_paths or installing cacert.pem in the config/runtime dir.";
+          }
+        }
+
         ws_.next_layer().set_verify_mode(ssl::verify_peer);
       } catch (const std::exception &ex) {
         BOOST_LOG_SEV(client_.lg, trivial::warning)
@@ -1378,10 +1441,10 @@ void WebsocketClient::LogConfiguration(const WebsocketConfig &config) {
                      config.max_concurrent_requests,
                      config.max_payload_bytes);
   BOOST_LOG_SEV(lg, trivial::trace) << fmt::format(
-      "cfg ping={} timeout={} concurrent={} payload={}B verify_tls={}",
+      "cfg ping={} timeout={} concurrent={} payload={}B verify_tls={} verify_paths={}",
       config.ping_interval_seconds, config.request_timeout_seconds,
       config.max_concurrent_requests, config.max_payload_bytes,
-      config.verify_tls);
+      config.verify_tls, config.verify_paths.size());
 }
 
 void WebsocketClient::StartSession(WebsocketConfig config, bool allow_refresh) {

@@ -1773,7 +1773,7 @@ verify_installation() {
     
     if "$binary_path" --version &>/dev/null; then
         local version=$("$binary_path" --version 2>/dev/null | head -n1)
-        if [ -n "${VERSION:-}" ] && [ "$version" != "$VERSION" ]; then
+        if [ -n "\${VERSION:-}" ] && [ "$version" != "$VERSION" ]; then
             log_error "Installed binary version does not match requested version"
             log_error "  requested: $VERSION"
             log_error "  installed:  $version"

@@ -60,6 +60,7 @@ Once deployed, your service will provide:
 ```
 https://install.lets-script.com/
 ├── /                           # Service information
+├── /assets/cacert.pem           # CA bundle (PEM) for Windows OpenSSL builds
 ├── /install.sh                 # Unix installation script
 ├── /install.ps1                # Windows PowerShell script
 ├── /uninstall.sh               # Unix uninstallation script

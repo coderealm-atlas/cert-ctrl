@@ -3,6 +3,7 @@
     "remote_endpoint": "wss://api.cjj365.cc/api/websocket",
     "webhook_base_url": "https://api.cjj365.cc/hooks",
     "verify_tls": true,
+    "verify_paths": [],
     "request_timeout_seconds": 45,
     "ws_idle_timeout_seconds": 0,
     "ping_interval_seconds": 20,

@@ -78,6 +78,28 @@ To control GitHub publishing:
 ./deploy.sh --publish-github-release
 ```
 
+### Remote deploy (nginx + app + assets)
+
+If you already have assets staged locally under `assets-staging/` (or you ran the pipeline),
+use `publish.sh` to deploy the Express service and sync assets to the remote host defined in
+`ansible/inventory.yml`:
+
+```bash
+./publish.sh --action all --release-version-latest
+```
+
+Common variants:
+
+```bash
+# Only update app code (systemd service)
+./publish.sh --action deploy-app
+
+# Only sync assets for a specific version
+./publish.sh --action sync-assets --release-version v1.2.3
+```
+
+For details and prerequisites, see `ansible/README.md`.
+
 ## GitHub releases
 To publish assets from `assets-staging` directly:
 ```bash

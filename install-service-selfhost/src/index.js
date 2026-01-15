@@ -38,6 +38,8 @@ const corsHeaders = {
 const rateLimitBuckets = new Map();
 const analyticsStore = new Map();
 
+const DEFAULT_CA_BUNDLE_URL = process.env.CA_BUNDLE_URL || 'https://curl.se/ca/cacert.pem';
+
 app.use((req, res, next) => {
   res.set(corsHeaders);
   res.set('X-Content-Type-Options', 'nosniff');
@@ -82,6 +84,41 @@ app.get('/health', async (req, res) => {
 
   res.set('Cache-Control', 'no-store');
   res.json(status);
+});
+
+app.get('/assets/cacert.pem', rateLimiter, async (req, res) => {
+  const localPath = path.join(assetsRoot, 'cacert.pem');
+  try {
+    if (fsSync.existsSync(localPath)) {
+      const body = await fs.readFile(localPath, 'utf8');
+      res.set('Content-Type', 'application/x-pem-file; charset=utf-8');
+      res.set('Cache-Control', 'public, max-age=86400');
+      res.set('X-CA-Bundle-Source', 'local');
+      res.send(body);
+      return;
+    }
+  } catch (error) {
+    // Fall through to remote
+  }
+
+  try {
+    const upstream = await fetch(DEFAULT_CA_BUNDLE_URL, {
+      headers: {
+        'User-Agent': 'cert-ctrl-install-service-selfhost'
+      }
+    });
+    if (!upstream.ok) {
+      res.status(502).type('text/plain').send('CA bundle fetch failed');
+      return;
+    }
+    const body = await upstream.text();
+    res.set('Content-Type', 'application/x-pem-file; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.set('X-CA-Bundle-Source', DEFAULT_CA_BUNDLE_URL);
+    res.send(body);
+  } catch (error) {
+    res.status(502).type('text/plain').send('CA bundle fetch failed');
+  }
 });
 
 app.get(['/install.sh', '/install.ps1', '/install-macos.sh'], rateLimiter, async (req, res) => {

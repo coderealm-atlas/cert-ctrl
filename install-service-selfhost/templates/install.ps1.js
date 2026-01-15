@@ -237,6 +237,74 @@ Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
 
 New-Item -ItemType Directory -Force -Path $installPath | Out-Null
 
+# Prepare cert-ctrl default config/runtime directories.
+# cert-ctrl defaults:
+#   %ProgramData%\\certctrl\\config
+#   %ProgramData%\\certctrl\\runtime
+$programData = $env:ProgramData
+if ([string]::IsNullOrWhiteSpace($programData)) {
+    $programData = "C:\\ProgramData"
+}
+$defaultBaseDir = Join-Path $programData 'certctrl'
+$defaultConfigDir = Join-Path $defaultBaseDir 'config'
+$defaultRuntimeDir = Join-Path $defaultBaseDir 'runtime'
+
+try {
+    New-Item -ItemType Directory -Force -Path $defaultConfigDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $defaultRuntimeDir | Out-Null
+}
+catch {
+    Write-WarningMessage "Failed to create cert-ctrl default directories under ProgramData: $($_.Exception.Message)"
+}
+
+# Install a CA bundle for OpenSSL-based TLS verification on Windows.
+# The agent auto-detects 'cacert.pem' in config/runtime dirs when verify_paths is empty.
+$installedCaBundle = Join-Path $defaultConfigDir 'cacert.pem'
+if (-not (Test-Path $installedCaBundle)) {
+    $bundledCa = Join-Path $tempDir 'cacert.pem'
+    if (-not (Test-Path $bundledCa)) {
+        $bundledCa = Join-Path $tempDir 'certs\\cacert.pem'
+    }
+
+    if (Test-Path $bundledCa) {
+        try {
+            Copy-Item -Path $bundledCa -Destination $installedCaBundle -Force
+            Write-Info "Installed CA bundle to $installedCaBundle"
+        }
+        catch {
+            Write-WarningMessage "Failed to copy bundled cacert.pem to ProgramData: $($_.Exception.Message)"
+        }
+    }
+    else {
+        try {
+            Write-Info "Downloading CA bundle (cacert.pem) to enable TLS verification..."
+            $caUrlCandidates = @(
+                "{{BASE_URL}}/assets/cacert.pem",
+                'https://curl.se/ca/cacert.pem'
+            )
+            $downloaded = $false
+            foreach ($candidateUrl in $caUrlCandidates) {
+                try {
+                    Invoke-WebRequest -Uri $candidateUrl -OutFile $installedCaBundle -UseBasicParsing
+                    Write-Info "Downloaded CA bundle from $candidateUrl"
+                    $downloaded = $true
+                    break
+                }
+                catch {
+                    # Try next candidate
+                }
+            }
+            if (-not $downloaded) {
+                throw "All CA bundle download URLs failed"
+            }
+        }
+        catch {
+            Write-WarningMessage "Unable to install CA bundle automatically. WebSocket TLS verification may fail on Windows."
+            Write-Info "Fix: place a CA bundle at $installedCaBundle or set websocket_config.json verify_paths."
+        }
+    }
+}
+
 $binaryPath = Join-Path $tempDir 'cert-ctrl.exe'
 if (-not (Test-Path $binaryPath)) {
     $binaryPath = Join-Path $tempDir 'bin\\cert-ctrl.exe'

@@ -100,6 +100,9 @@ struct WebsocketConfig {
   std::string remote_endpoint{"wss://api.cjj365.cc/api/websocket"};
   std::string webhook_base_url{"https://api.cjj365.cc/hooks"};
   bool verify_tls{true};
+  // Extra CA bundle / directory paths to trust (primarily for Windows builds
+  // where OpenSSL may not have usable default verify paths).
+  std::vector<std::string> verify_paths{};
   int request_timeout_seconds{45};
   // Websocket stream idle timeout behavior:
   //   -1: disable websocket timeouts ("never expire")
@@ -130,6 +133,9 @@ struct WebsocketConfig {
       }
       if (auto *p = obj->if_contains("verify_tls")) {
         cfg.verify_tls = p->as_bool();
+      }
+      if (auto *p = obj->if_contains("verify_paths"); p && p->is_array()) {
+        cfg.verify_paths = boost::json::value_to<std::vector<std::string>>(*p);
       }
       if (auto *p = obj->if_contains("request_timeout_seconds")) {
         cfg.request_timeout_seconds = p->to_number<int>();
@@ -184,6 +190,7 @@ struct WebsocketConfig {
                              {"remote_endpoint", cfg.remote_endpoint},
                              {"webhook_base_url", cfg.webhook_base_url},
                              {"verify_tls", cfg.verify_tls},
+                             {"verify_paths", boost::json::value_from(cfg.verify_paths)},
                              {"request_timeout_seconds", cfg.request_timeout_seconds},
                              {"ws_idle_timeout_seconds", cfg.ws_idle_timeout_seconds},
                              {"ping_interval_seconds", cfg.ping_interval_seconds},

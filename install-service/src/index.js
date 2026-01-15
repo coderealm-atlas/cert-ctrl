@@ -5,6 +5,7 @@ import { versionHandler } from './handlers/version.js';
 import { proxyHandler } from './handlers/proxy.js';
 import { analyticsHandler } from './handlers/analytics.js';
 import { healthHandler } from './handlers/health.js';
+import { caBundleHandler } from './handlers/assets.js';
 import { rateLimiter } from './utils/rateLimit.js';
 import { corsHeaders, handleCORS } from './utils/cors.js';
 import { trackRequest } from './utils/analytics.js';
@@ -32,6 +33,9 @@ router.get('/uninstall-macos.sh', rateLimiter, uninstallHandler);
 router.get('/api/version/check', rateLimiter, versionHandler);
 router.get('/api/version/latest', rateLimiter, versionHandler);
 
+// Static-ish assets
+router.get('/assets/cacert.pem', rateLimiter, caBundleHandler);
+
 // GitHub proxy endpoints for releases
 router.get('/releases/proxy/:version/:filename', rateLimiter, proxyHandler);
 router.get('/releases/proxy/latest/:filename', rateLimiter, proxyHandler);
@@ -56,6 +60,7 @@ router.get('/', async (request, env) => {
       'Version Check': '/api/version/check',
       'Latest Version': '/api/version/latest',
       'Proxy Releases': '/releases/proxy/{version}/{filename}',
+      'CA Bundle': '/assets/cacert.pem',
       'Health Check': '/health'
     },
     usage: {
