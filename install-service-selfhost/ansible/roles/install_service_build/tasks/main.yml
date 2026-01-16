@@ -609,10 +609,21 @@
   shell: |
     set -eu
     log="{{ install_service_build_log_path }}"
-    tmp=$(mktemp 2>/dev/null || printf '/tmp/install-service-build.%s.log' "$$")
+    tmp=""
+    if command -v mktemp >/dev/null 2>&1; then
+      tmp=$(mktemp -t install-service-build.XXXXXX 2>/dev/null || true)
+      if [ -z "$tmp" ]; then
+        tmp=$(mktemp /tmp/install-service-build.XXXXXX 2>/dev/null || true)
+      fi
+    fi
+    if [ -z "$tmp" ]; then
+      tmp="/tmp/install-service-build.$$.$(date +%s 2>/dev/null || echo 0).log"
+    fi
+    set +e
     {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} >"$tmp" 2>&1
     rc=$?
-    cat "$tmp" | tee -a "$log"
+    set -e
+    cat "$tmp" | tee -a "$log" || true
     rm -f "$tmp" || true
     exit $rc
   args:
@@ -624,10 +635,21 @@
   shell: |
     set -eu
     log="{{ install_service_build_log_path }}"
-    tmp=$(mktemp 2>/dev/null || printf '/tmp/install-service-build.%s.log' "$$")
+    tmp=""
+    if command -v mktemp >/dev/null 2>&1; then
+      tmp=$(mktemp -t install-service-build.XXXXXX 2>/dev/null || true)
+      if [ -z "$tmp" ]; then
+        tmp=$(mktemp /tmp/install-service-build.XXXXXX 2>/dev/null || true)
+      fi
+    fi
+    if [ -z "$tmp" ]; then
+      tmp="/tmp/install-service-build.$$.$(date +%s 2>/dev/null || echo 0).log"
+    fi
+    set +e
     {{ item }} >"$tmp" 2>&1
     rc=$?
-    cat "$tmp" | tee -a "$log"
+    set -e
+    cat "$tmp" | tee -a "$log" || true
     rm -f "$tmp" || true
     exit $rc
   args:
