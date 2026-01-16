@@ -316,46 +316,108 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
         fmt::format("Payload is not valid JSON: {}", ex.what())));
   }
 
-  if (!payload.is_array()) {
+  // Backward compatible request payload:
+  // 1) Legacy: JSON array of patch objects
+  // 2) New: JSON object {"patches": [...], "after_update_script": "..."|null}
+  //
+  // Additionally, for older client payloads that send per-entry {"changes":{...}},
+  // we flatten those keys into the top-level patch object so the server can apply
+  // them (the server ignores unknown keys).
+  json::array* patches = nullptr;
+  bool after_update_script_present = false;
+  if (payload.is_array()) {
+    patches = &payload.as_array();
+  } else if (payload.is_object()) {
+    auto& obj = payload.as_object();
+    if (auto* patches_val = obj.if_contains("patches")) {
+      if (!patches_val->is_array()) {
+        return IO<void>::fail(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            "patches must be a JSON array"));
+      }
+      patches = &patches_val->as_array();
+    }
+    if (auto* script_val = obj.if_contains("after_update_script")) {
+      after_update_script_present = true;
+      if (!(script_val->is_null() || script_val->is_string())) {
+        return IO<void>::fail(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            "after_update_script must be a string or null"));
+      }
+    }
+
+    if (!patches && !after_update_script_present) {
+      return IO<void>::fail(monad::make_error(
+          my_errors::GENERAL::INVALID_ARGUMENT,
+          "Payload object must contain 'patches' and/or 'after_update_script'"));
+    }
+  } else {
     return IO<void>::fail(monad::make_error(
         my_errors::GENERAL::INVALID_ARGUMENT,
-        "Payload must be a JSON array of install steps."));
+        "Payload must be a JSON array or object"));
   }
 
-  auto &steps = payload.as_array();
-  for (std::size_t idx = 0; idx < steps.size(); ++idx) {
-    auto &entry = steps[idx];
-    if (!entry.is_object()) {
-      return IO<void>::fail(monad::make_error(
-          my_errors::GENERAL::INVALID_ARGUMENT,
-          fmt::format("Payload entry {} must be a JSON object.", idx)));
-    }
+  if (patches) {
+    for (std::size_t idx = 0; idx < patches->size(); ++idx) {
+      auto& entry = (*patches)[idx];
+      if (!entry.is_object()) {
+        return IO<void>::fail(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            fmt::format("Payload entry {} must be a JSON object.", idx)));
+      }
 
-    auto &obj = entry.as_object();
-    auto *ob_type = obj.if_contains("ob_type");
-    if (!ob_type || !ob_type->is_string() || ob_type->as_string().empty()) {
-      return IO<void>::fail(monad::make_error(
-          my_errors::GENERAL::INVALID_ARGUMENT,
-          fmt::format("Payload entry {} missing non-empty ob_type.", idx)));
-    }
+      auto& patch_obj = entry.as_object();
+      auto* ob_type = patch_obj.if_contains("ob_type");
+      if (!ob_type || !ob_type->is_string() || ob_type->as_string().empty()) {
+        return IO<void>::fail(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            fmt::format("Payload entry {} missing non-empty ob_type.", idx)));
+      }
 
-    auto *ob_id = obj.if_contains("ob_id");
-    if (!ob_id || !(ob_id->is_int64() || ob_id->is_uint64())) {
-      return IO<void>::fail(monad::make_error(
-          my_errors::GENERAL::INVALID_ARGUMENT,
-          fmt::format("Payload entry {} missing numeric ob_id.", idx)));
-    }
+      auto* ob_id = patch_obj.if_contains("ob_id");
+      if (!ob_id || !(ob_id->is_int64() || ob_id->is_uint64())) {
+        return IO<void>::fail(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            fmt::format("Payload entry {} missing numeric ob_id.", idx)));
+      }
 
-    std::int64_t ob_id_value = 0;
-    if (ob_id->is_int64()) {
-      ob_id_value = ob_id->as_int64();
-    } else if (ob_id->is_uint64()) {
-      ob_id_value = static_cast<std::int64_t>(ob_id->as_uint64());
-    }
-    if (ob_id_value <= 0) {
-      return IO<void>::fail(monad::make_error(
-          my_errors::GENERAL::INVALID_ARGUMENT,
-          fmt::format("Payload entry {} has invalid ob_id (must be > 0).", idx)));
+      std::int64_t ob_id_value = 0;
+      if (ob_id->is_int64()) {
+        ob_id_value = ob_id->as_int64();
+      } else if (ob_id->is_uint64()) {
+        ob_id_value = static_cast<std::int64_t>(ob_id->as_uint64());
+      }
+      if (ob_id_value <= 0) {
+        return IO<void>::fail(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            fmt::format("Payload entry {} has invalid ob_id (must be > 0).", idx)));
+      }
+
+      // Auto-flatten legacy per-entry {"changes":{...}} into top-level patch fields.
+      if (auto* changes_val = patch_obj.if_contains("changes")) {
+        if (!changes_val->is_object()) {
+          return IO<void>::fail(monad::make_error(
+              my_errors::GENERAL::INVALID_ARGUMENT,
+              fmt::format("Payload entry {} has non-object changes.", idx)));
+        }
+        auto& changes_obj = changes_val->as_object();
+        for (auto& kv : changes_obj) {
+          if (!patch_obj.if_contains(kv.key())) {
+            patch_obj[kv.key()] = kv.value();
+          }
+        }
+        patch_obj.erase("changes");
+      }
+
+      // "details" is legacy-only metadata and is not used by the server.
+      if (auto* details_val = patch_obj.if_contains("details")) {
+        if (!details_val->is_object()) {
+          return IO<void>::fail(monad::make_error(
+              my_errors::GENERAL::INVALID_ARGUMENT,
+              fmt::format("Payload entry {} has non-object details.", idx)));
+        }
+        patch_obj.erase("details");
+      }
     }
   }
 
