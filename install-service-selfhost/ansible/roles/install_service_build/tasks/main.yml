@@ -589,7 +589,13 @@
   when: not install_service_is_windows and install_service_build_script_path | default('') | length > 0
   shell: |
     set -eu
-    {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} >> "{{ install_service_build_log_path }}" 2>&1
+    log="{{ install_service_build_log_path }}"
+    tmp=$(mktemp 2>/dev/null || printf '/tmp/install-service-build.%s.log' "$$")
+    {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} >"$tmp" 2>&1
+    rc=$?
+    cat "$tmp" | tee -a "$log"
+    rm -f "$tmp" || true
+    exit $rc
   args:
     chdir: "{{ install_service_repo_path }}"
   environment: "{{ install_service_env_effective | combine({'INSTALL_SERVICE_REPO_PATH': install_service_repo_path}) }}"
@@ -598,7 +604,13 @@
   when: not install_service_is_windows and install_service_build_script_path | default('') | length == 0
   shell: |
     set -eu
-    {{ item }} >> "{{ install_service_build_log_path }}" 2>&1
+    log="{{ install_service_build_log_path }}"
+    tmp=$(mktemp 2>/dev/null || printf '/tmp/install-service-build.%s.log' "$$")
+    {{ item }} >"$tmp" 2>&1
+    rc=$?
+    cat "$tmp" | tee -a "$log"
+    rm -f "$tmp" || true
+    exit $rc
   args:
     chdir: "{{ install_service_repo_path }}"
   environment: "{{ install_service_env_effective }}"
