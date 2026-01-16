@@ -61,10 +61,21 @@ run_github_release="false"  # Whether to create GitHub release after build
 github_release_override="false"  # Flag to override default GitHub release behavior
 reconfig_cmake="false"      # Whether to force CMake reconfiguration
 skip_preflight="false"      # Skip preflight checks (only for publishing)
+preflight_docker_pull="false"  # Whether preflight should docker pull base images
 
 preflight_publish() {
   local repo_root
   repo_root="$(cd "${ROOT_DIR}/.." && pwd)"
+
+  run_with_timeout() {
+    local seconds="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "${seconds}s" "$@"
+    else
+      "$@"
+    fi
+  }
 
   echo "[preflight] Checking git state..." >&2
   if ! git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -116,20 +127,30 @@ preflight_publish() {
     return 1
   fi
 
-  # These pulls catch common auth/rate-limit/proxy issues early.
-  echo "[preflight] Pulling required Docker images..." >&2
-  if ! docker pull alpine:3.20 >/dev/null; then
-    echo "error: failed to pull alpine:3.20" >&2
-    return 1
-  fi
-  if ! docker pull ubuntu:22.04 >/dev/null; then
-    echo "error: failed to pull ubuntu:22.04" >&2
-    return 1
-  fi
-  if ! docker pull docker/dockerfile:1 >/dev/null; then
-    echo "error: failed to pull docker/dockerfile:1 (BuildKit frontend)." >&2
-    echo "hint: check docker login/logout, registry auth, or corporate proxy settings." >&2
-    return 1
+  # Pulling images can hang behind some proxy setups; keep this optional.
+  if [[ "${preflight_docker_pull}" == "true" ]]; then
+    # These pulls catch common auth/rate-limit/proxy issues early.
+    echo "[preflight] Pulling required Docker images (timeout 30s each)..." >&2
+    if ! run_with_timeout 30 docker pull alpine:3.20 >/dev/null; then
+      echo "error: failed (or timed out) pulling alpine:3.20" >&2
+      echo "hint: try setting docker proxy settings or rerun with --skip-preflight." >&2
+      return 1
+    fi
+    if ! run_with_timeout 30 docker pull ubuntu:22.04 >/dev/null; then
+      echo "error: failed (or timed out) pulling ubuntu:22.04" >&2
+      echo "hint: try setting docker proxy settings or rerun with --skip-preflight." >&2
+      return 1
+    fi
+    # Only check the BuildKit frontend when BuildKit is explicitly enabled.
+    if [[ "${docker_buildkit:-}" == "1" || "${docker_buildkit:-}" == "true" ]]; then
+      if ! run_with_timeout 30 docker pull docker/dockerfile:1 >/dev/null; then
+        echo "error: failed (or timed out) pulling docker/dockerfile:1 (BuildKit frontend)." >&2
+        echo "hint: disable BuildKit via --docker-buildkit 0, or fix registry auth/proxy." >&2
+        return 1
+      fi
+    fi
+  else
+    echo "[preflight] Skipping Docker image pulls (use --preflight-docker-pull to enable)." >&2
   fi
 
   echo "[preflight] OK" >&2
@@ -176,6 +197,8 @@ Options
            Skip fetching git tags on remote build hosts
   --skip-preflight
            Skip preflight checks (only relevant with --publish-github-release)
+  --preflight-docker-pull
+           Also docker pull base images during preflight (can be slow behind proxies)
   -h|--help
            Show this help message
 
@@ -300,6 +323,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-preflight)
       skip_preflight="true"
+      shift
+      ;;
+    --preflight-docker-pull)
+      preflight_docker_pull="true"
       shift
       ;;
     -h|--help)
