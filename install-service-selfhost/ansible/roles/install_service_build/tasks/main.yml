@@ -585,19 +585,21 @@
 - name: Run build script (POSIX)
   when: not install_service_is_windows and install_service_build_script_path | default('') | length > 0
   shell: |
-    if (set -o pipefail) 2>/dev/null; then :; fi
+    set -euo pipefail
     {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} 2>&1 | tee -a "{{ install_service_build_log_path }}"
   args:
     chdir: "{{ install_service_repo_path }}"
+    executable: /bin/bash
   environment: "{{ install_service_env_effective | combine({'INSTALL_SERVICE_REPO_PATH': install_service_repo_path}) }}"
 
 - name: Run build commands
   when: not install_service_is_windows and install_service_build_script_path | default('') | length == 0
   shell: |
-    if (set -o pipefail) 2>/dev/null; then :; fi
+    set -euo pipefail
     {{ item }} 2>&1 | tee -a "{{ install_service_build_log_path }}"
   args:
     chdir: "{{ install_service_repo_path }}"
+    executable: /bin/bash
   environment: "{{ install_service_env_effective }}"
   loop: "{{ install_service_build_commands }}"
 

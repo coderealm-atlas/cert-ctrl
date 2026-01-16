@@ -28,6 +28,75 @@
   hosts: build_linux_docker
   vars_files:
     - ../vars.yml
+  pre_tasks:
+    - name: Determine release version on Docker build host
+      when: install_service_release_version | length == 0
+      shell: |
+        set -eu
+        cd "{{ install_service_repo_path }}"
+        describe=$(git describe --tags --long --dirty --abbrev=8 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" 2>/dev/null || true)
+        if [ -n "$describe" ]; then
+          tag="$describe"
+        else
+          short_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+          commit_count=$(git rev-list --count HEAD 2>/dev/null || true)
+          if [ -n "$short_sha" ] && [ -n "$commit_count" ]; then
+            tag="v0.0.${commit_count}-${short_sha}"
+            if ! git diff --quiet HEAD 2>/dev/null; then
+              tag="${tag}-dirty"
+            fi
+          fi
+        fi
+        if [ -z "${tag:-}" ]; then
+          tag="v0.0.0-unknown"
+        fi
+        if [ "{{ install_service_force_clean_git_describe | default(false) | bool | lower }}" = "true" ]; then
+          tag=$(printf '%s' "$tag" | sed -E 's/-dirty$//')
+        fi
+        printf '%s\n' "$tag"
+      register: install_service_release_version_cmd
+      changed_when: false
+
+    - name: Set release version from git describe (Docker host)
+      when: install_service_release_version | length == 0
+      set_fact:
+        install_service_release_version: "{{ install_service_release_version_cmd.stdout | trim }}"
+
+    - name: Detect stale local install prefixes (build-info mismatch)
+      shell: |
+        set -eu
+        manifest="{{ install_service_repo_path }}/{{ docker_job.install_prefix }}/build-info.json"
+        expected="{{ install_service_release_version | trim }}"
+        if [ ! -f "$manifest" ]; then
+          exit 2
+        fi
+        if command -v python3 >/dev/null 2>&1; then
+          actual=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])) or {}).get("git_describe",""))' "$manifest" 2>/dev/null || true)
+        else
+          actual=$(sed -n 's/.*"git_describe"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' "$manifest" | head -n1 || true)
+        fi
+        if [ -z "$actual" ]; then
+          exit 3
+        fi
+        if [ "$actual" != "$expected" ]; then
+          exit 4
+        fi
+      args:
+        chdir: "{{ install_service_repo_path }}"
+      loop: "{{ install_service_linux_docker_jobs }}"
+      loop_control:
+        loop_var: docker_job
+      register: install_service_prefix_freshness
+      changed_when: false
+      failed_when: false
+
+    - name: Force rebuild when local install prefix is stale
+      when: >-
+        (install_service_prefix_freshness is defined)
+        and ((install_service_prefix_freshness.results | selectattr('rc', 'ne', 0) | list | length) > 0)
+      set_fact:
+        install_service_force_build: true
+
   roles:
     - install_service_build
   tasks:

@@ -60,6 +60,80 @@ run_publish="false"         # Whether to run publish.sh after build
 run_github_release="false"  # Whether to create GitHub release after build
 github_release_override="false"  # Flag to override default GitHub release behavior
 reconfig_cmake="false"      # Whether to force CMake reconfiguration
+skip_preflight="false"      # Skip preflight checks (only for publishing)
+
+preflight_publish() {
+  local repo_root
+  repo_root="$(cd "${ROOT_DIR}/.." && pwd)"
+
+  echo "[preflight] Checking git state..." >&2
+  if ! git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "error: not a git repository: $repo_root" >&2
+    return 1
+  fi
+
+  # Publishing should be based on pushed sources.
+  local dirty_lines
+  dirty_lines="$(git -C "$repo_root" status --porcelain || true)"
+  if [[ -n "$dirty_lines" ]]; then
+    echo "error: repository has uncommitted changes; commit before publishing." >&2
+    echo "debug: dirty files:" >&2
+    printf '%s\n' "$dirty_lines" >&2
+    return 1
+  fi
+
+  # Ensure HEAD is pushed to upstream (if upstream exists).
+  if git -C "$repo_root" rev-parse --abbrev-ref @{u} >/dev/null 2>&1; then
+    local head upstream
+    head="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)"
+    upstream="$(git -C "$repo_root" rev-parse @{u} 2>/dev/null || true)"
+    if [[ -n "$head" && -n "$upstream" && "$head" != "$upstream" ]]; then
+      echo "error: HEAD is not pushed to upstream; remote build hosts won't see your latest commit." >&2
+      echo "hint: run: git push" >&2
+      echo "debug: HEAD=$head" >&2
+      echo "debug: upstream=$upstream" >&2
+      return 1
+    fi
+  fi
+
+  echo "[preflight] Checking GitHub connectivity..." >&2
+  if command -v curl >/dev/null 2>&1; then
+    if ! curl -fsSLI --connect-timeout 10 --max-time 20 https://github.com >/dev/null; then
+      echo "error: cannot reach https://github.com from this machine (proxy/DNS/network)." >&2
+      return 1
+    fi
+  else
+    echo "warning: curl not found; skipping GitHub connectivity check." >&2
+  fi
+
+  echo "[preflight] Checking Docker availability..." >&2
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "error: docker not found; required for linux-docker builds." >&2
+    return 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "error: docker daemon not reachable (is it running? permissions?)." >&2
+    return 1
+  fi
+
+  # These pulls catch common auth/rate-limit/proxy issues early.
+  echo "[preflight] Pulling required Docker images..." >&2
+  if ! docker pull alpine:3.20 >/dev/null; then
+    echo "error: failed to pull alpine:3.20" >&2
+    return 1
+  fi
+  if ! docker pull ubuntu:22.04 >/dev/null; then
+    echo "error: failed to pull ubuntu:22.04" >&2
+    return 1
+  fi
+  if ! docker pull docker/dockerfile:1 >/dev/null; then
+    echo "error: failed to pull docker/dockerfile:1 (BuildKit frontend)." >&2
+    echo "hint: check docker login/logout, registry auth, or corporate proxy settings." >&2
+    return 1
+  fi
+
+  echo "[preflight] OK" >&2
+}
 
 usage() {
   cat <<'EOF'
@@ -100,6 +174,8 @@ Options
            Skip git pull on remote build hosts
   --skip-git-fetch-tags
            Skip fetching git tags on remote build hosts
+  --skip-preflight
+           Skip preflight checks (only relevant with --publish-github-release)
   -h|--help
            Show this help message
 
@@ -222,6 +298,10 @@ while [[ $# -gt 0 ]]; do
       extra_vars+=("install_service_skip_git_fetch_tags=true")
       shift
       ;;
+    --skip-preflight)
+      skip_preflight="true"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -237,6 +317,23 @@ done
 # Pass release version to Ansible if specified
 if [[ -n "$release_version" && "$release_version" != "latest" ]]; then
   extra_vars+=("install_service_release_version=$release_version")
+fi
+
+# If publishing a GitHub release and the caller did not provide an explicit
+# release version, derive it from the controller repo and pass it to Ansible.
+# This ensures all build hosts check out the same commit and avoids version
+# skew between build-info.json and the expected release string.
+if [[ "$run_github_release" == "true" && -z "${release_version}" ]]; then
+  repo_root="$(cd "${ROOT_DIR}/.." && pwd)"
+  if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    release_version="$(git -C "$repo_root" describe --tags --long --dirty --abbrev=8 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' 2>/dev/null || true)"
+    if [[ -z "$release_version" ]]; then
+      release_version="$(git -C "$repo_root" describe --tags --long --dirty --abbrev=8 2>/dev/null || true)"
+    fi
+    if [[ -n "$release_version" ]]; then
+      extra_vars+=("install_service_release_version=$release_version")
+    fi
+  fi
 fi
 
 # Pass CMake reconfiguration flag to Ansible if requested
@@ -272,6 +369,9 @@ fi
 # mismatched version strings (e.g. expected "...-dirty" but built binaries are
 # clean).
 if [[ "$run_github_release" == "true" ]]; then
+  if [[ "$skip_preflight" != "true" ]]; then
+    preflight_publish
+  fi
   if [[ "$release_version" == *-dirty ]]; then
     echo "error: refusing to publish a GitHub release for a -dirty version ($release_version)." >&2
     echo "hint: commit/push your changes, then rerun without -dirty." >&2
