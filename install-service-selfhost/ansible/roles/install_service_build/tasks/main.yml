@@ -225,8 +225,20 @@
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
     '{{ install_service_ps_env_block }}git clone --depth 1 "{{ install_service_repo_url }}" "{{ install_service_repo_path }}"'
 
+- name: Detect detached HEAD (POSIX)
+  when: not install_service_is_windows and install_service_repo_stat.stat.exists
+  shell: git -C "{{ install_service_repo_path }}" symbolic-ref -q HEAD
+  register: install_service_git_symbolic_ref_posix
+  changed_when: false
+  failed_when: false
+
+- name: Set repo-on-branch flag (POSIX)
+  when: not install_service_is_windows and install_service_repo_stat.stat.exists
+  set_fact:
+    install_service_repo_on_branch: "{{ (install_service_git_symbolic_ref_posix.rc | default(1)) == 0 }}"
+
 - name: Update repository (POSIX)
-  when: not install_service_is_windows and not install_service_skip_git_pull | bool and install_service_repo_stat.stat.exists
+  when: not install_service_is_windows and not install_service_skip_git_pull | bool and install_service_repo_stat.stat.exists and (install_service_repo_on_branch | default(true) | bool)
   block:
     - name: Update repository (POSIX, proxy)
       shell: git {{ install_service_git_low_speed_args }} -C "{{ install_service_repo_path }}" pull --ff-only
@@ -250,6 +262,13 @@
       until: install_service_git_pull_posix.rc == 0
       changed_when: false
       environment: "{{ install_service_env_no_proxy }}"
+
+- name: Skip git pull when repo is detached (POSIX)
+  when: not install_service_is_windows and not install_service_skip_git_pull | bool and install_service_repo_stat.stat.exists and not (install_service_repo_on_branch | default(true) | bool)
+  debug:
+    msg: >-
+      Skipping 'git pull' because {{ install_service_repo_path }} is in detached HEAD state.
+      This is expected when building a specific release tag/commit.
 
 - name: Update repository (Windows)
   when: install_service_is_windows and not install_service_skip_git_pull | bool and install_service_repo_git_win.rc == 0
