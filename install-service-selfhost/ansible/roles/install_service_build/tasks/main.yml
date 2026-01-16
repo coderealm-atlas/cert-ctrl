@@ -310,10 +310,13 @@
   set_fact:
     install_service_release_git_sha: >-
       {{
-        (install_service_release_version | trim)
-        | regex_search('g([0-9a-fA-F]{7,40})$', '\\1')
-        | default('')
-        | lower
+        (
+          ((install_service_release_version | trim)
+            | regex_findall('g([0-9a-fA-F]{7,40})$')
+            | first
+            | default(''))
+          | lower
+        )
       }}
 
 - name: Detect shallow git clone (POSIX)
@@ -585,21 +588,19 @@
 - name: Run build script (POSIX)
   when: not install_service_is_windows and install_service_build_script_path | default('') | length > 0
   shell: |
-    set -euo pipefail
-    {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} 2>&1 | tee -a "{{ install_service_build_log_path }}"
+    set -eu
+    {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} >> "{{ install_service_build_log_path }}" 2>&1
   args:
     chdir: "{{ install_service_repo_path }}"
-    executable: /bin/bash
   environment: "{{ install_service_env_effective | combine({'INSTALL_SERVICE_REPO_PATH': install_service_repo_path}) }}"
 
 - name: Run build commands
   when: not install_service_is_windows and install_service_build_script_path | default('') | length == 0
   shell: |
-    set -euo pipefail
-    {{ item }} 2>&1 | tee -a "{{ install_service_build_log_path }}"
+    set -eu
+    {{ item }} >> "{{ install_service_build_log_path }}" 2>&1
   args:
     chdir: "{{ install_service_repo_path }}"
-    executable: /bin/bash
   environment: "{{ install_service_env_effective }}"
   loop: "{{ install_service_build_commands }}"
 
