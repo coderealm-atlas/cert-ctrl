@@ -23,3 +23,8 @@ install_service_auto_force_build_on_release_version: true
 install_service_checkout_release_ref: true
 install_service_force_submodule_update: false
 install_service_reconfig_cmake: false
+
+# When true, a POSIX build failure that looks like a vcpkg registry/cache issue
+# (e.g. many "<port> does not exist" lines) will trigger a one-time cache cleanup
+# and a forced rebuild retry.
+install_service_vcpkg_auto_recover: false

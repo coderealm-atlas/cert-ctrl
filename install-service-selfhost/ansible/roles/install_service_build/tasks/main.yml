@@ -606,29 +606,102 @@
 
 - name: Run build script (POSIX)
   when: not install_service_is_windows and install_service_build_script_path | default('') | length > 0
-  shell: |
-    set -eu
-    log="{{ install_service_build_log_path }}"
-    tmp=""
-    if command -v mktemp >/dev/null 2>&1; then
-      tmp=$(mktemp -t install-service-build.XXXXXX 2>/dev/null || true)
-      if [ -z "$tmp" ]; then
-        tmp=$(mktemp /tmp/install-service-build.XXXXXX 2>/dev/null || true)
-      fi
-    fi
-    if [ -z "$tmp" ]; then
-      tmp="/tmp/install-service-build.$$.$(date +%s 2>/dev/null || echo 0).log"
-    fi
-    set +e
-    {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} >"$tmp" 2>&1
-    rc=$?
-    set -e
-    cat "$tmp" | tee -a "$log" || true
-    rm -f "$tmp" || true
-    exit $rc
-  args:
-    chdir: "{{ install_service_repo_path }}"
-  environment: "{{ install_service_env_effective | combine({'INSTALL_SERVICE_REPO_PATH': install_service_repo_path}) }}"
+  block:
+    - name: Run build script attempt
+      shell: |
+        set -eu
+        log="{{ install_service_build_log_path }}"
+        tmp=""
+        if command -v mktemp >/dev/null 2>&1; then
+          tmp=$(mktemp -t install-service-build.XXXXXX 2>/dev/null || true)
+          if [ -z "$tmp" ]; then
+            tmp=$(mktemp /tmp/install-service-build.XXXXXX 2>/dev/null || true)
+          fi
+        fi
+        if [ -z "$tmp" ]; then
+          tmp="/tmp/install-service-build.$$.$(date +%s 2>/dev/null || echo 0).log"
+        fi
+        set +e
+        {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} >"$tmp" 2>&1
+        rc=$?
+        set -e
+        cat "$tmp" | tee -a "$log" || true
+        rm -f "$tmp" || true
+        exit $rc
+      args:
+        chdir: "{{ install_service_repo_path }}"
+      environment: "{{ install_service_env_effective | combine({'INSTALL_SERVICE_REPO_PATH': install_service_repo_path}) }}"
+  rescue:
+    - name: Detect vcpkg registry/cache corruption signature
+      when: install_service_vcpkg_auto_recover | default(false) | bool
+      shell: |
+        set -eu
+        repo="{{ install_service_repo_path }}"
+        # Heuristic: when the registry fetch fails or is corrupted, vcpkg reports many "<port> does not exist" lines.
+        candidates=(
+          "$repo/build/macos-release/vcpkg-manifest-install.log"
+          "$repo/build/release/vcpkg-manifest-install.log"
+        )
+        for f in "${candidates[@]}"; do
+          if [ -f "$f" ] && grep -q ' does not exist' "$f"; then
+            echo "$f"
+            exit 0
+          fi
+        done
+        exit 1
+      register: install_service_vcpkg_corrupt_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Clear vcpkg registry caches (one-time)
+      when: (install_service_vcpkg_auto_recover | default(false) | bool) and (install_service_vcpkg_corrupt_probe.rc | default(1)) == 0
+      shell: |
+        set -eu
+        echo "[recover] clearing vcpkg registry caches" >&2
+        rm -rf "$HOME/Library/Caches/vcpkg/registries" "$HOME/.cache/vcpkg/registries" || true
+        # Also clear per-build installed artifacts so the retry does a clean vcpkg run.
+        rm -rf "{{ install_service_repo_path }}/build/macos-release/vcpkg_installed" || true
+      changed_when: true
+
+    - name: Retry build script with forced rebuild
+      when: (install_service_vcpkg_auto_recover | default(false) | bool) and (install_service_vcpkg_corrupt_probe.rc | default(1)) == 0
+      shell: |
+        set -eu
+        log="{{ install_service_build_log_path }}"
+        tmp=""
+        if command -v mktemp >/dev/null 2>&1; then
+          tmp=$(mktemp -t install-service-build.XXXXXX 2>/dev/null || true)
+          if [ -z "$tmp" ]; then
+            tmp=$(mktemp /tmp/install-service-build.XXXXXX 2>/dev/null || true)
+          fi
+        fi
+        if [ -z "$tmp" ]; then
+          tmp="/tmp/install-service-build.$$.$(date +%s 2>/dev/null || echo 0).log"
+        fi
+        set +e
+        {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} >"$tmp" 2>&1
+        rc=$?
+        set -e
+        cat "$tmp" | tee -a "$log" || true
+        rm -f "$tmp" || true
+        exit $rc
+      args:
+        chdir: "{{ install_service_repo_path }}"
+      environment: >-
+        {{
+          (install_service_env_effective | default({}))
+          | combine({'INSTALL_SERVICE_REPO_PATH': install_service_repo_path})
+          | combine({'INSTALL_SERVICE_FORCE_BUILD': '1'})
+          | combine({'INSTALL_SERVICE_RECONFIG_CMAKE': '1'})
+        }}
+
+    - name: Fail build when auto-recovery did not apply
+      when: not ((install_service_vcpkg_auto_recover | default(false) | bool) and (install_service_vcpkg_corrupt_probe.rc | default(1)) == 0)
+      fail:
+        msg: >-
+          Build script failed on {{ inventory_hostname }}.
+          Auto-recovery is {{ (install_service_vcpkg_auto_recover | default(false) | bool) | ternary('enabled', 'disabled') }}.
+          See {{ install_service_build_log_path }} and any vcpkg-manifest-install.log under the build directory.
 
 - name: Run build commands
   when: not install_service_is_windows and install_service_build_script_path | default('') | length == 0

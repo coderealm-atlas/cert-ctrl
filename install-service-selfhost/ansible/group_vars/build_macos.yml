@@ -8,6 +8,10 @@ install_service_cmake_extra_args: "-DCMAKE_PROGRAM_PATH=/usr/local/bin\\;/opt/ho
 install_service_build_script_path: "{{ playbook_dir }}/../../scripts/build-macos-release.sh"
 install_service_build_script_remote_path: /tmp/install-service-build-macos-release.sh
 
+# macOS builds occasionally hit vcpkg registry/cache corruption (many "<port> does not exist").
+# Enable one-time auto recovery to clear caches and retry with a forced rebuild.
+install_service_vcpkg_auto_recover: true
+
 install_service_build_commands: []
 
 install_service_install_prefix: "{{ install_service_repo_path }}/install/selfhost-macos"
