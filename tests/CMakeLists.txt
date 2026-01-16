@@ -502,6 +502,41 @@ certctrl_use_static_atomic(test_session_refresher)
 
 gtest_discover_tests(test_session_refresher DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
 
+add_executable(test_device_automation_handler
+  test_device_automation_handler.cpp
+  ${CMAKE_SOURCE_DIR}/src/handlers/device_automation_handler.cpp
+  ${CMAKE_SOURCE_DIR}/src/device_fingerprint.cpp
+  ${CMAKE_SOURCE_DIR}/src/openssl_raii.cpp
+  ${CMAKE_SOURCE_DIR}/src/crypt_util.cpp
+  ${HTTP_CLIENT_SRCS}
+)
+target_compile_features(test_device_automation_handler PRIVATE cxx_std_17)
+target_include_directories(test_device_automation_handler PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+  ${CMAKE_SOURCE_DIR}/external/http_client
+  ${CMAKE_SOURCE_DIR}/tests/include
+)
+target_link_libraries(test_device_automation_handler PRIVATE
+  GTest::gtest_main
+  Boost::program_options
+  Boost::json
+  Boost::asio
+  Boost::system
+  Boost::url
+  Boost::log
+  Boost::log_setup
+  fmt::fmt
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  certctrl_libatomic
+ryml::ryml
+)
+
+certctrl_use_static_atomic(test_device_automation_handler)
+
+gtest_discover_tests(test_device_automation_handler DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
+
 add_executable(test_exec_action
   test_exec_action.cpp
   ${CMAKE_SOURCE_DIR}/src/handlers/install_actions/exec_action.cpp
