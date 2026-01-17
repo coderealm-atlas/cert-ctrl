@@ -3,6 +3,7 @@ install_service_assets_src: "{{ install_service_assets_staging_root }}/{{ instal
 install_service_release_version: ""
 install_service_latest_version: ""
 install_service_force_clean_git_describe: true
+install_service_report_proxy_values: true
 install_service_owner: root
 install_service_group: root
 install_service_create_latest_symlink: false

@@ -171,6 +171,29 @@
     msg: "Proxy configured via install_service_proxy_env: {{ install_service_proxy_env_effective.keys() | list | join(', ') }}"
   when: install_service_proxy_env_effective is defined and install_service_proxy_env_effective | length > 0
 
+- name: Build proxy values report (masked)
+  set_fact:
+    install_service_proxy_env_report_masked: >-
+      {%- set ns = namespace(parts=[]) -%}
+      {%- for item in (install_service_proxy_env_effective | default({})) | dict2items -%}
+      {%- set v = (item.value | string) -%}
+      {# Redact credentials in URLs like http(s)://user:pass@host:port #}
+      {%- set v = v | regex_replace('^(https?://)[^@/]+@', '\\1<redacted>@') -%}
+      {%- set _ = ns.parts.append(item.key ~ '=' ~ v) -%}
+      {%- endfor -%}
+      {{ ns.parts | join(', ') }}
+  when:
+    - install_service_report_proxy_values | bool
+    - install_service_proxy_env_effective is defined
+    - install_service_proxy_env_effective | length > 0
+
+- name: Report proxy values (masked)
+  debug:
+    msg: "Effective proxy env (masked): {{ install_service_proxy_env_report_masked }}"
+  when:
+    - install_service_report_proxy_values | bool
+    - install_service_proxy_env_report_masked is defined
+
 - name: Check repository exists (POSIX)
   stat:
     path: "{{ install_service_repo_path }}"

@@ -24,6 +24,10 @@ install_service_checkout_release_ref: true
 install_service_force_submodule_update: false
 install_service_reconfig_cmake: false
 
+# When true, logs the effective proxy environment values used for build steps.
+# Credentials in URLs (e.g. http://user:pass@host:port) are redacted.
+install_service_report_proxy_values: false
+
 # When true, a POSIX build failure that looks like a vcpkg registry/cache issue
 # (e.g. many "<port> does not exist" lines) will trigger a one-time cache cleanup
 # and a forced rebuild retry.
