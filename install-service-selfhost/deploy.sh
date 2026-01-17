@@ -62,6 +62,25 @@ github_release_override="false"  # Flag to override default GitHub release behav
 reconfig_cmake="false"      # Whether to force CMake reconfiguration
 skip_preflight="false"      # Skip preflight checks (only for publishing)
 preflight_docker_pull="false"  # Whether preflight should docker pull base images
+parallel_builds="false"     # Whether to run per-platform builds concurrently
+
+derive_release_version_from_controller() {
+  local repo_root
+  repo_root="$(cd "${ROOT_DIR}/.." && pwd)"
+  if ! git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 1
+  fi
+  local v
+  v="$(git -C "$repo_root" describe --tags --long --dirty --abbrev=8 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' 2>/dev/null || true)"
+  if [[ -z "$v" ]]; then
+    v="$(git -C "$repo_root" describe --tags --long --dirty --abbrev=8 2>/dev/null || true)"
+  fi
+  if [[ -n "$v" ]]; then
+    printf '%s\n' "$v"
+    return 0
+  fi
+  return 1
+}
 
 preflight_publish() {
   local repo_root
@@ -199,6 +218,8 @@ Options
            Skip preflight checks (only relevant with --publish-github-release)
   --preflight-docker-pull
            Also docker pull base images during preflight (can be slow behind proxies)
+  --parallel-builds
+           Build platforms concurrently (macos/freebsd/windows/linux-docker)
   -h|--help
            Show this help message
 
@@ -211,6 +232,9 @@ Examples:
 
   # Quick deployment with GitHub release
   ./deploy.sh --action quick --release-version v1.2.3
+
+  # Build all platforms in parallel (faster when you have VMs)
+  ./deploy.sh --action pipeline --parallel-builds
 
   # Force rebuild for Linux only
   ./deploy.sh --build linux-docker --force-build
@@ -329,6 +353,10 @@ while [[ $# -gt 0 ]]; do
       preflight_docker_pull="true"
       shift
       ;;
+    --parallel-builds)
+      parallel_builds="true"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -344,6 +372,15 @@ done
 # Pass release version to Ansible if specified
 if [[ -n "$release_version" && "$release_version" != "latest" ]]; then
   extra_vars+=("install_service_release_version=$release_version")
+fi
+
+# For parallel builds, pin a single release version from the controller so all
+# build hosts package the same ref/version string.
+if [[ "$parallel_builds" == "true" && -z "$release_version" ]]; then
+  if pinned="$(derive_release_version_from_controller)"; then
+    release_version="$pinned"
+    extra_vars+=("install_service_release_version=$release_version")
+  fi
 fi
 
 # If publishing a GitHub release and the caller did not provide an explicit
@@ -450,7 +487,7 @@ cmd=(ansible-playbook -i "$INVENTORY_PATH" "$playbook")
 # Build Ansible host limit from --builds argument
 if [[ -z "$limit" && ${#build_groups[@]} -gt 0 && "$build_groups_all" != "true" ]]; then
   # For pipeline/collect/prepare, also include localhost and assets_host
-  if [[ "$action" == "pipeline" || "$action" == "collect" || "$action" == "prepare" ]]; then
+  if [[ "$action" == "pipeline" || "$action" == "quick" || "$action" == "collect" || "$action" == "prepare" ]]; then
     build_groups+=("localhost" "assets_host")
   fi
   # Join build groups with colons for Ansible --limit syntax
@@ -472,8 +509,83 @@ if [[ -n "$docker_buildkit" ]]; then
   cmd+=(-e "install_service_docker_buildkit=${docker_buildkit}")
 fi
 
-# Execute Ansible playbook
-ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" "${cmd[@]}"
+run_ansible_playbook() {
+  local pb="$1"
+  shift
+  local -a _cmd
+  _cmd=(ansible-playbook -i "$INVENTORY_PATH" "$pb")
+  if [[ $# -gt 0 ]]; then
+    _cmd+=("$@")
+  fi
+  for var in "${extra_vars[@]}"; do
+    _cmd+=(-e "$var")
+  done
+  if [[ -n "$docker_buildkit" ]]; then
+    _cmd+=(-e "install_service_docker_buildkit=${docker_buildkit}")
+  fi
+  ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" "${_cmd[@]}"
+}
+
+run_parallel_builds() {
+  local -a groups
+  if [[ ${#build_groups[@]} -gt 0 && "$build_groups_all" != "true" ]]; then
+    groups=("${build_groups[@]}")
+  else
+    groups=(build_windows build_macos build_freebsd build_linux_docker)
+  fi
+
+  # Keep behavior safe/simple: parallel mode requires --builds (or default all).
+  if [[ -n "$limit" && ${#build_groups[@]} -eq 0 ]]; then
+    echo "error: --parallel-builds does not support --limit; use --builds instead." >&2
+    return 2
+  fi
+
+  local -a pids
+  local -a labels
+  local g
+  for g in "${groups[@]}"; do
+    # Don't run non-build groups in parallel build phase.
+    if [[ "$g" == "localhost" || "$g" == "assets_host" ]]; then
+      continue
+    fi
+    echo "[parallel] Starting build for ${g}..." >&2
+    run_ansible_playbook "${ANSIBLE_DIR}/playbooks/build_release.yml" --limit "${g}" &
+    pids+=("$!")
+    labels+=("${g}")
+  done
+
+  local rc=0
+  local idx
+  for idx in "${!pids[@]}"; do
+    if ! wait "${pids[$idx]}"; then
+      echo "[parallel] Build failed: ${labels[$idx]}" >&2
+      rc=1
+    else
+      echo "[parallel] Build finished: ${labels[$idx]}" >&2
+    fi
+  done
+  return "$rc"
+}
+
+if [[ "$parallel_builds" == "true" && ("$action" == "build" || "$action" == "pipeline" || "$action" == "quick") ]]; then
+  run_parallel_builds
+  build_rc=$?
+  if [[ $build_rc -ne 0 ]]; then
+    exit "$build_rc"
+  fi
+  if [[ "$action" == "pipeline" || "$action" == "quick" ]]; then
+    if [[ -n "$limit" ]]; then
+      run_ansible_playbook "${ANSIBLE_DIR}/playbooks/collect_assets.yml" --limit "$limit"
+      run_ansible_playbook "${ANSIBLE_DIR}/playbooks/prepare_assets.yml" --limit "$limit"
+    else
+      run_ansible_playbook "${ANSIBLE_DIR}/playbooks/collect_assets.yml"
+      run_ansible_playbook "${ANSIBLE_DIR}/playbooks/prepare_assets.yml"
+    fi
+  fi
+else
+  # Execute Ansible playbook (default sequential behavior)
+  ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" "${cmd[@]}"
+fi
 
 # Optional: Run publish.sh to deploy built artifacts to remote servers
 if [[ "$run_publish" == "true" ]]; then
