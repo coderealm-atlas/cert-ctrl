@@ -37,6 +37,7 @@ namespace certctrl {
 struct LoginHandlerOptions {
   bool force{false};
   std::optional<std::string> api_key;
+  std::optional<std::string> entropy;
 };
 
 struct DeviceRegistrationRequestConfig {
@@ -98,7 +99,9 @@ public:
          po::bool_switch(&options_.force)->default_value(false),
          "Force device re-authorization; clears cached session tokens before login.")
         ("apikey", po::value<std::string>(),
-         "Direct device registration using an API key; skips the device authorization flow.");
+         "Direct device registration using an API key; skips the device authorization flow.")
+        ("entropy", po::value<std::string>(),
+         "Additional entropy mixed into device fingerprint on first registration; ignored when a stored device id exists.");
     opt_desc_.add(create_opts);
     po::parsed_options parsed = po::command_line_parser(cli_ctx_.unrecognized)
                                     .options(opt_desc_)
@@ -108,6 +111,12 @@ public:
     po::notify(cli_ctx_.vm);
     if (cli_ctx_.vm.count("apikey")) {
       options_.api_key = cli_ctx_.vm["apikey"].as<std::string>();
+    }
+    if (cli_ctx_.vm.count("entropy")) {
+      auto value = cli_ctx_.vm["entropy"].as<std::string>();
+      if (!value.empty()) {
+        options_.entropy = std::move(value);
+      }
     }
     output_hub_.logger().trace()
         << "LoginHandler initialized with options: " << opt_desc_ << std::endl;

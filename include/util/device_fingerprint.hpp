@@ -13,6 +13,11 @@ struct DeviceInfo {
   std::string cpu_model;    // CPU model string
   std::string memory_info;  // e.g., "MemTotal: 32785472 kB" on Linux
   std::string hostname;     // device hostname
+  std::string dmi_product_uuid;   // Linux DMI product UUID if available
+  std::string dmi_product_serial; // Linux DMI product serial if available
+  std::string dmi_board_serial;   // Linux DMI board serial if available
+  std::string dmi_chassis_serial; // Linux DMI chassis serial if available
+  std::string mac_addresses;      // comma-joined MAC addresses if available
   std::string user_agent;   // optional app-level user agent string
 };
 
@@ -20,8 +25,8 @@ struct DeviceInfo {
 DeviceInfo gather_device_info(const std::string& user_agent = {});
 
 // Compute deterministic device fingerprint (hex-encoded SHA-256) from DeviceInfo + optional entropy.
-// Only stable traits (platform/model/os_version/cpu/memory/hostname) plus additional_entropy are used
-// so cosmetic metadata such as user agent strings do not rotate the fingerprint across releases.
+// Only stable traits plus additional_entropy are used so cosmetic metadata such
+// as user agent strings do not rotate the fingerprint across releases.
 std::string generate_device_fingerprint_hex(const DeviceInfo& info,
                                             const std::string& additional_entropy = {});
 

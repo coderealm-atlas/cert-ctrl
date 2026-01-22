@@ -576,7 +576,9 @@ monad::IO<void> LoginHandler::perform_device_registration(
 
   std::string user_agent = fmt::format("cert-ctrl/{}", MYAPP_VERSION);
   auto info = cjj365::device::gather_device_info(user_agent);
-  auto derived_fp_hex = cjj365::device::generate_device_fingerprint_hex(info);
+  const std::string entropy = self->options_.entropy.value_or(std::string{});
+  auto derived_fp_hex =
+      cjj365::device::generate_device_fingerprint_hex(info, entropy);
   auto derived_device_public_id =
       cjj365::device::device_public_id_from_fingerprint(derived_fp_hex);
 

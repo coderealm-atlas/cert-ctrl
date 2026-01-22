@@ -14,6 +14,11 @@ cjj365::device::DeviceInfo make_base_info() {
   info.cpu_model = "Intel(R) Xeon(R)";
   info.memory_info = "MemTotal: 32785472 kB";
   info.hostname = "mail-gateway-01";
+  info.dmi_product_uuid = "a1b2c3d4-e5f6-7890-abcd-ef0123456789";
+  info.dmi_product_serial = "SERIAL-ABC-123";
+  info.dmi_board_serial = "BOARD-XYZ-789";
+  info.dmi_chassis_serial = "CHASSIS-555";
+  info.mac_addresses = "00:11:22:33:44:55,66:77:88:99:aa:bb";
   info.user_agent = "cert-ctrl/1.4.0";
   return info;
 }
@@ -46,6 +51,34 @@ TEST(DeviceFingerprintTest, ChangesWhenStableTraitChanges) {
   EXPECT_NE(baseline, moved_fp);
   EXPECT_NE(cjj365::device::device_public_id_from_fingerprint(baseline),
             cjj365::device::device_public_id_from_fingerprint(moved_fp));
+}
+
+TEST(DeviceFingerprintTest, EntropyAffectsFingerprint) {
+  auto base_info = make_base_info();
+  auto fp_a =
+      cjj365::device::generate_device_fingerprint_hex(base_info, "alpha");
+  auto fp_b =
+      cjj365::device::generate_device_fingerprint_hex(base_info, "beta");
+
+  EXPECT_NE(fp_a, fp_b);
+  EXPECT_NE(cjj365::device::device_public_id_from_fingerprint(fp_a),
+            cjj365::device::device_public_id_from_fingerprint(fp_b));
+}
+
+TEST(DeviceFingerprintTest, ChangesWhenHardwareTraitsChange) {
+  auto base_info = make_base_info();
+  auto baseline =
+      cjj365::device::generate_device_fingerprint_hex(base_info);
+
+  auto altered = base_info;
+  altered.dmi_product_uuid = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+  altered.mac_addresses = "aa:bb:cc:dd:ee:ff";
+  auto altered_fp =
+      cjj365::device::generate_device_fingerprint_hex(altered);
+
+  EXPECT_NE(baseline, altered_fp);
+  EXPECT_NE(cjj365::device::device_public_id_from_fingerprint(baseline),
+            cjj365::device::device_public_id_from_fingerprint(altered_fp));
 }
 
 } // namespace

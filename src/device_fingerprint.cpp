@@ -1,9 +1,12 @@
 #include "util/device_fingerprint.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <vector>
-#include <cstring>
 #ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -15,6 +18,28 @@
 
 namespace cjj365 {
 namespace device {
+
+static std::string trim_copy(const std::string& input) {
+  size_t start = 0;
+  while (start < input.size() &&
+         std::isspace(static_cast<unsigned char>(input[start]))) {
+    ++start;
+  }
+  size_t end = input.size();
+  while (end > start &&
+         std::isspace(static_cast<unsigned char>(input[end - 1]))) {
+    --end;
+  }
+  return input.substr(start, end - start);
+}
+
+static std::string read_file_trim(const std::string& path) {
+  std::ifstream ifs(path);
+  if (!ifs.is_open()) return {};
+  std::string line;
+  if (!std::getline(ifs, line)) return {};
+  return trim_copy(line);
+}
 
 static std::string read_first_matching_line(const std::string& path,
                                             const std::string& key_prefix) {
@@ -143,6 +168,59 @@ static std::string parse_hostname() {
   return "unknown-host";
 }
 
+static std::string normalize_mac(const std::string& mac) {
+  std::string out = trim_copy(mac);
+  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return out;
+}
+
+static std::string parse_dmi_value(const std::string& name) {
+#if defined(__linux__)
+  std::string path = "/sys/class/dmi/id/" + name;
+  return read_file_trim(path);
+#else
+  (void)name;
+  return {};
+#endif
+}
+
+static std::string parse_mac_addresses() {
+#if defined(__linux__)
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::path net_dir("/sys/class/net");
+  if (!fs::exists(net_dir, ec) || ec) return {};
+  std::vector<std::string> macs;
+  for (fs::directory_iterator it(net_dir, ec);
+       !ec && it != fs::directory_iterator(); ++it) {
+    const auto ifname = it->path().filename().string();
+    if (ifname == "lo") {
+      continue;
+    }
+    std::string mac = read_file_trim((it->path() / "address").string());
+    mac = normalize_mac(mac);
+    if (mac.empty() || mac == "00:00:00:00:00:00") {
+      continue;
+    }
+    macs.push_back(mac);
+  }
+  std::sort(macs.begin(), macs.end());
+  macs.erase(std::unique(macs.begin(), macs.end()), macs.end());
+  std::ostringstream oss;
+  for (size_t i = 0; i < macs.size(); ++i) {
+    if (i > 0) {
+      oss << ',';
+    }
+    oss << macs[i];
+  }
+  return oss.str();
+#else
+  return {};
+#endif
+}
+
 DeviceInfo gather_device_info(const std::string& user_agent) {
   DeviceInfo info;
   info.platform = parse_platform();
@@ -151,6 +229,11 @@ DeviceInfo gather_device_info(const std::string& user_agent) {
   info.cpu_model = parse_cpu_model();
   info.memory_info = parse_memory_info();
   info.hostname = parse_hostname();
+  info.dmi_product_uuid = parse_dmi_value("product_uuid");
+  info.dmi_product_serial = parse_dmi_value("product_serial");
+  info.dmi_board_serial = parse_dmi_value("board_serial");
+  info.dmi_chassis_serial = parse_dmi_value("chassis_serial");
+  info.mac_addresses = parse_mac_addresses();
   info.user_agent = user_agent;
   return info;
 }
@@ -161,7 +244,10 @@ std::string generate_device_fingerprint_hex(const DeviceInfo& info,
   // Exclude volatile fields (like user agent) so version bumps do not rotate the ID
   std::ostringstream oss;
   oss << info.platform << '|' << info.model << '|' << info.os_version << '|' << info.cpu_model
-    << '|' << info.memory_info << '|' << info.hostname << '|' << additional_entropy;
+    << '|' << info.memory_info << '|' << info.hostname << '|' << info.dmi_product_uuid
+    << '|' << info.dmi_product_serial << '|' << info.dmi_board_serial
+    << '|' << info.dmi_chassis_serial << '|' << info.mac_addresses
+    << '|' << additional_entropy;
   return cjj365::opensslutil::sha256_hex(oss.str());
 }
 
