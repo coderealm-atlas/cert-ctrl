@@ -274,11 +274,13 @@ All 10 cases pass, covering device auth flows, registration, and regression chec
 - `device_registration_workflow.sh` – end-to-end login → auth → registration script
 
 ### Manual Real Server Test
-Target: `https://test-api.cjj365.cc`
+Target: set `CERT_CTRL_TEST_URL_BASE` (there is no shared staging test API).
 
 ```bash
-export CERT_CTRL_TEST_EMAIL=jianglibo@hotmail.com
-export CERT_CTRL_TEST_PASSWORD=TgBNeFAN9BYzJ1S4isd8HX1tSayU0OYc
+export CERTCTRL_REAL_SERVER_TESTS=1
+export CERT_CTRL_TEST_URL_BASE=https://api.cjj365.cc
+export CERT_CTRL_TEST_EMAIL=you@example.com
+export CERT_CTRL_TEST_PASSWORD='***'
 ```
 
 1. **Login** – POST `/api/auth/login`, capture `Set-Cookie: cjj365=...`.

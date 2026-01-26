@@ -107,7 +107,7 @@ inline std::string url_base() {
   if (value && !value->empty()) {
     return *value;
   }
-  return std::string("https://test-api.cjj365.cc"); // 8080 default
+  return std::string("https://api.cjj365.cc");
 }
 
 // inline std::string first_cookie_pair(

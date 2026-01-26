@@ -12,7 +12,7 @@ set -euo pipefail
 
 # ---- Configuration -------------------------------------------------------
 SERVER_SCHEME="${SERVER_SCHEME:-https}"
-SERVER_HOST="${SERVER_HOST:-test-api.cjj365.cc}"
+SERVER_HOST="${SERVER_HOST:-api.cjj365.cc}"
 SERVER_PORT="${SERVER_PORT:-}"
 if [[ -n "${SERVER_PORT}" ]]; then
   BASE_URL="${SERVER_SCHEME}://${SERVER_HOST}:${SERVER_PORT}"

@@ -2,7 +2,7 @@
 
 `capture_device_bundle.sh` automates the full real-server device flow so the backend team can
 inspect freshly issued certificate bundles alongside the device key material that decrypts them.
-The script lives in `scripts/capture_device_bundle.sh` (Unix shell). It mirrors the workflow from
+The script lives in `capture_device_bundle.sh` (Unix shell). It mirrors the workflow from
 `device_registration_workflow.sh` but focuses on artifact collection for AES-GCM debugging.
 
 ## Prerequisites
@@ -10,7 +10,7 @@ The script lives in `scripts/capture_device_bundle.sh` (Unix shell). It mirrors 
 - Bash (the script targets Linux/macOS)
 - `curl`, `jq`, `openssl`, `python3`, and `xxd`
 - Python packages `pynacl` and `cryptography` (for automatic bundle decryption checks)
-- Valid test credentials for the target environment (`SERVER_HOST=test-api.cjj365.cc` by default)
+- Valid credentials for the target environment (defaults to `SERVER_HOST=api.cjj365.cc`)
 
 ## What the Script Does
 
@@ -49,10 +49,10 @@ All artifacts are written under a timestamped directory in `bundle_captures/` (c
 
 ```bash
 # basic run (writes to bundle_captures/<timestamp>/)
-./scripts/capture_device_bundle.sh
+./capture_device_bundle.sh
 
 # custom output directory and label
-./scripts/capture_device_bundle.sh --output-root fixtures --label backend-debug
+./capture_device_bundle.sh --output-root fixtures --label backend-debug
 ```
 
 Environment overrides:

@@ -29,7 +29,7 @@ fail() {
 #############################################
 
 SERVER_SCHEME=${SERVER_SCHEME:-https}
-SERVER_HOST=${SERVER_HOST:-test-api.cjj365.cc}
+SERVER_HOST=${SERVER_HOST:-api.cjj365.cc}
 SERVER_PORT=${SERVER_PORT:-}
 if [[ -n "${SERVER_PORT}" ]]; then
   BASE_URL="${SERVER_SCHEME}://${SERVER_HOST}:${SERVER_PORT}"
@@ -51,7 +51,7 @@ usage() {
 Usage: capture_device_bundle.sh [--output-root DIR] [--label NAME]
 
 Environment variables:
-  SERVER_SCHEME, SERVER_HOST, SERVER_PORT   API location (defaults: https://test-api.cjj365.cc)
+  SERVER_SCHEME, SERVER_HOST, SERVER_PORT   API location (defaults: https://api.cjj365.cc)
   CERT_CTRL_TEST_EMAIL / TEST_EMAIL         Login email (defaults to jianglibo@hotmail.com)
   CERT_CTRL_TEST_PASSWORD / TEST_PASSWORD   Login password (defaults to StrongPass1!)
 

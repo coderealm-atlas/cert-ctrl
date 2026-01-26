@@ -18,7 +18,7 @@ set -e  # Exit on any error
 
 # Configuration
 SERVER_SCHEME="${SERVER_SCHEME:-https}"
-SERVER_HOST="${SERVER_HOST:-test-api.cjj365.cc}"
+SERVER_HOST="${SERVER_HOST:-api.cjj365.cc}"
 SERVER_PORT="${SERVER_PORT:-}"
 if [[ -n "$SERVER_PORT" ]]; then
     BASE_URL="${SERVER_SCHEME}://${SERVER_HOST}:${SERVER_PORT}"
@@ -981,7 +981,7 @@ usage() {
     echo ""
     echo "Environment Variables:"
     echo "  SERVER_SCHEME   Protocol for requests (default: https)"
-    echo "  SERVER_HOST     Server hostname (default: test-api.cjj365.cc)"
+    echo "  SERVER_HOST     Server hostname (default: api.cjj365.cc)"
     echo "  SERVER_PORT     Server port (default: empty; uses scheme default)"
     echo "  CERT_CTRL_TEST_EMAIL    Preferred login email override"
     echo "  CERT_CTRL_TEST_PASSWORD Preferred login password override"

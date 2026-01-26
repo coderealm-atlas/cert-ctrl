@@ -19,27 +19,27 @@ function Write-Substep {
 
 function Write-Success {
     param([string]$Message)
-    Write-Host "`u2713 $Message" -ForegroundColor Green
+    Write-Host "[OK]  $Message" -ForegroundColor Green
 }
 
 function Write-WarningMessage {
     param([string]$Message)
-    Write-Host "`u26A0 $Message" -ForegroundColor Yellow
+    Write-Host "[WARN] $Message" -ForegroundColor Yellow
 }
 
 function Write-ErrorMessage {
     param([string]$Message)
-    Write-Host "`u2717 $Message" -ForegroundColor Red
+    Write-Host "[ERR] $Message" -ForegroundColor Red
 }
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "`u2139 $Message" -ForegroundColor DarkYellow
+    Write-Host "[INFO] $Message" -ForegroundColor DarkYellow
 }
 
 function Write-DebugMessage {
     param([string]$Message)
-    Write-Host "`uD83D`uDC1B $Message" -ForegroundColor Magenta
+    Write-Host "[DBG] $Message" -ForegroundColor Magenta
 }
 # endregion
 
@@ -88,7 +88,7 @@ function Show-Usage {
     Write-Host ''
     Write-Host 'Environment variables:'
     Write-Host '  SERVER_SCHEME             Protocol (default: https)'
-    Write-Host '  SERVER_HOST               Hostname (default: test-api.cjj365.cc)'
+    Write-Host '  SERVER_HOST               Hostname (default: api.cjj365.cc)'
     Write-Host '  SERVER_PORT               Port (default: empty)'
     Write-Host '  CERT_CTRL_TEST_EMAIL      Preferred login email override'
     Write-Host '  CERT_CTRL_TEST_PASSWORD   Preferred login password override'
@@ -106,7 +106,7 @@ if ($Help) {
 
 function Initialize-Config {
     $script:ServerScheme = if ([string]::IsNullOrWhiteSpace($env:SERVER_SCHEME)) { 'https' } else { $env:SERVER_SCHEME }
-    $script:ServerHost = if ([string]::IsNullOrWhiteSpace($env:SERVER_HOST)) { 'test-api.cjj365.cc' } else { $env:SERVER_HOST }
+    $script:ServerHost = if ([string]::IsNullOrWhiteSpace($env:SERVER_HOST)) { 'api.cjj365.cc' } else { $env:SERVER_HOST }
     $script:ServerPort = if ([string]::IsNullOrWhiteSpace($env:SERVER_PORT)) { $null } else { $env:SERVER_PORT }
 
     if ($script:ServerPort) {
@@ -911,19 +911,19 @@ function Run-Workflow {
 
     Write-Host ''
     Write-Host 'Summary:' -ForegroundColor Magenta
-    Write-Host "`u2713 User authenticated and session established"
-    Write-Host "`u2713 Device authorization flow completed"
-    Write-Host "`u2713 Access token obtained via device flow"
+        Write-Host "[OK]  User authenticated and session established"
+        Write-Host "[OK]  Device authorization flow completed"
+        Write-Host "[OK]  Access token obtained via device flow"
     if ($script:DevicePublicId) {
-        Write-Host "`u2713 Device fingerprint generated: $script:DevicePublicId"
+           Write-Host "[OK]  Device fingerprint generated: $script:DevicePublicId"
     }
     if (-not $stepFailed) {
-        Write-Host '`u2713 Device registered and listed successfully'
-        Write-Host '`u2713 Device updates endpoint polled'
+           Write-Host '[OK]  Device registered and listed successfully'
+           Write-Host '[OK]  Device updates endpoint polled'
     }
     else {
-        Write-Host '⚠ Device registration/listing may need implementation'
-        Write-Host '⚠ Device updates poll had issues'
+           Write-Host '[WARN] Device registration/listing may need implementation'
+           Write-Host '[WARN] Device updates poll had issues'
     }
 }
 

@@ -4,22 +4,21 @@
 
 ## Key capabilities
 
-- Orchestrates device onboarding, login, and certificate enrollment workflows.
-- Polls the control plane for install-config changes and new certificate material.
-- On startup without a subcommand, automatically checks for agent updates and performs a device updates poll.
-- Safely stores issued certificates and replaces them when updates are available.
-- Communicates with the backend over authenticated APIs, supporting constrained networks with long-poll update checks.
+- Device onboarding/login and certificate enrollment/rotation.
+- Polls the control plane for install-config and certificate updates.
+- No subcommand: checks for agent updates, then runs an updates poll.
+- Stores device state and materials in a runtime directory.
 
 ## Getting started
 
-Download working executable from: [https://cjj365.cc][externalLink]
+Download an executable from: [https://cjj365.cc][externalLink]
 
 ### Prerequisites
 
-- CMake ≥ 3.16 (3.19+ recommended for presets)
-- Ninja or another CMake generator
-- A C++17 compiler (Clang or MSVC supported out of the box)
-- [vcpkg](https://github.com/microsoft/vcpkg) is included as a submodule; ensure dependencies are fetched before configuring
+- CMake ≥ 3.19 (required by `CMakePresets.json`)
+- Ninja (or another CMake generator)
+- A C++17 compiler
+- [vcpkg](https://github.com/microsoft/vcpkg) submodule initialized
   ```bash
   git submodule update --init --recursive
   ```
@@ -31,16 +30,16 @@ Download working executable from: [https://cjj365.cc][externalLink]
 Use the provided CMake presets for the common build types.
 
 ```bash
-# Debug build with local defaults
+# Debug build
 cmake --preset debug
-cmake --build build
+cmake --build --preset debug
 
-# Release build used for shipping artifacts
+# Release build
 cmake --preset release
-cmake --build build
+cmake --build --preset release
 ```
 
-Binaries are placed under `build/`. When building from a tagged commit the embedded version string matches the Git tag (see `RELEASE.md` for details).
+Binaries are placed under `build/<preset>/`. When building from a tagged commit the embedded version string matches `git describe` (see `RELEASE.md`).
 
 ### Build for Alpine via Docker
 
@@ -56,111 +55,41 @@ The script accepts `IMAGE_NAME`, `CORES`, and `CMAKE_BUILD_PARALLEL_LEVEL` envir
 ### Run tests
 
 ```bash
-ctest --preset debug
+./run_all_test.sh --preset debug-asan
 ```
 
-Additional integration workflows are described in the docs under `Testing/` and `docs/`.
+You can also run `cmake --build --preset <preset> --target test`.
+
+## Configuration
+
+By default the agent looks for configuration and runtime directories in standard OS locations:
+
+- Linux: `/etc/certctrl` (config), `/var/lib/certctrl` (runtime)
+- macOS: `/Library/Application Support/certctrl/{config,runtime}`
+- Windows: `%PROGRAMDATA%\\certctrl\\{config,runtime}`
+
+Overrides:
+
+- `--config-dirs <path> [<path> ...]` to point at one or more config directories
+- `--url-base <URL>` to override the control-plane base URL for a single run
+- `CERTCTRL_BASE_DIR`, `CERTCTRL_CONFIG_DIR`, `CERTCTRL_RUNTIME_DIR` for environment-based path overrides
+
+Note: by default `cert-ctrl` expects to run with elevated privileges; pass `--no-root` to acknowledge running without them.
 
 ## Documentation
 
-- **[Installation Guide](INSTALL.md)** - Comprehensive installation instructions for different platforms and deployment scenarios
-- **[Build System](docs/BUILD_SYSTEM.md)** - CMake configuration, presets, and build customization
-- **[Submodule Workflow](docs/SUBMODULE_WORKFLOW.md)** - Best practices for managing Git submodules, troubleshooting, and common pitfalls
-- **[Release Workflow](docs/RELEASE_WORKFLOW.md)** - Process for cutting new releases and version management
-- **[API Reference](docs/HTTP_API_REFERENCE.md)** - RESTful API documentation for direct backend integration
-
-- Device registration flow: `docs/USER_DEVICE_REGISTRATION_WORKFLOW.md`
-- Device login: `docs/LOGIN_WORKFLOW.md`
-- Polling for update signals: `docs/DEVICE_POLLING_UPDATES.md`
-- Config directory layering & overrides: `docs/CONFIG_DIR_PROVISIONING.md`
-- Docker-based test environment: `docs/DOCKER_TEST_ENVIRONMENT.md`
-- Release background & checklist: `RELEASE.md`, `docs/RELEASE_WORKFLOW.md`
-
-## Test Environment
-
-- The shared staging control plane is exposed at `https://test-api.cjj365.cc`.
-- Point the agent at this endpoint when exercising integration workflows in QA or CI.
-- To create a disposable test user, run:
-  ```bash
-  curl \
-    -X POST https://test-api.cjj365.cc/apiv1/iroiro \
-    -H "Content-Type: application/json" \
-    -d '{"action":"create_test_user","email":"demo-user@example.com"}'
-  ```
-  Replace the email address to avoid collisions. the response contains a temporary password for login.
-
-  ```json
-  {
-  	"data": {
-  		"id": 2,
-  		"name": "420dc9eb-596b-4f2c-a227-928af39e022a",
-  		"email": "demo-user@example.com",
-  		"password": "6SJYP9Bd6DKnLsj9rJfUnCuKQsnxGWGb",
-  		"created_at": 1759242163,
-  		"updated_at": 1759242163,
-  		"roles": [
-  			"user"
-  		],
-  		"state": "ACTIVE",
-  		"user_quota_id": 0,
-  		"pk": null
-  	}
-  }
-  ```
-
-  Verify login works with the new user:
-
-  ```bash
-  curl \
-    -X POST https://test-api.cjj365.cc/auth/general \
-    -H "Content-Type: application/json" \
-    -d '{"action":"login","email":"demo-user@example.com","password":"6SJYP9Bd6DKnLsj9rJfUnCuKQsnxGWGb"}'
-  ```
-
-  Delete user:
-  ```bash
-  curl \
-  -X POST https://test-api.cjj365.cc/apiv1/iroiro \
-  -H "Content-Type: application/json" \
-  -d '{"action":"delete_test_user","email":"demo-user@example.com", "password": "6SJYP9Bd6DKnLsj9rJfUnCuKQsnxGWGb"}'
-  ```
-
-  ```bash
-  export CERT_CTRL_TEST_EMAIL="demo-user@example.com"
-  export CERT_CTRL_TEST_PASSWORD="6SJYP9Bd6DKnLsj9rJfUnCuKQsnxGWGb"
-  ```
-
-## Restful API instead of agents
-The backend control plane exposes a RESTful API that can be used to manage devices and certificates directly. This approach may be preferable in environments where installing and running an agent is not feasible. Refer to the API documentation for details on available endpoints and usage patterns.
-
-  Obtain an API token by logging in with your user credentials. Use this token to authenticate subsequent API requests.
-
-  ```bash
-  curl -X POST https://test-api.cjj365.cc/apiv1/iroiro \
-  -H "Content-Type: application/json" \
-  -d '{
-        "action": "create_test_apikey",
-        "email": "${CERT_CTRL_TEST_EMAIL}",
-        "password": "${CERT_CTRL_TEST_PASSWORD}",
-        "apikey": {
-          "name": "dev-tooling-key",
-          "expires_in_seconds": 3600,
-          "permissions": [
-            {
-              "obtype": "certificates",
-              "obid": "1",
-              "actions": ["*"]
-            }
-          ]
-        }
-      }'
-  ```
+- [Installation Guide](INSTALL.md)
+- [Submodule Workflow](docs/SUBMODULE_WORKFLOW.md)
+- [Config directory provisioning](docs/CONFIG_DIR_PROVISIONING.md)
+- [Device login workflow](docs/LOGIN_WORKFLOW.md)
+- [Device polling updates](docs/DEVICE_POLLING_UPDATES.md)
+- [HTTP API reference](docs/HTTP_API_REFERENCE.md)
+- [Release workflow](docs/RELEASE_WORKFLOW.md) and `RELEASE.md`
 
 ## Device automation subcommand
 
-When an integration only has access to scoped API keys, the CLI can execute a
-minimal automation flow via `cert-ctrl device`. The handler currently exposes
-two actions:
+When an integration only has scoped API keys, `cert-ctrl device` provides a
+small automation surface:
 
 - `assign-cert` POSTs to `/apiv1/me/certificate-assign` with the supplied API
   key as a bearer token.
@@ -168,44 +97,13 @@ two actions:
   `/apiv1/me/install-config-update/:device_public_id`.
 
 ```bash
-cert-ctrl device assign-cert --apikey ${CERT_CTRL_TEST_APIKEY}
+cert-ctrl device assign-cert --apikey $TOKEN
+cert-ctrl device install-config-update --apikey $TOKEN --payload-file steps.json
 ```
-
-Use this command to request a certificate assignment without performing the
-interactive device login flow. The API key must already encode whatever context
-the backend needs (device identity, certificate profile, etc.); the CLI simply
-submits the request and surfaces the backend status message.
-
-The install-config update action accepts either inline JSON via `--payload` or
-a file via `--payload-file`. Device identity is derived from the local state
-store (or fingerprint fallback), so no additional flag is required.
-
-```bash
-cat > /tmp/install-steps.json <<'JSON'
-[
-  {
-    "ob_type": "install_steps",
-    "ob_id": 1,
-    "enabled": false,
-    "timeout_ms": 600000
-  }
-]
-JSON
-
-cert-ctrl device install-config-update \
-  --apikey ${CERT_CTRL_TEST_APIKEY} \
-  --payload-file /tmp/install-steps.json
-```
-
-Every entry in the payload array must include `ob_type` and numeric `ob_id`.
-The server treats each entry as a patch: it locates the matching install item
-and merges in a limited set of supported keys (for example `type`, `enabled`,
-`continue_on_error`, `depends_on`, `tags`, `cmd`, `cmd_argv`, `timeout_ms`,
-`run_as`, `env`). Extra keys are ignored by the server.
 
 ## Certificate authority inspection
 
-Staged trust anchors can be reviewed locally via `cert-ctrl cas`:
+Cached trust anchors can be inspected locally via `cert-ctrl ca`:
 
 ```bash
 cert-ctrl ca list

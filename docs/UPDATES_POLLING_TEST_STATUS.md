@@ -9,7 +9,7 @@ Comprehensive integration test for `updates_polling_handler.hpp` has been create
 ### ✅ Validated Components
 
 1. **Login & Authentication**
-   - Username/password login against `test-api.cjj365.cc`
+   - Username/password login against a real control plane (configured via `CERT_CTRL_TEST_URL_BASE`)
    - Session cookie management
    - User ID retrieval (user_id=14)
 
@@ -47,7 +47,7 @@ Comprehensive integration test for `updates_polling_handler.hpp` has been create
 - Endpoint: `POST /apiv1/users/:user_id/devices/:device_id/certificates`
 - Server Error: `"Unable to send cert event. cert_event_producer_ is not available."`
 - Impact: Cannot generate certificate events that create signals
-- Reason: Test API server (`test-api.cjj365.cc`) doesn't have `cert_event_producer_` configured
+- Reason: the target server must have `cert_event_producer_` configured
 
 **Test Behavior:**
 - Test gracefully detects this error
