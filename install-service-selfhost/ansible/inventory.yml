@@ -39,7 +39,24 @@ all:
       hosts:
         localhost:
           ansible_connection: local
-          install_service_repo_path: /home/jianglibo/cert-ctrl
+          # IMPORTANT: do not point this at your *workspace* repo. The build role
+          # may perform git operations (including a forced checkout) which can
+          # discard local changes.
+          install_service_repo_path: /tmp/cert-ctrl-build
+
+          # Proxy env for the docker-builder host-side operations (git/vcpkg).
+          # If your proxy listens on the host's 127.0.0.1, the container must
+          # use host networking to reach it.
+          install_service_proxy_env:
+            HTTP_PROXY: http://127.0.0.1:7890
+            HTTPS_PROXY: http://127.0.0.1:7890
+            NO_PROXY: localhost,127.0.0.1
+
+          # Build observability:
+          # - stream live output to Ansible
+          # - fail the build if it produces no output for too long
+          install_service_build_stream_output: true
+          install_service_build_stall_seconds: 600
     install_service_remote:
       hosts:
         install-selfhost:

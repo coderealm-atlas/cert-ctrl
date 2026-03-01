@@ -63,6 +63,7 @@ reconfig_cmake="false"      # Whether to force CMake reconfiguration
 skip_preflight="false"      # Skip preflight checks (only for publishing)
 preflight_docker_pull="false"  # Whether preflight should docker pull base images
 parallel_builds="false"     # Whether to run per-platform builds concurrently
+linux_docker_variant=""     # ubuntu|alpine|both (optional; linux-docker only)
 
 derive_release_version_from_controller() {
   local repo_root
@@ -180,12 +181,13 @@ usage() {
 Usage: deploy.sh [options]
 
 Actions (default: pipeline)
-  --action build|collect|prepare|pipeline|quick
+  --action build|collect|prepare|pipeline|quick|cleanup
            build: Only build executables on remote hosts
            collect: Only collect built artifacts to local assets-staging/
            prepare: Only prepare assets for deployment
            pipeline: Full workflow (build + collect + prepare)
            quick: Pipeline + publish + GitHub release
+           cleanup: Stop/remove stale linux-docker builder containers
   --build windows|macos|freebsd|linux-docker|all
            Build for a specific platform (implies --action build)
   --builds windows,macos,freebsd,linux-docker|all
@@ -218,6 +220,12 @@ Options
            Skip preflight checks (only relevant with --publish-github-release)
   --preflight-docker-pull
            Also docker pull base images during preflight (can be slow behind proxies)
+  --stop-running-linux-docker-builds
+           Stop/remove running linux-docker builder containers before building
+  --linux-docker-variant ubuntu|alpine|both
+           Build only one linux-docker variant (default: both). Useful for debugging.
+           ubuntu -> scripts/build-ubuntu-docker.sh
+           alpine -> scripts/build-alpine-docker.sh
   --parallel-builds
            Build platforms concurrently (macos/freebsd/windows/linux-docker)
   -h|--help
@@ -238,6 +246,13 @@ Examples:
 
   # Force rebuild for Linux only
   ./deploy.sh --build linux-docker --force-build
+
+  # Debug only one linux-docker variant (separate logs)
+  ./deploy.sh --build linux-docker --linux-docker-variant ubuntu
+  ./deploy.sh --build linux-docker --linux-docker-variant alpine
+
+  # Stop stale linux-docker builder containers
+  ./deploy.sh --action cleanup
 EOF
 }
 
@@ -353,9 +368,17 @@ while [[ $# -gt 0 ]]; do
       preflight_docker_pull="true"
       shift
       ;;
+    --stop-running-linux-docker-builds)
+      extra_vars+=("install_service_stop_running_linux_docker_builds=true")
+      shift
+      ;;
     --parallel-builds)
       parallel_builds="true"
       shift
+      ;;
+    --linux-docker-variant)
+      linux_docker_variant="${2:-}"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -368,6 +391,19 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "${linux_docker_variant:-}" ]]; then
+  case "${linux_docker_variant,,}" in
+    ubuntu|alpine|both)
+      extra_vars+=("install_service_linux_docker_variant=${linux_docker_variant,,}")
+      ;;
+    *)
+      echo "error: invalid --linux-docker-variant: ${linux_docker_variant}" >&2
+      echo "hint: use one of: ubuntu | alpine | both" >&2
+      exit 2
+      ;;
+  esac
+fi
 
 # Pass release version to Ansible if specified
 if [[ -n "$release_version" && "$release_version" != "latest" ]]; then
@@ -475,6 +511,7 @@ case "$action" in
       run_github_release="true"
     fi
     ;;
+  cleanup) playbook="${ANSIBLE_DIR}/playbooks/cleanup_linux_docker.yml" ;;
   *)
     echo "Unknown action: $action" >&2
     exit 1

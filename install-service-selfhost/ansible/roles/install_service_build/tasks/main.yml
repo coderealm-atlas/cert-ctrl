@@ -433,6 +433,20 @@
   failed_when: false
   environment: "{{ install_service_env_effective }}"
 
+- name: Refuse forced checkout when repo is dirty (POSIX)
+  when: >-
+    not install_service_is_windows
+    and install_service_checkout_release_ref | default(true) | bool
+    and install_service_release_version | default('') | trim | length > 0
+    and (install_service_repo_is_dirty | default(false) | bool)
+    and not (install_service_allow_dirty_checkout | default(false) | bool)
+  fail:
+    msg: >-
+      Refusing to run a forced git checkout in a dirty repository: {{ install_service_repo_path }}.
+      This build would discard local changes.
+      Fix: commit/stash, or set install_service_allow_dirty_checkout=true (at your own risk),
+      or point install_service_repo_path at a dedicated clone (recommended).
+
 - name: Checkout requested release commit or tag (POSIX)
   when: not install_service_is_windows and install_service_checkout_release_ref | default(true) | bool and install_service_release_version | default('') | trim | length > 0
   shell: |
@@ -660,6 +674,28 @@
     install_service_ps_preamble_no_proxy: >-
       {{ install_service_ps_env_block_no_proxy }}{{ install_service_ps_msvc_block }}{{ install_service_ps_path_block }}
 
+- name: Stop/remove stale linux-docker builder containers
+  when: >-
+    not install_service_is_windows
+    and (install_service_stop_running_linux_docker_builds | default(false) | bool)
+    and ('build_linux_docker' in group_names)
+  shell: |
+    set -eu
+    if ! command -v docker >/dev/null 2>&1; then
+      exit 0
+    fi
+    ids_ubuntu="$(docker ps -q --filter 'ancestor=cert-ctrl/ubuntu-builder' 2>/dev/null || true)"
+    ids_alpine="$(docker ps -q --filter 'ancestor=cert-ctrl/alpine-builder' 2>/dev/null || true)"
+    ids="$(printf '%s\n%s\n' "$ids_ubuntu" "$ids_alpine" | awk 'NF' | sort -u || true)"
+    if [ -n "$ids" ]; then
+      echo "Stopping/removing stale linux-docker builder containers:" >&2
+      echo "$ids" >&2
+      docker rm -f $ids >/dev/null 2>&1 || true
+    else
+      echo "No running linux-docker builder containers found." >&2
+    fi
+  changed_when: false
+
 - name: Upload build script (POSIX)
   when: not install_service_is_windows and install_service_build_script_path | default('') | length > 0
   copy:
@@ -690,10 +726,89 @@
         if [ -z "$tmp" ]; then
           tmp="/tmp/install-service-build.$$.$(date +%s 2>/dev/null || echo 0).log"
         fi
+        stall_seconds="{{ install_service_build_stall_seconds | default(0) | int }}"
+        stream_output="{{ install_service_build_stream_output | default(false) | bool | ternary('1','0') }}"
+
+        last_mtime="$(stat -c %Y "$tmp" 2>/dev/null || echo 0)"
+        idle=0
+
         set +e
-        {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} >"$tmp" 2>&1
-        rc=$?
+        {{ install_service_build_script_remote_path | default('/tmp/install-service-build.sh') }} >"$tmp" 2>&1 &
+        pid=$!
+        tail_pid=""
+        if [ "$stream_output" = "1" ]; then
+          # Stream the temp log to stdout so Ansible shows live progress.
+          # The inspector script can still read the same temp file.
+          (tail -n 0 -f "$tmp" 2>/dev/null || true) &
+          tail_pid=$!
+        fi
+
+        while kill -0 "$pid" >/dev/null 2>&1; do
+          sleep 5
+          mtime="$(stat -c %Y "$tmp" 2>/dev/null || echo 0)"
+          if [ "$mtime" = "$last_mtime" ]; then
+            idle=$((idle + 5))
+          else
+            idle=0
+            last_mtime="$mtime"
+          fi
+
+          if [ "$stall_seconds" -gt 0 ] && [ "$idle" -ge "$stall_seconds" ]; then
+            activity_reason=""
+            if command -v docker >/dev/null 2>&1; then
+              ids_ubuntu="$(docker ps -q --filter 'ancestor=cert-ctrl/ubuntu-builder' 2>/dev/null || true)"
+              ids_alpine="$(docker ps -q --filter 'ancestor=cert-ctrl/alpine-builder' 2>/dev/null || true)"
+              ids="$(printf '%s\n%s\n' "$ids_ubuntu" "$ids_alpine" | awk 'NF' | sort -u || true)"
+              if [ -n "$ids" ]; then
+                for cid in $ids; do
+                  cpu_raw="$(docker stats --no-stream --format '{% raw %}{{.CPUPerc}}{% endraw %}' "$cid" 2>/dev/null | head -n 1 || true)"
+                  cpu_val="$(printf '%s' "$cpu_raw" | tr -d '%' | awk '{print $1}' || true)"
+                  if awk -v c="$cpu_val" 'BEGIN { exit !((c+0) > 0.1) }' >/dev/null 2>&1; then
+                    activity_reason="docker container CPU ${cpu_raw}"
+                    break
+                  fi
+
+                  if docker top "$cid" -eo pid,comm,args 2>/dev/null | grep -Eiq 'git[[:space:]]+index-pack|git[[:space:]]+fetch|vcpkg|cmake|ninja|make|cc1plus|clang\+\+|clang|g\+\+|gcc|ld'; then
+                    activity_reason="docker container has active build processes"
+                    break
+                  fi
+                done
+              fi
+            fi
+
+            if [ -z "$activity_reason" ]; then
+              if ps ax -o pcpu= -o args= 2>/dev/null | awk '($1+0) > 0.1 && $0 ~ /git[[:space:]]+index-pack/ { found=1 } END { exit !found }' >/dev/null 2>&1; then
+                activity_reason="host git index-pack"
+              fi
+            fi
+
+            if [ -n "$activity_reason" ]; then
+              echo "[watchdog] No log output for ${idle}s (threshold=${stall_seconds}s), but activity detected (${activity_reason}); continuing." >&2
+              idle=0
+              continue
+            fi
+
+            echo "[watchdog] Build appears stalled: no log output for ${idle}s (threshold=${stall_seconds}s)." >&2
+            echo "[watchdog] Failing the build and terminating PID $pid." >&2
+            kill -TERM "$pid" >/dev/null 2>&1 || true
+            sleep 10
+            kill -KILL "$pid" >/dev/null 2>&1 || true
+            wait "$pid" >/dev/null 2>&1 || true
+            rc=124
+            break
+          fi
+        done
+
+        if [ -z "${rc:-}" ]; then
+          wait "$pid"
+          rc=$?
+        fi
+
+        if [ -n "${tail_pid:-}" ]; then
+          kill "$tail_pid" >/dev/null 2>&1 || true
+        fi
         set -e
+
         cat "$tmp" | tee -a "$log" || true
         rm -f "$tmp" || true
         exit $rc
@@ -787,10 +902,87 @@
     if [ -z "$tmp" ]; then
       tmp="/tmp/install-service-build.$$.$(date +%s 2>/dev/null || echo 0).log"
     fi
+    stall_seconds="{{ install_service_build_stall_seconds | default(0) | int }}"
+    stream_output="{{ install_service_build_stream_output | default(false) | bool | ternary('1','0') }}"
+
+    last_mtime="$(stat -c %Y "$tmp" 2>/dev/null || echo 0)"
+    idle=0
+
     set +e
-    {{ item }} >"$tmp" 2>&1
-    rc=$?
+    {{ item }} >"$tmp" 2>&1 &
+    pid=$!
+    tail_pid=""
+    if [ "$stream_output" = "1" ]; then
+      (tail -n 0 -f "$tmp" 2>/dev/null || true) &
+      tail_pid=$!
+    fi
+
+    while kill -0 "$pid" >/dev/null 2>&1; do
+      sleep 5
+      mtime="$(stat -c %Y "$tmp" 2>/dev/null || echo 0)"
+      if [ "$mtime" = "$last_mtime" ]; then
+        idle=$((idle + 5))
+      else
+        idle=0
+        last_mtime="$mtime"
+      fi
+
+      if [ "$stall_seconds" -gt 0 ] && [ "$idle" -ge "$stall_seconds" ]; then
+        activity_reason=""
+        if command -v docker >/dev/null 2>&1; then
+          ids_ubuntu="$(docker ps -q --filter 'ancestor=cert-ctrl/ubuntu-builder' 2>/dev/null || true)"
+          ids_alpine="$(docker ps -q --filter 'ancestor=cert-ctrl/alpine-builder' 2>/dev/null || true)"
+          ids="$(printf '%s\n%s\n' "$ids_ubuntu" "$ids_alpine" | awk 'NF' | sort -u || true)"
+          if [ -n "$ids" ]; then
+            for cid in $ids; do
+              cpu_raw="$(docker stats --no-stream --format '{% raw %}{{.CPUPerc}}{% endraw %}' "$cid" 2>/dev/null | head -n 1 || true)"
+              cpu_val="$(printf '%s' "$cpu_raw" | tr -d '%' | awk '{print $1}' || true)"
+              if awk -v c="$cpu_val" 'BEGIN { exit !((c+0) > 0.1) }' >/dev/null 2>&1; then
+                activity_reason="docker container CPU ${cpu_raw}"
+                break
+              fi
+
+              if docker top "$cid" -eo pid,comm,args 2>/dev/null | grep -Eiq 'git[[:space:]]+index-pack|git[[:space:]]+fetch|vcpkg|cmake|ninja|make|cc1plus|clang\+\+|clang|g\+\+|gcc|ld'; then
+                activity_reason="docker container has active build processes"
+                break
+              fi
+            done
+          fi
+        fi
+
+        if [ -z "$activity_reason" ]; then
+          if ps ax -o pcpu= -o args= 2>/dev/null | awk '($1+0) > 0.1 && $0 ~ /git[[:space:]]+index-pack/ { found=1 } END { exit !found }' >/dev/null 2>&1; then
+            activity_reason="host git index-pack"
+          fi
+        fi
+
+        if [ -n "$activity_reason" ]; then
+          echo "[watchdog] No log output for ${idle}s (threshold=${stall_seconds}s), but activity detected (${activity_reason}); continuing." >&2
+          idle=0
+          continue
+        fi
+
+        echo "[watchdog] Build appears stalled: no log output for ${idle}s (threshold=${stall_seconds}s)." >&2
+        echo "[watchdog] Failing the build and terminating PID $pid." >&2
+        kill -TERM "$pid" >/dev/null 2>&1 || true
+        sleep 10
+        kill -KILL "$pid" >/dev/null 2>&1 || true
+        wait "$pid" >/dev/null 2>&1 || true
+        rc=124
+        break
+      fi
+    done
+
+    if [ -z "${rc:-}" ]; then
+      wait "$pid"
+      rc=$?
+    fi
+
+    if [ -n "${tail_pid:-}" ]; then
+      kill "$tail_pid" >/dev/null 2>&1 || true
+    fi
     set -e
+
     cat "$tmp" | tee -a "$log" || true
     rm -f "$tmp" || true
     exit $rc

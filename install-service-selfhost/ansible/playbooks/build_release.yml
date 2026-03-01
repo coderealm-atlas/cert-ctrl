@@ -29,6 +29,165 @@
   vars_files:
     - ../vars.yml
   pre_tasks:
+    - name: Determine linux-docker variant selector
+      set_fact:
+        install_service_linux_docker_variant_effective: "{{ (install_service_linux_docker_variant | default('both')) | lower }}"
+
+    - name: Fail on invalid linux-docker variant selector
+      when: install_service_linux_docker_variant_effective not in ['both', 'ubuntu', 'alpine']
+      fail:
+        msg: "install_service_linux_docker_variant must be one of: both, ubuntu, alpine"
+
+    - name: Select effective linux-docker jobs
+      set_fact:
+        install_service_linux_docker_jobs_effective: >-
+          {{
+            (install_service_linux_docker_variant_effective == 'ubuntu')
+            | ternary(
+              (
+                (
+                  install_service_linux_docker_jobs
+                  | selectattr('script', 'defined')
+                  | selectattr('script', 'search', 'build-ubuntu-docker.sh')
+                  | list
+                )
+                | default([])
+                | ternary(
+                  (
+                    install_service_linux_docker_jobs
+                    | selectattr('script', 'defined')
+                    | selectattr('script', 'search', 'build-ubuntu-docker.sh')
+                    | list
+                  ),
+                  (
+                    install_service_linux_docker_jobs
+                    | selectattr('name', 'defined')
+                    | selectattr('name', 'equalto', 'linux-x64')
+                    | list
+                  )
+                )
+              ),
+              (install_service_linux_docker_variant_effective == 'alpine')
+              | ternary(
+                (
+                  (
+                    install_service_linux_docker_jobs
+                    | selectattr('script', 'defined')
+                    | selectattr('script', 'search', 'build-alpine-docker.sh')
+                    | list
+                  )
+                  | default([])
+                  | ternary(
+                    (
+                      install_service_linux_docker_jobs
+                      | selectattr('script', 'defined')
+                      | selectattr('script', 'search', 'build-alpine-docker.sh')
+                      | list
+                    ),
+                    (
+                      install_service_linux_docker_jobs
+                      | selectattr('name', 'defined')
+                      | selectattr('name', 'equalto', 'linux-musl-x64')
+                      | list
+                    )
+                  )
+                ),
+                install_service_linux_docker_jobs
+              )
+            )
+          }}
+
+    - name: Fail when selected linux-docker variant yields no jobs
+      when:
+        - install_service_linux_docker_variant_effective in ['ubuntu', 'alpine']
+        - (install_service_linux_docker_jobs_effective | length) == 0
+      fail:
+        msg: >-
+          No linux-docker jobs match variant={{ install_service_linux_docker_variant_effective }}.
+          Check install_service_linux_docker_jobs definitions.
+          Available job scripts: {{ (install_service_linux_docker_jobs | map(attribute='script') | list) | default([]) }}
+          Available job names: {{ (install_service_linux_docker_jobs | map(attribute='name') | list) | default([]) }}
+
+    - name: Use separate aggregated build log per linux-docker variant
+      when: install_service_linux_docker_variant_effective in ['ubuntu', 'alpine']
+      set_fact:
+        install_service_build_log_path_posix: "/tmp/install-service-build-{{ install_service_linux_docker_variant_effective }}.log"
+
+    - name: Reset build commands from effective linux-docker jobs
+      set_fact:
+        install_service_build_commands: []
+
+    - name: Build effective linux-docker build command list
+      set_fact:
+        install_service_build_commands: "{{ install_service_build_commands + ['BUILD_TARGET=cert_ctrl ' ~ item.script ~ ' ' ~ item.preset] }}"
+      loop: "{{ install_service_linux_docker_jobs_effective }}"
+
+    - name: Ensure rsync is available (Docker host)
+      command: rsync --version
+      changed_when: false
+
+    - name: Determine controller repo root (Docker host)
+      shell: |
+        set -eu
+        cd "{{ playbook_dir }}/../../.."
+        pwd -P
+      register: install_service_controller_repo_root
+      changed_when: false
+
+    - name: Sync controller repo into build repo path (Docker host)
+      shell: |
+        set -eu
+        src="{{ install_service_controller_repo_root.stdout | trim }}"
+        dst="{{ install_service_repo_path }}"
+        if [ -z "$dst" ] || [ "$dst" = "/" ]; then
+          echo "refusing to sync into an unsafe destination: '$dst'" >&2
+          exit 2
+        fi
+        mkdir -p "$dst"
+        # Keep .git so git-describe works, but avoid copying build outputs.
+        rsync -a --delete \
+          --exclude 'build/' \
+          --exclude 'install/' \
+          --exclude '.cache/' \
+          --exclude '.vscode/' \
+          --exclude '.idea/' \
+          --exclude 'out/' \
+          --exclude 'dist/' \
+          --exclude '.git/index.lock' \
+          "$src/" "$dst/"
+      changed_when: false
+
+    - name: Disable git network operations and forced checkouts for linux-docker builds
+      # We just synced a working tree. Avoid any git pull/fetch/checkout in the build role,
+      # which could hang behind proxies or discard local changes.
+      set_fact:
+        install_service_skip_git_pull: true
+        install_service_skip_git_fetch_tags: true
+        install_service_checkout_release_ref: false
+
+    - name: Report proxy environment for linux-docker (masked)
+      shell: |
+        set -eu
+        if env | grep -i proxy >/dev/null 2>&1; then
+          env | grep -i proxy | sort | sed -E 's#(://)[^/@]*@#\1***@#g'
+        else
+          echo "(no proxy env vars found)"
+        fi
+      changed_when: false
+      environment: "{{ install_service_proxy_env | default({}) }}"
+
+    - name: Preflight connectivity to GitHub (curl)
+      shell: |
+        set -eu
+        url="https://github.com"
+        # Fail fast on proxy/DNS/TLS issues before starting a long build.
+        curl -fsSIL --max-time 15 "$url" >/dev/null
+        # Print a small proof line without being too verbose.
+        code="$(curl -sSIL --max-time 15 -o /dev/null -w '%{http_code}' "$url" || true)"
+        echo "curl_ok url=$url http_code=${code:-unknown}"
+      changed_when: false
+      environment: "{{ install_service_proxy_env | default({}) }}"
+
     - name: Determine release version on Docker build host
       when: install_service_release_version | length == 0
       shell: |
@@ -83,7 +242,7 @@
         fi
       args:
         chdir: "{{ install_service_repo_path }}"
-      loop: "{{ install_service_linux_docker_jobs }}"
+      loop: "{{ install_service_linux_docker_jobs_effective }}"
       loop_control:
         loop_var: docker_job
       register: install_service_prefix_freshness
@@ -107,6 +266,6 @@
         install_service_install_prefix: "{{ install_service_repo_path }}/{{ docker_job.install_prefix }}"
         install_service_asset_name: "{{ docker_job.asset_name }}"
         install_service_archive_ext: .tar.gz
-      loop: "{{ install_service_linux_docker_jobs }}"
+      loop: "{{ install_service_linux_docker_jobs_effective }}"
       loop_control:
         loop_var: docker_job

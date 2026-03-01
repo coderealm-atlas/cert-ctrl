@@ -1,0 +1,23 @@
+---
+- name: Cleanup linux-docker builder containers
+  hosts: build_linux_docker
+  vars_files:
+    - ../vars.yml
+  tasks:
+    - name: Stop/remove running builder containers (Ubuntu/Alpine)
+      shell: |
+        set -eu
+        if ! command -v docker >/dev/null 2>&1; then
+          exit 0
+        fi
+        ids_ubuntu="$(docker ps -aq --filter 'ancestor=cert-ctrl/ubuntu-builder' 2>/dev/null || true)"
+        ids_alpine="$(docker ps -aq --filter 'ancestor=cert-ctrl/alpine-builder' 2>/dev/null || true)"
+        ids="$(printf '%s\n%s\n' "$ids_ubuntu" "$ids_alpine" | awk 'NF' | sort -u || true)"
+        if [ -n "$ids" ]; then
+          echo "Stopping/removing builder containers:" >&2
+          echo "$ids" >&2
+          docker rm -f $ids >/dev/null 2>&1 || true
+        else
+          echo "No running builder containers found." >&2
+        fi
+      changed_when: false
