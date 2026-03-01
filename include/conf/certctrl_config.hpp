@@ -35,6 +35,23 @@ struct ShortPollConfig {
   int fast_mode_ttl_seconds{120};
 };
 
+struct ExpiryGuardConfig {
+  // When enabled, the agent periodically checks cached certificate materials
+  // (local files under runtime_dir/resources/...) and can trigger a refresh.
+  bool enabled{false};
+
+  // How often to scan cached cert artifacts.
+  int interval_seconds{3600};
+
+  // Renewal window = max(min_window_seconds, ratio * lifetime_seconds).
+  // This adapts to both short-lived and long-lived certificates.
+  int min_window_seconds{86400};
+  double ratio{0.15};
+
+  // Cooldown between force-update actions.
+  int cooldown_seconds{21600};
+};
+
 struct CertctrlConfig {
   bool auto_apply_config{true};
   std::string verbose{};
@@ -50,6 +67,7 @@ struct CertctrlConfig {
   int jitter_seconds{1};
   int backoff_seconds{30};
   ShortPollConfig short_poll{};
+  ExpiryGuardConfig expiry_guard{};
 
   friend CertctrlConfig tag_invoke(const json::value_to_tag<CertctrlConfig> &,
                                    const json::value &jv) {
@@ -96,6 +114,34 @@ struct CertctrlConfig {
 
         if (auto *p = jo_p->if_contains("interval_seconds"))
           cc.interval_seconds = p->to_number<int>();
+
+        if (auto *eg_val = jo_p->if_contains("expiry_guard");
+            eg_val && eg_val->is_object()) {
+          const auto &eg_obj = eg_val->as_object();
+          ExpiryGuardConfig eg{};
+          if (auto *p = eg_obj.if_contains("enabled")) {
+            eg.enabled = p->as_bool();
+          }
+          if (auto *p = eg_obj.if_contains("interval_seconds")) {
+            eg.interval_seconds = p->to_number<int>();
+          }
+          if (auto *p = eg_obj.if_contains("min_window_seconds")) {
+            eg.min_window_seconds = p->to_number<int>();
+          }
+          if (auto *p = eg_obj.if_contains("ratio")) {
+            if (p->is_double()) {
+              eg.ratio = p->as_double();
+            } else if (p->is_int64()) {
+              eg.ratio = static_cast<double>(p->as_int64());
+            } else if (p->is_uint64()) {
+              eg.ratio = static_cast<double>(p->as_uint64());
+            }
+          }
+          if (auto *p = eg_obj.if_contains("cooldown_seconds")) {
+            eg.cooldown_seconds = p->to_number<int>();
+          }
+          cc.expiry_guard = std::move(eg);
+        }
 
         if (auto *sp_val = jo_p->if_contains("short_poll");
             sp_val && sp_val->is_object()) {

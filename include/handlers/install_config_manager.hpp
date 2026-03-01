@@ -66,6 +66,10 @@ public:
   monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
   ensure_cached_config();
 
+  // Full refresh from remote followed by apply of copy and CA import actions.
+  // This is the programmatic equivalent of `cert-ctrl install-config pull`.
+  monad::IO<void> pull_and_apply_full();
+
   monad::IO<void>
   apply_copy_actions(const dto::DeviceInstallConfigDto &config,
                      const std::optional<std::string> &target_ob_type,

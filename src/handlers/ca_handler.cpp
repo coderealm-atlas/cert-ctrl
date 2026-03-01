@@ -12,6 +12,7 @@
 #include <fmt/format.h>
 
 #include "openssl/crypt_util.hpp"
+#include "openssl/x509_time.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -21,31 +22,6 @@
 namespace certctrl {
 namespace {
 namespace fs = std::filesystem;
-
-#ifdef _WIN32
-inline std::time_t timegm_portable(std::tm *tm) { return _mkgmtime(tm); }
-#else
-inline std::time_t timegm_portable(std::tm *tm) { return timegm(tm); }
-#endif
-
-std::optional<std::chrono::system_clock::time_point>
-asn1_time_to_time_point(const ASN1_TIME *asn1_time) {
-  if (!asn1_time) {
-    return std::nullopt;
-  }
-
-  std::tm tm{};
-  if (ASN1_TIME_to_tm(asn1_time, &tm) != 1) {
-    return std::nullopt;
-  }
-
-  std::time_t epoch = timegm_portable(&tm);
-  if (epoch == static_cast<std::time_t>(-1)) {
-    return std::nullopt;
-  }
-
-  return std::chrono::system_clock::from_time_t(epoch);
-}
 
 std::string x509_name_to_string(X509_NAME *name) {
   if (!name) {
@@ -139,8 +115,10 @@ std::optional<ParsedCertificate> parse_certificate_pem(const std::string &pem,
   ParsedCertificate info;
   info.subject = x509_name_to_string(X509_get_subject_name(cert.get()));
   info.issuer = x509_name_to_string(X509_get_issuer_name(cert.get()));
-  info.not_before = asn1_time_to_time_point(X509_get0_notBefore(cert.get()));
-  info.not_after = asn1_time_to_time_point(X509_get0_notAfter(cert.get()));
+  info.not_before = cjj365::opensslutil::asn1_time_to_time_point(
+      X509_get0_notBefore(cert.get()));
+  info.not_after = cjj365::opensslutil::asn1_time_to_time_point(
+      X509_get0_notAfter(cert.get()));
   info.fingerprint = fingerprint_sha256(cert.get());
   info.serial_hex = serial_to_hex(X509_get0_serialNumber(cert.get()));
 

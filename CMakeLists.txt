@@ -664,6 +664,7 @@ list(APPEND APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/certificates_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/update_handler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/install_config_apply_handler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/expiry_guard.cpp
     # ${CMAKE_CURRENT_SOURCE_DIR}/src/handlers/short_poll_runner.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/state/device_state_store.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/websocket/websocket_client.cpp

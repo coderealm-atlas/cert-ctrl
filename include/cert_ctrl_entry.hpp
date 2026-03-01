@@ -38,6 +38,7 @@
 // #include "handlers/short_poll_runner.hpp"
 #include "handlers/update_handler.hpp"
 #include "handlers/updates_polling_handler.hpp"
+#include "handlers/expiry_guard.hpp"
 #include "http_client_manager.hpp"
 #include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
@@ -117,6 +118,7 @@ class App : public std::enable_shared_from_this<App<AppTag>> {
   const certctrl::CertctrlConfig *certctrl_config_;
   const certctrl::WebsocketConfig *websocket_config_;
   std::shared_ptr<certctrl::WebsocketClient> websocket_client_;
+  std::shared_ptr<certctrl::ExpiryGuard> expiry_guard_;
 
 public:
   App(cjj365::ConfigSources &config_sources, certctrl::CliCtx &cli_ctx)
@@ -323,6 +325,9 @@ public:
         if (shared->websocket_client_) {
           shared->websocket_client_->Stop();
         }
+        if (shared->expiry_guard_) {
+          shared->expiry_guard_->Stop();
+        }
         shared->blocker_.stop();
       }
     });
@@ -509,6 +514,22 @@ public:
         return shutdown();
       }
     }
+
+    // In keep-running mode, start the periodic expiry guard (if enabled).
+    if (cli_ctx_.params.keep_running && certctrl_config_ && output_hub_) {
+      const auto &eg = certctrl_config_->expiry_guard;
+      if (eg.enabled) {
+        auto install_manager = injector.template create<
+            std::shared_ptr<certctrl::InstallConfigManager>>();
+        auto &cfg_provider =
+            injector.template create<certctrl::ICertctrlConfigProvider &>();
+        expiry_guard_ = std::make_shared<certctrl::ExpiryGuard>(
+            io_context_manager_->ioc(), cfg_provider, *output_hub_,
+            std::move(install_manager));
+        expiry_guard_->Start();
+      }
+    }
+
     signals_ = std::make_unique<boost::asio::signal_set>(
         io_context_manager_->ioc(), SIGINT, SIGTERM);
     signals_->async_wait(
@@ -532,6 +553,10 @@ public:
     std::call_once(shutdown_once_flag_, [self] {
       self->output_hub_->logger().debug()
           << "Shutting down App..." << std::endl;
+      if (self->expiry_guard_) {
+        self->expiry_guard_->Stop();
+        self->expiry_guard_.reset();
+      }
       // 1. Disable further signal handling early
       if (self->signals_) {
         self->output_hub_->logger().debug()

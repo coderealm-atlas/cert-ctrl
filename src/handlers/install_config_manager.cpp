@@ -1376,6 +1376,24 @@ InstallConfigManager::ensure_cached_config() {
   return refresh_from_remote(std::nullopt, std::nullopt);
 }
 
+monad::IO<void> InstallConfigManager::pull_and_apply_full() {
+  using ReturnIO = monad::IO<void>;
+  return ensure_config_version(std::nullopt, std::nullopt)
+      .then([this](std::shared_ptr<const dto::DeviceInstallConfigDto> cfg_ptr)
+                -> ReturnIO {
+        if (!cfg_ptr) {
+          output_.logger().warning()
+              << "install-config pull returned no payload" << std::endl;
+          return ReturnIO::pure();
+        }
+        return apply_copy_actions(*cfg_ptr, std::nullopt, std::nullopt)
+            .then([this, cfg_ptr]() {
+              return apply_import_ca_actions(*cfg_ptr, std::nullopt,
+                                             std::nullopt);
+            });
+      });
+}
+
 monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
 InstallConfigManager::ensure_config_version(
     std::optional<std::int64_t> expected_version,

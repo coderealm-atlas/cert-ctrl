@@ -19,5 +19,12 @@
         "jitter_seconds": 1,
         "backoff_seconds": 30,
         "fast_mode_ttl_seconds": 120
+    },
+    "expiry_guard": {
+        "enabled": false,
+        "interval_seconds": 3600,
+        "min_window_seconds": 86400,
+        "ratio": 0.15,
+        "cooldown_seconds": 21600
     }
 }
