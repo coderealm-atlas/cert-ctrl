@@ -271,6 +271,7 @@ public:
         di::bind<certctrl::ISessionRefresher>()
             .to<certctrl::SessionRefresher>()
             .in(di::singleton),
+        di::bind<certctrl::ExpiryGuard>().in(di::singleton),
         di::bind<customio::IOutput>().to(output_hub),
         di::bind<certctrl::CliCtx>().to(cli_ctx_));
     // Register all handlers for aggregate injection; DI will convert to
@@ -519,13 +520,8 @@ public:
     if (cli_ctx_.params.keep_running && certctrl_config_ && output_hub_) {
       const auto &eg = certctrl_config_->expiry_guard;
       if (eg.enabled) {
-        auto install_manager = injector.template create<
-            std::shared_ptr<certctrl::InstallConfigManager>>();
-        auto &cfg_provider =
-            injector.template create<certctrl::ICertctrlConfigProvider &>();
-        expiry_guard_ = std::make_shared<certctrl::ExpiryGuard>(
-            io_context_manager_->ioc(), cfg_provider, *output_hub_,
-            std::move(install_manager));
+        expiry_guard_ =
+            injector.template create<std::shared_ptr<certctrl::ExpiryGuard>>();
         expiry_guard_->Start();
       }
     }

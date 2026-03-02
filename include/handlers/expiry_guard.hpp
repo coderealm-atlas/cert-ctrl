@@ -7,12 +7,12 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
+#include <thread>
 #include <vector>
 
 #include "conf/certctrl_config.hpp"
-#include "customio/console_output.hpp"
 #include "handlers/install_config_manager.hpp"
+#include "util/my_logging.hpp" // IWYU pragma: keep
 
 namespace certctrl {
 
@@ -25,10 +25,10 @@ namespace certctrl {
 // - Force update is rate-limited via a persisted cooldown
 class ExpiryGuard : public std::enable_shared_from_this<ExpiryGuard> {
 public:
-  ExpiryGuard(boost::asio::io_context &ioc,
-              certctrl::ICertctrlConfigProvider &config_provider,
-              customio::ConsoleOutput &output,
+  ExpiryGuard(certctrl::ICertctrlConfigProvider &config_provider,
               std::shared_ptr<certctrl::InstallConfigManager> install_manager);
+
+  ~ExpiryGuard();
 
   void Start();
   void Stop();
@@ -65,13 +65,18 @@ private:
   std::filesystem::path state_file_path() const;
 
 private:
-  boost::asio::io_context &ioc_;
+  boost::asio::io_context ioc_;
+  boost::asio::executor_work_guard<boost::asio::io_context::executor_type>
+      work_guard_;
   boost::asio::strand<boost::asio::io_context::executor_type> strand_;
   boost::asio::steady_timer timer_;
 
+  std::thread worker_;
+
   certctrl::ICertctrlConfigProvider &config_provider_;
-  customio::ConsoleOutput &output_;
   std::shared_ptr<certctrl::InstallConfigManager> install_manager_;
+
+  src::severity_logger<trivial::severity_level> lg_;
 
   bool stop_requested_{false};
   bool tick_inflight_{false};
