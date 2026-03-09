@@ -15,7 +15,7 @@ Legacy server contract for polling remains documented in:
 - `cert.unassigned` removes cached materials but does not yet delete deployed
   files/directories. Manual cleanup is required until install actions gain
   removal hooks.
-- Cursor expiry (`409 Conflict`) requires manual intervention (delete `state/last_cursor.txt`).
+- Cursor expiry (`409 Conflict`, code `40901`) now triggers an automatic full-resync attempt in the polling client. If that recovery fails, operators can still run `cert-ctrl updates clear-cursor` or wipe local runtime state and re-authenticate.
 - No built-in metrics endpoint; operators rely on logs.
 - Self-update remains manual; the CLI points to installer scripts per platform.
 - Lacks dedicated diagnostics for certificate/CA issues (e.g. staged material validation, trust store checks); add `certificates` and `diagnostics ca` subcommands to help operators triage failures quickly.

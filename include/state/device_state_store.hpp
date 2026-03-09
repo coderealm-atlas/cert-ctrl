@@ -129,7 +129,6 @@ public:
 
 private:
   bool ensure_initialized() const;
-  void migrate_legacy_state_if_present() const;
   void close_db() const;
   std::string import_ca_key(std::int64_t ca_id) const;
   std::optional<std::int64_t> parse_int64(const std::string &value) const;
@@ -142,18 +141,12 @@ private:
   std::optional<std::string>
   with_transaction(const std::function<std::optional<std::string>()> &body) const;
 
-  static std::optional<std::string>
-  read_trimmed_file(const std::filesystem::path &path);
-  static std::optional<std::string>
-  read_file_contents(const std::filesystem::path &path);
-
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;
   mutable std::mutex mutex_;
   mutable std::filesystem::path db_path_;
   mutable sqlite3 *db_{nullptr};
   mutable bool initialized_{false};
-  mutable bool legacy_checked_{false};
 };
 
 } // namespace certctrl

@@ -181,6 +181,7 @@ Known `payload.type` values currently handled by the agent:
 - `cert.unassigned`
 - `ca.assigned`
 - `ca.unassigned`
+- `state.resync_required`
 
 Proposed `payload.type` values (requires agent support; safe for rollout because unknown types are still acked/advanced):
 - `config.updated`
@@ -331,7 +332,8 @@ Because streams are bounded (via `MAXLEN`), the client token can become too old 
 
 - If the client `resume_token` is **older than the earliest entry currently retained** in the stream:
   - the server MUST treat this as a **gap** (some updates were trimmed and cannot be replayed).
-  - the server SHOULD resume delivery from the earliest retained entry (best-effort), and SHOULD additionally trigger a “full resync” update if the domain requires it (implementation-specific).
+  - the server SHOULD require a generic full resync and SHOULD additionally resume delivery from the earliest retained entry as best-effort catch-up.
+  - A practical envelope for that is `updates.signal` with `payload.type = "state.resync_required"`, plus `reason = "cursor_trimmed"` and the earliest retained stream id in `ref.earliest_retained_id`.
   - Note: the missing trimmed updates are unrecoverable from the stream; correctness must rely on periodic/snapshot-style signals for any state that cannot tolerate gaps.
 
 Practical sizing guideline:

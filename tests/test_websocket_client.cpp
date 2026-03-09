@@ -314,6 +314,17 @@ class StaticCertctrlConfigProvider : public certctrl::ICertctrlConfigProvider {
   const certctrl::CertctrlConfig &get() const override { return config_; }
   certctrl::CertctrlConfig &get() override { return config_; }
 
+  monad::MyVoidResult refresh_install_update_grace_window(
+      bool enable_flags) override {
+    if (enable_flags) {
+      config_.auto_apply_config = true;
+      config_.auto_allow_after_update_script_hash = true;
+    }
+    return monad::MyVoidResult::Ok();
+  }
+
+  void expire_install_update_grace_window_if_needed() override {}
+
   monad::MyVoidResult save(const boost::json::object &content) override {
     for (const auto &kv : content) {
       saved_[kv.key()] = kv.value();

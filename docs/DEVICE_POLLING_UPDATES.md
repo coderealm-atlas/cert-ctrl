@@ -92,9 +92,9 @@ Removed legacy: `device_id` query parameter (now derived exclusively from token 
 
 - Monotonic per device, opaque string. Example: Redis Stream ID like `1699999999-42`.
 - Clients store the last `cursor`. On next call, pass it via `If-None-Match` or `cursor`.
-- If the server detects a stale or expired cursor, it MAY respond with 409 and guidance to reset:
-  - 409 Conflict: `{ "error": { "code": 40901, "what": "Cursor expired. Reset required." } }`
-- Reset behavior: Call without a cursor to receive the latest small batch and a fresh cursor; or fetch a full “state snapshot” from dedicated endpoints if needed.
+- If the server detects a stale or expired cursor, it MAY respond with 409 and require a generic full resync:
+  - 409 Conflict: `{ "error": { "code": 40901, "what": "Cursor expired. Full resync required.", "params": { "action": "full_resync", "reset_cursor": true, "signal_type": "state.resync_required", "reason": "cursor_trimmed", "earliest_retained_id": "1736900123-42" } } }`
+- Reset behavior: a client may clear the persisted cursor and retry from the current stream head, but the stronger contract is to run a full resync from the latest server snapshot before continuing.
 
 ## Update signal types
 
@@ -144,6 +144,14 @@ Currently defined types:
   - Action: Device should remove the CA from local trust stores if present. The device can confirm absence via `GET /apiv1/devices/self/cas/:ca_id/bundle`.
 
 Note: The set is extensible; clients must ignore unknown `type` values gracefully.
+
+- state.resync_required
+  - Meaning: The server detected a durable replay gap, usually because the client cursor predates the earliest retained Redis Stream entry.
+  - ref fields:
+    - `action` = `full_resync`
+    - `reason` = `cursor_trimmed`
+    - `earliest_retained_id` (string, optional)
+  - Action: Client should clear stored resume state, rebuild local derived state from the latest server snapshot, then continue normal polling / websocket delivery.
 
 ## Integrating device_install_configs changes
 
@@ -250,7 +258,7 @@ Production hint:
 - For very low update frequency (weeks / months) prefer periodic non-blocking polling (`wait=0`) at your heartbeat interval (e.g. every few minutes). This keeps implementation simple and avoids holding idle connections.
 - Optionally escalate to long-poll (`wait` 10–25) only during high-interest windows requiring lower latency (e.g. active rollout). Revert to `wait=0` afterwards.
 - Consider adaptive backoff on repeated 204s (e.g. 5m → 15m → 1h → 6h → 24h cap) resetting after any 200.
-- On 409 (cursor expired), clear cursor and retry; optionally perform a state resync.
+- On 409 with `error.code=40901` or `params.action=full_resync`, run the generic full-resync path, clear the stored cursor, then retry.
 - Handle unknown `type` values by ignoring them.
 - For `install.updated`: refetch install config; compare `version` or `installs_hash_b64` if needed.
 - For `cert.updated`: call the certificate bundle self endpoint to retrieve the deploy materials. Handle 409 WRAP_PENDING (wrap still pending) by backing off and waiting for the next update; treat 404/410 as confirmation that the cert was removed.
@@ -306,7 +314,7 @@ Production hint:
 ### Cursor expired
 - Response:
   - 409 Conflict
-  - Body: `{ "error": { "code": 40901, "what": "Cursor expired. Reset required." } }`
+  - Body: `{ "error": { "code": 40901, "what": "Cursor expired. Full resync required.", "params": { "action": "full_resync", "reset_cursor": true, "signal_type": "state.resync_required", "reason": "cursor_trimmed", "earliest_retained_id": "1736900123-42" } } }`
 
 ## Data mapping from DB
 

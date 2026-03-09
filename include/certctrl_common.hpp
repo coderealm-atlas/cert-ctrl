@@ -175,11 +175,11 @@ inline bool parse_bool(const std::string &value) {
 }
 
 inline bool is_known_subcommand(std::string_view candidate) {
-  static constexpr std::array<std::string_view, 11> kKnown{
+  static constexpr std::array<std::string_view, 12> kKnown{
       "login",          "install-config", "certificates",
       "ca",             "cas",             "info",
       "device",         "conf",            "update",
-      "updates-polling","install"};
+      "updates",        "updates-polling", "install"};
   return std::find(kKnown.begin(), kKnown.end(), candidate) != kKnown.end();
 }
 

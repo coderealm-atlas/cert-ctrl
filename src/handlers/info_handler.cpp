@@ -215,7 +215,6 @@ monad::IO<void> InfoHandler::start() {
   auto public_id =
       cjj365::device::device_public_id_from_fingerprint(fingerprint);
   std::optional<std::string> stored_device_id;
-  fs::path device_id_path;
 
   // Prefer device id from state store (SQLite); getter will lazily
   // initialize the store if needed so the DB remains authoritative.
@@ -223,25 +222,14 @@ monad::IO<void> InfoHandler::start() {
     stored_device_id = id;
   }
 
-  // Legacy fallback: only consult the flat file if nothing valid was found
-  // in SQLite (e.g., first run before login).
-  if (!stored_device_id && !runtime_dir.empty()) {
-    device_id_path = runtime_dir / "state" / "device_public_id.txt";
-    stored_device_id = read_trimmed(device_id_path);
-  }
-
   const bool stored_valid =
       stored_device_id && is_valid_device_public_id(*stored_device_id);
   if (!stored_valid) {
     const bool had_existing_id = static_cast<bool>(stored_device_id);
-    if (had_existing_id && device_id_path.empty()) {
+    if (had_existing_id) {
       output_hub_.logger().warning()
           << "Ignoring malformed device_public_id stored in SQLite; "
-          << "rewriting derived identifier." << std::endl;
-    } else if (had_existing_id) {
-      output_hub_.logger().warning()
-          << "Ignoring malformed device_public_id stored at "
-          << device_id_path.string() << "; rewriting derived identifier."
+          << "rewriting derived identifier."
           << std::endl;
     }
     stored_device_id.reset();
@@ -252,30 +240,9 @@ monad::IO<void> InfoHandler::start() {
                              fingerprint_payload)) {
       output_hub_.logger().warning()
           << "Failed to persist device_public_id to SQLite: " << *err
-          << "; falling back to legacy file" << std::endl;
-      if (!device_id_path.empty()) {
-        if (!had_existing_id) {
-          output_hub_.logger().info()
-              << "device_public_id.txt missing; writing derived identifier to "
-              << device_id_path.string() << std::endl;
-        }
-        if (auto err2 = write_text_0600(device_id_path, public_id)) {
-          output_hub_.logger().warning()
-              << "Failed to persist device_public_id: " << *err2 << std::endl;
-        } else {
-          stored_device_id = public_id;
-        }
-      } else {
-        output_hub_.logger().warning()
-            << "Unable to persist device_public_id: no writable state directory"
-            << std::endl;
-      }
+          << std::endl;
     } else {
       stored_device_id = public_id;
-      if (!device_id_path.empty()) {
-        std::error_code ec;
-        std::filesystem::remove(device_id_path, ec);
-      }
     }
   }
   auto default_name = fmt::format("CLI Device {}", device_info.hostname.empty()

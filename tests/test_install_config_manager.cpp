@@ -6,6 +6,7 @@
 #include <boost/di.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
+#include <ctime>
 #include <cstdlib>
 #include <filesystem>
 #include <fmt/format.h>
@@ -1794,4 +1795,132 @@ TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
     ASSERT_TRUE(local_obj.if_contains("trusted_after_update_script_hashes"));
     ASSERT_TRUE(
       local_obj.at("trusted_after_update_script_hashes").is_array());
+  }
+
+  TEST_F(InstallConfigManagerFixture,
+       GraceWindowExpiryDisablesLocalAutomationFlags) {
+    auto config_dir = make_temp_runtime_dir();
+    auto runtime_dir = make_temp_runtime_dir();
+
+    createHarness(config_dir, runtime_dir,
+          std::make_unique<MockInstallConfigFetcher>(dto::DeviceInstallConfigDto{}),
+          std::make_unique<MockerResourceFetcher>(""),
+          std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+
+    auto &provider = harness_->config_provider();
+    const auto expired_at = static_cast<std::int64_t>(std::time(nullptr)) - 1;
+    provider.get().auto_apply_config = true;
+    provider.get().auto_allow_after_update_script_hash = true;
+    provider.get().install_update_grace_expires_at_epoch_seconds = expired_at;
+    auto save_r = provider.save({
+        {"auto_apply_config", true},
+        {"auto_allow_after_update_script_hash", true},
+      {"install_update_grace_expires_at_epoch_seconds", expired_at},
+    });
+    ASSERT_TRUE(save_r.is_ok()) << save_r.error();
+
+    const auto &cfg = provider.get();
+    EXPECT_FALSE(cfg.auto_apply_config);
+    EXPECT_FALSE(cfg.auto_allow_after_update_script_hash);
+    EXPECT_EQ(cfg.install_update_grace_expires_at_epoch_seconds, 0);
+
+    const auto local_path = config_dir / "application.local.json";
+    ASSERT_TRUE(std::filesystem::exists(local_path));
+    auto local_json = boost::json::parse(read_file(local_path));
+    ASSERT_TRUE(local_json.is_object());
+    auto &local_obj = local_json.as_object();
+    ASSERT_TRUE(local_obj.if_contains("auto_apply_config"));
+    EXPECT_FALSE(local_obj.at("auto_apply_config").as_bool());
+    ASSERT_TRUE(local_obj.if_contains("auto_allow_after_update_script_hash"));
+    EXPECT_FALSE(local_obj.at("auto_allow_after_update_script_hash").as_bool());
+  }
+
+  TEST_F(InstallConfigManagerFixture,
+       ManualRearmRestoresGraceWindowAndLocalFlags) {
+    misc::ThreadNotifier notifier(3000);
+    auto config_dir = make_temp_runtime_dir();
+    auto runtime_dir = make_temp_runtime_dir();
+
+    createHarness(config_dir, runtime_dir,
+          std::make_unique<MockInstallConfigFetcher>(dto::DeviceInstallConfigDto{}),
+          std::make_unique<MockerResourceFetcher>(""),
+          std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+
+    auto &provider = harness_->config_provider();
+    provider.get().auto_apply_config = false;
+    provider.get().auto_allow_after_update_script_hash = false;
+    provider.get().install_update_grace_expires_at_epoch_seconds = 0;
+    auto save_r = provider.save({
+        {"auto_apply_config", false},
+        {"auto_allow_after_update_script_hash", false},
+        {"install_update_grace_expires_at_epoch_seconds", 0},
+    });
+    ASSERT_TRUE(save_r.is_ok()) << save_r.error();
+
+    std::optional<monad::MyVoidResult> rearm_r;
+    harness_->install_manager()
+      .rearm_local_install_update_window()
+      .run([&](auto result) {
+      rearm_r = std::move(result);
+      notifier.notify();
+      });
+    notifier.waitForNotification();
+
+    ASSERT_TRUE(rearm_r.has_value());
+    ASSERT_TRUE(rearm_r->is_ok()) << rearm_r->error();
+
+    const auto &cfg = provider.get();
+    EXPECT_TRUE(cfg.auto_apply_config);
+    EXPECT_TRUE(cfg.auto_allow_after_update_script_hash);
+    EXPECT_GT(cfg.install_update_grace_expires_at_epoch_seconds,
+              static_cast<std::int64_t>(std::time(nullptr)));
+  }
+
+  TEST_F(InstallConfigManagerFixture,
+       FullResyncFromServerClearsDerivedCachesAndRefreshesSnapshot) {
+    misc::ThreadNotifier notifier(3000);
+    auto config_dir = make_temp_runtime_dir();
+    auto runtime_dir = make_temp_runtime_dir();
+
+    int fetch_calls = 0;
+    auto fetcher = std::make_unique<LambdaInstallConfigFetcher>(
+        [&fetch_calls](std::optional<std::string>, std::optional<std::int64_t>,
+                       const std::optional<std::string> &)
+            -> monad::IO<dto::DeviceInstallConfigDto> {
+          ++fetch_calls;
+          dto::DeviceInstallConfigDto cfg{};
+          cfg.version = 42;
+          return monad::IO<dto::DeviceInstallConfigDto>::pure(cfg);
+        });
+
+    createHarness(config_dir, runtime_dir, std::move(fetcher),
+                  std::make_unique<MockerResourceFetcher>(""),
+                  std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+
+    std::filesystem::create_directories(runtime_dir / "state");
+    std::filesystem::create_directories(runtime_dir / "resources" / "certs" /
+                                        "123" / "current");
+    std::ofstream(runtime_dir / "state" / "install_config.json")
+        << R"({"stale":true})";
+    std::ofstream(runtime_dir / "state" / "install_version.txt") << "7\n";
+    std::ofstream(runtime_dir / "resources" / "certs" / "123" / "current" /
+                  "stale.pem")
+        << "stale";
+
+    std::optional<monad::MyVoidResult> resync_r;
+    harness_->install_manager().full_resync_from_server().run([&](auto result) {
+      resync_r = std::move(result);
+      notifier.notify();
+    });
+    notifier.waitForNotification();
+
+    ASSERT_TRUE(resync_r.has_value());
+    ASSERT_TRUE(resync_r->is_ok()) << resync_r->error();
+    EXPECT_EQ(fetch_calls, 1);
+    EXPECT_EQ(harness_->install_manager().local_version(),
+              std::optional<std::int64_t>(42));
+    EXPECT_TRUE(std::filesystem::exists(runtime_dir / "state" / "install_config.json"));
+    EXPECT_TRUE(std::filesystem::exists(runtime_dir / "state" / "install_version.txt"));
+    EXPECT_FALSE(std::filesystem::exists(runtime_dir / "resources" / "certs" /
+                                         "123" / "current" / "stale.pem"));
   }

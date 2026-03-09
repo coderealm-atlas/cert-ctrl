@@ -90,6 +90,14 @@ struct UpdatesPollingHandlerTestFriend {
       const UpdatesPollingHandler &handler) {
     return handler.build_startup_notify_payload();
   }
+
+  static void SetCursor(UpdatesPollingHandler &handler, std::string value) {
+    handler.cursor_ = std::move(value);
+  }
+
+  static monad::IO<void> ClearPersistedCursor(UpdatesPollingHandler &handler) {
+    return handler.clear_persisted_cursor();
+  }
 };
 } // namespace certctrl
 
@@ -496,6 +504,49 @@ TEST(UpdatesPollingHandlerUnitTest, UsesSessionRefresherForTokenRefresh) {
   ASSERT_EQ(fake_refresher->call_count(), 1);
   ASSERT_EQ(fake_refresher->reasons().size(), 1u);
   EXPECT_EQ(fake_refresher->reasons().front(), "unit-test refresh");
+}
+
+TEST(UpdatesPollingHandlerUnitTest, ClearCursorActionRemovesStoredCursor) {
+  auto tmp_root = fs::temp_directory_path() / "updates-clear-cursor" /
+                  make_unique_suffix();
+  std::error_code ec;
+  fs::create_directories(tmp_root, ec);
+  ASSERT_FALSE(ec) << "failed to create temp dir: " << ec.message();
+  ScopeGuard cleanup([&]() {
+    std::error_code rm_ec;
+    fs::remove_all(tmp_root, rm_ec);
+  });
+
+  certctrl::CliParams params{};
+  params.subcmd = "updates";
+  params.config_dirs = {tmp_root};
+
+  auto vm = po::variables_map{};
+  std::vector<std::string> positional{"updates", "clear-cursor"};
+  std::vector<std::string> unrecognized{"updates", "clear-cursor"};
+
+  certctrl::CliCtx cli_ctx(std::move(vm), std::move(positional),
+                           std::move(unrecognized), std::move(params));
+
+  UpdatesHandlerHarness harness(tmp_root, tmp_root, "https://example.invalid",
+                                cli_ctx);
+  auto handler = harness.handler();
+  ASSERT_TRUE(handler);
+
+  ASSERT_FALSE(
+      harness.state_store().save_updates_cursor("cursor-123").has_value());
+  certctrl::UpdatesPollingHandlerTestFriend::SetCursor(*handler, "cursor-123");
+
+  bool completed = false;
+  certctrl::UpdatesPollingHandlerTestFriend::ClearPersistedCursor(*handler)
+      .run([&](auto result) {
+    EXPECT_FALSE(result.is_err()) << result.error().what;
+    completed = true;
+  });
+
+  EXPECT_TRUE(completed);
+  EXPECT_FALSE(harness.state_store().get_updates_cursor().has_value());
+  EXPECT_TRUE(handler->last_cursor().empty());
 }
 
 class UpdatesRealServerFixture : public ::testing::Test {

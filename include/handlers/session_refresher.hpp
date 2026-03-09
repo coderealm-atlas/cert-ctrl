@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -73,10 +72,7 @@ private:
                                        monad::Error err);
 
   std::optional<std::string> load_refresh_token() const;
-  bool detect_external_refresh(const std::string &original_token) const;
-  std::optional<std::string>
-  write_text_0600(const std::filesystem::path &p, const std::string &text);
-  std::filesystem::path state_dir() const;
+      bool adopt_tokens_from_state(const std::string &original_refresh_token) const;
 
   static bool is_rotation_error(const monad::Error &err);
   void notify_callbacks(std::shared_ptr<RefreshState> state,
@@ -88,7 +84,6 @@ private:
   customio::ConsoleOutput &output_;
   client_async::HttpClientManager &http_client_;
   IDeviceStateStore &state_store_;
-  std::filesystem::path runtime_dir_;
   monad::ExponentialBackoffOptions refresh_backoff_options_;
   std::mt19937 rng_;
   RequestOverride request_override_;

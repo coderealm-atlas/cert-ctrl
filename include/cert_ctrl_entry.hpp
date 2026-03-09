@@ -171,7 +171,8 @@ public:
                       } else if (subcmd == "update") {
                         return inj.template create<
                             std::shared_ptr<certctrl::UpdateHandler>>();
-                      } else if (subcmd == "updates-polling") {
+                      } else if (subcmd == "updates" ||
+                                 subcmd == "updates-polling") {
                         return inj.template create<
                             std::shared_ptr<certctrl::UpdatesPollingHandler>>();
                       } else if (subcmd == "certificates") {
@@ -512,7 +513,7 @@ public:
         // }
         output_hub_->logger().error()
             << "No valid subcommand provided. Available: "
-            << " install-config, login, certificates, ca, info, device"
+          << " install-config, login, certificates, ca, info, device, updates"
             << "." << std::endl;
         return shutdown();
       }

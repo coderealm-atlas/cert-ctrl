@@ -66,6 +66,11 @@ public:
   // This is the programmatic equivalent of `cert-ctrl install-config pull`.
   monad::IO<void> pull_and_apply_full();
 
+    // Strong convergence path used when the server reports a replay gap.
+    // Clears derived local caches, refetches the latest install config, and
+    // rebuilds certificate/CA materials from current server state.
+    monad::IO<void> full_resync_from_server();
+
   monad::IO<void>
   apply_copy_actions(const dto::DeviceInstallConfigDto &config,
                      const std::optional<std::string> &target_ob_type,
@@ -86,6 +91,8 @@ public:
   // - Failures only log; never fail the caller.
   monad::IO<void> maybe_run_after_update_script_for_signal(
       const ::data::DeviceUpdateSignal &signal);
+
+    monad::IO<void> rearm_local_install_update_window();
 
   // Manual approval path: pin the staged after_update_script hash locally so
   // a reviewed script becomes trusted before manual apply proceeds.

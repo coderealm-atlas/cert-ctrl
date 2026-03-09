@@ -66,6 +66,17 @@ struct TestConfigProvider : certctrl::ICertctrlConfigProvider {
   const certctrl::CertctrlConfig &get() const override { return config; }
   certctrl::CertctrlConfig &get() override { return config; }
 
+  monad::MyVoidResult refresh_install_update_grace_window(
+      bool enable_flags) override {
+    if (enable_flags) {
+      config.auto_apply_config = true;
+      config.auto_allow_after_update_script_hash = true;
+    }
+    return monad::MyVoidResult::Ok();
+  }
+
+  void expire_install_update_grace_window_if_needed() override {}
+
   monad::MyVoidResult save(const boost::json::object &) override {
     return monad::MyVoidResult::Ok();
   }

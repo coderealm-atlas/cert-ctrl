@@ -14,8 +14,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fmt/format.h>
-#include <fstream>
-#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,6 +34,7 @@
 #include "handlers/signal_handlers/cert_unassigned_handler.hpp"
 #include "handlers/signal_handlers/config_updated_handler.hpp"
 #include "handlers/signal_handlers/install_updated_handler.hpp"
+#include "handlers/signal_handlers/state_resync_required_handler.hpp"
 #include "http_client_manager.hpp"
 #include "http_client_monad.hpp"
 #include "io_context_manager.hpp"
@@ -173,6 +172,12 @@ public:
         std::make_shared<signal_handlers::ConfigUpdatedHandler>(
         certctrl_config_provider_, output_hub_, nullptr));
 
+    if (install_config_manager_) {
+      signal_dispatcher_->register_handler(
+        std::make_shared<signal_handlers::StateResyncRequiredHandler>(
+          install_config_manager_, state_store_, output_hub_));
+    }
+
     if (!install_config_manager_) {
       BOOST_LOG_SEV(lg, trivial::warning)
           << "InstallConfigManager dependency missing; install/update signals "
@@ -209,11 +214,30 @@ public:
 
   std::string command() const override { return "updates"; }
 
+  monad::IO<void> show_usage(const std::string &error = "") const {
+    if (!error.empty()) {
+      output_hub_.logger().error() << error << std::endl;
+    }
+    output_hub_.logger().info()
+        << "Usage: cert-ctrl updates [clear-cursor] [--wait N] [--limit N] [--interval MS]\n"
+        << "  clear-cursor   Remove the persisted HTTP polling cursor from SQLite\n"
+        << std::endl;
+    return monad::IO<void>::pure();
+  }
+
   const std::string &last_request_url() const noexcept {
     return last_request_url_;
   }
 
   monad::IO<void> start() override {
+    if (cli_ctx_.positionals.size() >= 2) {
+      const std::string &action = cli_ctx_.positionals[1];
+      if (action == "clear-cursor") {
+        return clear_persisted_cursor();
+      }
+      return show_usage("Unknown updates action '" + action + "'.");
+    }
+
     if (!cli_ctx_.params.keep_running) {
       return poll_once();
     }
@@ -344,19 +368,6 @@ private:
     auto token = state_store_.get_access_token();
     if (token && !token->empty()) {
       cached_access_token_ = token;
-      return cached_access_token_;
-    }
-
-    if (config_sources_.paths_.empty()) {
-      cached_access_token_.reset();
-      return std::nullopt;
-    }
-
-    const auto runtime_dir = config_sources_.paths_.back();
-    const auto token_path = runtime_dir / "state" / "access_token.txt";
-    auto legacy_token = read_trimmed_file(token_path);
-    if (legacy_token && !legacy_token->empty()) {
-      cached_access_token_ = legacy_token;
       return cached_access_token_;
     }
 
@@ -547,13 +558,9 @@ private:
     const std::optional<std::string> payload(cursor);
     if (auto err = state_store_.save_updates_cursor(payload)) {
       BOOST_LOG_SEV(lg, trivial::error)
-          << "Failed to persist cursor to SQLite: " << *err
-          << "; falling back to legacy file";
-      persist_cursor_to_file(cursor);
+          << "Failed to persist cursor to SQLite: " << *err;
       return;
     }
-
-    remove_legacy_cursor_file();
   }
 
   void load_cursor_from_state() {
@@ -562,72 +569,9 @@ private:
         cursor_ = *stored;
         BOOST_LOG_SEV(lg, trivial::info)
             << "Resuming updates cursor from SQLite entry";
-        remove_legacy_cursor_file();
         return;
       }
     }
-
-    if (config_sources_.paths_.empty()) {
-      return;
-    }
-    const auto runtime_dir = config_sources_.paths_.back();
-    const auto cursor_path = runtime_dir / "state" / "last_cursor.txt";
-    auto legacy_cursor = read_trimmed_file(cursor_path);
-    if (!legacy_cursor || legacy_cursor->empty()) {
-      return;
-    }
-
-    cursor_ = *legacy_cursor;
-    BOOST_LOG_SEV(lg, trivial::info)
-        << "Resuming updates cursor from legacy file";
-
-    const std::optional<std::string> payload(cursor_);
-    if (auto err = state_store_.save_updates_cursor(payload)) {
-      BOOST_LOG_SEV(lg, trivial::warning)
-          << "Failed to migrate cursor into SQLite: " << *err;
-      return;
-    }
-
-    remove_legacy_cursor_file();
-  }
-
-  void persist_cursor_to_file(const std::string &cursor) {
-    if (config_sources_.paths_.empty()) {
-      return;
-    }
-
-    auto config_dir = config_sources_.paths_.back();
-    auto cursor_file = config_dir / "state" / "last_cursor.txt";
-    auto temp_file = config_dir / "state" / ".last_cursor.txt.tmp";
-
-    try {
-      std::filesystem::create_directories(config_dir / "state");
-
-      std::ofstream ofs(temp_file);
-      ofs << cursor;
-      ofs.close();
-
-      std::filesystem::rename(temp_file, cursor_file);
-      std::filesystem::permissions(cursor_file,
-                                   std::filesystem::perms::owner_read |
-                                       std::filesystem::perms::owner_write);
-    } catch (const std::exception &e) {
-      BOOST_LOG_SEV(lg, trivial::error)
-          << "Failed to save cursor to file: " << e.what();
-    }
-  }
-
-  void remove_legacy_cursor_file() const {
-    if (config_sources_.paths_.empty()) {
-      return;
-    }
-
-    auto config_dir = config_sources_.paths_.back();
-    auto cursor_file = config_dir / "state" / "last_cursor.txt";
-    auto temp_file = config_dir / "state" / ".last_cursor.txt.tmp";
-    std::error_code ec;
-    std::filesystem::remove(cursor_file, ec);
-    std::filesystem::remove(temp_file, ec);
   }
 
   int compute_failure_delay_ms() const {
@@ -663,7 +607,8 @@ private:
     return candidate;
   }
 
-  monad::IO<void> poll_once(bool allow_refresh_retry = true) {
+  monad::IO<void> poll_once(bool allow_refresh_retry = true,
+                            bool allow_resync_retry = true) {
     using namespace monad;
 
     auto access_token_opt = load_access_token_from_state();
@@ -674,7 +619,7 @@ private:
           << std::endl;
       auto self = shared_from_this();
       return refresh_access_token("updates polling bootstrap").then([self]() {
-        return self->poll_once(false);
+        return self->poll_once(false, true);
       });
     }
 
@@ -708,9 +653,10 @@ private:
     auto self = shared_from_this();
     return maybe_send_startup_notification(access_token)
         .then([self, url = std::move(url), access_token,
-               allow_refresh_retry]() mutable {
+           allow_refresh_retry, allow_resync_retry]() mutable {
           return self->execute_poll_request(
-              std::move(url), std::move(access_token), allow_refresh_retry);
+          std::move(url), std::move(access_token), allow_refresh_retry,
+          allow_resync_retry);
         });
   }
 
@@ -727,6 +673,18 @@ public:
   friend struct UpdatesPollingHandlerTestFriend;
 
 private:
+  monad::IO<void> clear_persisted_cursor() {
+    cursor_.clear();
+    if (auto err = state_store_.save_updates_cursor(std::nullopt)) {
+      return monad::IO<void>::fail(
+          monad::make_error(my_errors::GENERAL::DELETE_FAILED,
+                            "failed to clear updates cursor: " + *err));
+    }
+    output_hub_.logger().info()
+        << "Cleared persisted updates cursor from SQLite state" << std::endl;
+    return monad::IO<void>::pure();
+  }
+
   boost::json::object build_startup_notify_payload() const {
     boost::json::object payload;
     boost::json::array events;
@@ -745,7 +703,8 @@ private:
 
   monad::IO<void> execute_poll_request(std::string url,
                                        std::string access_token,
-                                       bool allow_refresh_retry) {
+                                       bool allow_refresh_retry,
+                                       bool allow_resync_retry) {
     using monad::GetStringTag;
     using monad::http_io;
     using monad::http_request_io;
@@ -768,7 +727,7 @@ private:
           return ex;
         })
         .then(http_request_io<GetStringTag>(http_client_))
-        .then([self, allow_refresh_retry](auto ex) -> monad::IO<void> {
+        .then([self, allow_refresh_retry, allow_resync_retry](auto ex) -> monad::IO<void> {
           if (!ex->response.has_value()) {
             return monad::IO<void>::fail(monad::make_error(
                 my_errors::NETWORK::READ_ERROR, "No response received"));
@@ -781,13 +740,30 @@ private:
             return self->handle_no_content(ex);
           } else if (status == 200) {
             return self->handle_ok_with_signals(ex);
+          } else if (status == 409 && allow_resync_retry) {
+            std::string body = ex->response->body();
+            if (self->is_resync_required_response(body)) {
+              BOOST_LOG_SEV(self->lg, trivial::warning)
+                  << "Polling cursor gap detected; running full resync and retrying"
+                  << std::endl;
+              return self->auto_heal_stale_cursor(body)
+                  .then([self, allow_refresh_retry]() {
+                    return self->poll_once(allow_refresh_retry, false);
+                  })
+                  .catch_then([self, ex](const monad::Error &err) {
+                    BOOST_LOG_SEV(self->lg, trivial::error)
+                        << "Automatic full resync failed: " << err.what
+                        << std::endl;
+                    return self->handle_error_status(ex, 409);
+                  });
+            }
           } else if ((status == 401 || status == 403) && allow_refresh_retry) {
             BOOST_LOG_SEV(self->lg, trivial::info)
                 << "Received HTTP " << status
                 << " while polling; attempting token refresh." << std::endl;
             auto reason = fmt::format("updates polling HTTP {}", status);
             return self->refresh_access_token(std::move(reason))
-                .then([self]() { return self->poll_once(false); })
+                .then([self, allow_resync_retry]() { return self->poll_once(false, allow_resync_retry); })
                 .catch_then([self, ex, status](const monad::Error &err) {
                   BOOST_LOG_SEV(self->lg, trivial::error)
                       << "Token refresh failed: " << err.what << std::endl;
@@ -796,6 +772,53 @@ private:
           }
           return self->handle_error_status(ex, status);
         });
+  }
+
+  bool is_resync_required_response(const std::string &body) const {
+    try {
+      auto jv = boost::json::parse(body);
+      if (!jv.is_object()) {
+        return false;
+      }
+      auto *error_v = jv.as_object().if_contains("error");
+      if (!error_v || !error_v->is_object()) {
+        return false;
+      }
+      const auto &error_obj = error_v->as_object();
+      if (auto *code_v = error_obj.if_contains("code");
+          code_v && code_v->is_int64() && code_v->as_int64() == 40901) {
+        return true;
+      }
+      auto *params_v = error_obj.if_contains("params");
+      if (!params_v || !params_v->is_object()) {
+        return false;
+      }
+      const auto &params = params_v->as_object();
+      if (auto *action_v = params.if_contains("action");
+          action_v && action_v->is_string() &&
+          action_v->as_string() == "full_resync") {
+        return true;
+      }
+      return false;
+    } catch (const std::exception &) {
+      return false;
+    }
+  }
+
+  monad::IO<void> auto_heal_stale_cursor(const std::string &body) {
+    if (!install_config_manager_) {
+      return monad::IO<void>::fail(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "InstallConfigManager dependency missing; cannot auto-heal cursor gap"));
+    }
+
+    output_hub_.logger().warning()
+        << "Server requested a full resync after updates cursor gap: " << body
+        << std::endl;
+
+    return clear_persisted_cursor().then([this]() {
+      return install_config_manager_->full_resync_from_server();
+    });
   }
 
   monad::IO<void>
@@ -861,31 +884,7 @@ private:
         return store_id;
       }
     }
-
-    if (config_sources_.paths_.empty()) {
-      return std::nullopt;
-    }
-    const auto runtime_dir = config_sources_.paths_.back();
-    const auto id_path = runtime_dir / "state" / "device_public_id.txt";
-    return read_trimmed_file(id_path);
-  }
-
-  static std::optional<std::string>
-  read_trimmed_file(const std::filesystem::path &path) {
-    std::ifstream ifs(path, std::ios::binary);
-    if (!ifs.is_open()) {
-      return std::nullopt;
-    }
-    std::string contents((std::istreambuf_iterator<char>(ifs)), {});
-    auto first = contents.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) {
-      return std::nullopt;
-    }
-    auto last = contents.find_last_not_of(" \t\r\n");
-    if (last == std::string::npos || last < first) {
-      return std::nullopt;
-    }
-    return contents.substr(first, last - first + 1);
+    return std::nullopt;
   }
 };
 } // namespace certctrl

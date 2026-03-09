@@ -1472,6 +1472,14 @@ monad::IO<void> InstallConfigManager::pull_and_apply_full() {
       });
 }
 
+monad::IO<void> InstallConfigManager::full_resync_from_server() {
+  output_.logger().warning()
+      << "Performing full state resync from current server snapshot"
+      << std::endl;
+  invalidate_all_caches();
+  return pull_and_apply_full();
+}
+
 monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
 InstallConfigManager::ensure_config_version(
     std::optional<std::int64_t> expected_version,
@@ -1793,6 +1801,14 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
       return ReturnIO::pure();
     }
 
+    if (auto refresh_r =
+            config_provider_.refresh_install_update_grace_window(false);
+        refresh_r.is_err()) {
+      BOOST_LOG_SEV(lg, trivial::warning)
+          << "Failed to refresh install-update grace window on install.updated: "
+          << refresh_r.error().what;
+    }
+
     auto typed = ::data::get_install_updated(signal);
     std::optional<std::int64_t> expected_version;
     std::optional<std::string> expected_hash;
@@ -2028,6 +2044,15 @@ monad::IO<void> InstallConfigManager::approve_after_update_script_hash(
       << "Approved staged after_update_script hash=" << script_hash
       << " for variant=" << variant_name
       << " during manual install-config apply";
+  return ReturnIO::pure();
+}
+
+monad::IO<void> InstallConfigManager::rearm_local_install_update_window() {
+  using ReturnIO = monad::IO<void>;
+  auto refresh_r = config_provider_.refresh_install_update_grace_window(true);
+  if (refresh_r.is_err()) {
+    return ReturnIO::fail(refresh_r.error());
+  }
   return ReturnIO::pure();
 }
 

@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <future>
 #include <optional>
 #include <string>
@@ -232,7 +231,6 @@ class SessionRefresherTest : public ::testing::Test {
     state_store_ = std::make_unique<InMemoryDeviceStateStore>();
     state_store_->save_tokens(std::optional<std::string>{"initial-access"},
                   std::optional<std::string>{"initial-refresh"});
-    WriteRefreshTokenFile("initial-refresh");
   }
 
   void TearDown() override {
@@ -284,14 +282,6 @@ class SessionRefresherTest : public ::testing::Test {
       promise.set_value(std::move(result));
     });
     return future.get();
-  }
-
-  void WriteRefreshTokenFile(const std::string &token) {
-    auto state_dir = runtime_dir_ / "state";
-    fs::create_directories(state_dir);
-    std::ofstream ofs(state_dir / "refresh_token.txt",
-                      std::ios::binary | std::ios::trunc);
-    ofs << token;
   }
 
   fs::path config_dir_;
@@ -404,4 +394,24 @@ TEST_F(SessionRefresherTest, StopsRetryingOnRotationError) {
   ASSERT_TRUE(result.is_err());
   EXPECT_EQ(result.error().key, std::string("refresh_token_rotated"));
   EXPECT_TRUE(observed_delays.empty());
+}
+
+TEST_F(SessionRefresherTest, AdoptsNewerTokenFromSharedStateAfterRotationError) {
+  auto request_override = [this](const std::string &refresh_token, int) {
+    EXPECT_EQ(refresh_token, "initial-refresh");
+    state_store_->save_tokens(std::optional<std::string>{"rotated-access"},
+                              std::optional<std::string>{"rotated-refresh"},
+                              std::nullopt);
+    auto err = monad::make_error(my_errors::GENERAL::UNAUTHORIZED,
+                                 "refresh token rotated");
+    err.key = "refresh_token_rotated";
+    return monad::IO<void>::fail(std::move(err));
+  };
+
+  auto refresher = MakeRefresher(std::nullopt, request_override);
+  auto result = RunRefresh(*refresher, "rotation-recovery");
+
+  ASSERT_TRUE(result.is_ok());
+  EXPECT_EQ(state_store_->get_refresh_token(),
+            std::optional<std::string>{"rotated-refresh"});
 }

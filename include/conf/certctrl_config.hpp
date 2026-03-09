@@ -5,6 +5,8 @@
 #include <boost/log/trivial.hpp>
 #include <fstream>
 #include <cstdlib>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <vector>
@@ -56,6 +58,8 @@ struct ExpiryGuardConfig {
 struct CertctrlConfig {
   bool auto_apply_config{true};
   bool auto_allow_after_update_script_hash{true};
+  int install_update_grace_period_seconds{21600};
+  std::int64_t install_update_grace_expires_at_epoch_seconds{0};
   std::vector<std::string> trusted_after_update_script_hashes;
   std::string verbose{};
   // Allowlist of signal types that should trigger after_update_script.
@@ -92,6 +96,17 @@ struct CertctrlConfig {
         }
         if (auto *p = jo_p->if_contains("auto_allow_after_update_script_hash")) {
           cc.auto_allow_after_update_script_hash = p->as_bool();
+        }
+        if (auto *p = jo_p->if_contains("install_update_grace_period_seconds")) {
+          cc.install_update_grace_period_seconds = p->to_number<int>();
+        }
+        if (auto *p = jo_p->if_contains("install_update_grace_expires_at_epoch_seconds")) {
+          if (p->is_int64()) {
+            cc.install_update_grace_expires_at_epoch_seconds = p->as_int64();
+          } else if (p->is_uint64()) {
+            cc.install_update_grace_expires_at_epoch_seconds =
+                static_cast<std::int64_t>(p->as_uint64());
+          }
         }
         if (auto *p = jo_p->if_contains("verbose"))
           cc.verbose = p->as_string().c_str();
@@ -205,6 +220,10 @@ public:
   virtual const CertctrlConfig &get() const = 0;
   virtual CertctrlConfig &get() = 0;
 
+  virtual monad::MyVoidResult refresh_install_update_grace_window(
+      bool enable_flags) = 0;
+  virtual void expire_install_update_grace_window_if_needed() = 0;
+
   virtual monad::MyVoidResult save(const json::object &content) = 0;
 
   // Persist a complete override snapshot (replace semantics).
@@ -226,7 +245,19 @@ private:
   static bool is_local_only_key(const std::string &key) {
     return key == "auto_apply_config" ||
            key == "auto_allow_after_update_script_hash" ||
+           key == "install_update_grace_period_seconds" ||
+           key == "install_update_grace_expires_at_epoch_seconds" ||
            key == "trusted_after_update_script_hashes";
+  }
+
+  static std::int64_t now_epoch_seconds() {
+    using namespace std::chrono;
+    return duration_cast<seconds>(system_clock::now().time_since_epoch())
+        .count();
+  }
+
+  fs::path application_local_path() const {
+    return config_sources_.paths_.back() / kApplicationLocalFile;
   }
 
   static monad::MyResult<json::object> read_json_object(const fs::path &path) {
@@ -291,7 +322,7 @@ private:
   }
 
   void apply_local_only_overrides() {
-    const auto local_path = config_sources_.paths_.back() / kApplicationLocalFile;
+    const auto local_path = application_local_path();
     auto local_r = read_json_object(local_path);
     if (local_r.is_err()) {
       output_.error() << local_r.error().what << std::endl;
@@ -305,6 +336,17 @@ private:
     if (auto *p = local.if_contains("auto_allow_after_update_script_hash")) {
       config_.auto_allow_after_update_script_hash = p->as_bool();
     }
+    if (auto *p = local.if_contains("install_update_grace_period_seconds")) {
+      config_.install_update_grace_period_seconds = p->to_number<int>();
+    }
+    if (auto *p = local.if_contains("install_update_grace_expires_at_epoch_seconds")) {
+      if (p->is_int64()) {
+        config_.install_update_grace_expires_at_epoch_seconds = p->as_int64();
+      } else if (p->is_uint64()) {
+        config_.install_update_grace_expires_at_epoch_seconds =
+            static_cast<std::int64_t>(p->as_uint64());
+      }
+    }
     if (auto *p = local.if_contains("trusted_after_update_script_hashes")) {
       config_.trusted_after_update_script_hashes.clear();
       if (p->is_array()) {
@@ -316,6 +358,21 @@ private:
         }
       }
     }
+  }
+
+  monad::MyVoidResult write_local_patch(const json::object &patch) {
+    return merge_and_write_patch(application_local_path(), patch);
+  }
+
+  monad::MyVoidResult ensure_install_update_grace_window_initialized() {
+    if (!(config_.auto_apply_config ||
+          config_.auto_allow_after_update_script_hash)) {
+      return monad::MyVoidResult::Ok();
+    }
+    if (config_.install_update_grace_expires_at_epoch_seconds > 0) {
+      return monad::MyVoidResult::Ok();
+    }
+    return refresh_install_update_grace_window(false);
   }
 
 public:
@@ -331,7 +388,19 @@ public:
     jsonutil::substitue_envs(jv, config_sources.cli_overrides(),
                              app_properties.properties);
     config_ = json::value_to<CertctrlConfig>(std::move(jv));
+    if (config_.install_update_grace_period_seconds <= 0) {
+      config_.install_update_grace_period_seconds = 21600;
+    }
     apply_local_only_overrides();
+    if (config_.install_update_grace_period_seconds <= 0) {
+      config_.install_update_grace_period_seconds = 21600;
+    }
+    if (auto init_r = ensure_install_update_grace_window_initialized();
+        init_r.is_err()) {
+      output_.error() << init_r.error().what << std::endl;
+      throw std::runtime_error(init_r.error().what);
+    }
+    expire_install_update_grace_window_if_needed();
 
     if (auto it = config_sources.cli_overrides().find("url_base");
         it != config_sources.cli_overrides().end() && !it->second.empty()) {
@@ -339,8 +408,74 @@ public:
     }
   }
 
-  const CertctrlConfig &get() const override { return config_; }
-  CertctrlConfig &get() override { return config_; }
+  const CertctrlConfig &get() const override {
+    const_cast<CertctrlConfigProviderFile *>(this)
+        ->expire_install_update_grace_window_if_needed();
+    return config_;
+  }
+  CertctrlConfig &get() override {
+    expire_install_update_grace_window_if_needed();
+    return config_;
+  }
+
+  monad::MyVoidResult refresh_install_update_grace_window(
+      bool enable_flags) override {
+    if (config_.install_update_grace_period_seconds <= 0) {
+      config_.install_update_grace_period_seconds = 21600;
+    }
+
+    json::object patch{{"install_update_grace_expires_at_epoch_seconds",
+                        now_epoch_seconds() +
+                            config_.install_update_grace_period_seconds}};
+    if (enable_flags) {
+      patch["auto_apply_config"] = true;
+      patch["auto_allow_after_update_script_hash"] = true;
+    }
+
+    auto write_r = write_local_patch(patch);
+    if (write_r.is_err()) {
+      return write_r;
+    }
+
+    config_.install_update_grace_expires_at_epoch_seconds =
+        json::value_to<std::int64_t>(
+            patch.at("install_update_grace_expires_at_epoch_seconds"));
+    if (enable_flags) {
+      config_.auto_apply_config = true;
+      config_.auto_allow_after_update_script_hash = true;
+    }
+    return monad::MyVoidResult::Ok();
+  }
+
+  void expire_install_update_grace_window_if_needed() override {
+    if (config_.install_update_grace_expires_at_epoch_seconds <= 0) {
+      return;
+    }
+    if (now_epoch_seconds() < config_.install_update_grace_expires_at_epoch_seconds) {
+      return;
+    }
+
+    if (!(config_.auto_apply_config || config_.auto_allow_after_update_script_hash)) {
+      config_.install_update_grace_expires_at_epoch_seconds = 0;
+      (void)write_local_patch(
+          {{"install_update_grace_expires_at_epoch_seconds", 0}});
+      return;
+    }
+
+    auto write_r = write_local_patch({
+        {"auto_apply_config", false},
+        {"auto_allow_after_update_script_hash", false},
+        {"install_update_grace_expires_at_epoch_seconds", 0},
+    });
+    if (write_r.is_err()) {
+      output_.error() << write_r.error().what << std::endl;
+      return;
+    }
+
+    config_.auto_apply_config = false;
+    config_.auto_allow_after_update_script_hash = false;
+    config_.install_update_grace_expires_at_epoch_seconds = 0;
+  }
 
   monad::MyVoidResult save(const json::object &content) override {
     json::object remote_patch;

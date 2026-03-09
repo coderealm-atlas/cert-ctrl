@@ -174,18 +174,33 @@ monad::IO<void> InstallConfigHandler::handle_apply() {
   using ReturnIO = monad::IO<void>;
   auto options = parse_pull_options("apply");
 
-  auto config_ptr = install_config_manager_->cached_config_snapshot();
-  if (!config_ptr) {
-    output_.logger().warning()
-        << "No staged install-config found; fetch before applying."
-        << std::endl;
-    return ReturnIO::pure();
-  }
+  output_.logger().info() << "Fetching latest install-config before apply"
+                          << std::endl;
 
-  output_.logger().info() << "Applying staged install-config version "
-                          << config_ptr->version << std::endl;
+  auto self = shared_from_this();
+  return install_config_manager_
+      ->ensure_config_version(std::nullopt, std::nullopt)
+      .then([self, options](std::shared_ptr<const dto::DeviceInstallConfigDto>
+                                config_ptr) {
+        if (!config_ptr) {
+          self->output_.logger().warning()
+              << "install-config fetch returned no payload" << std::endl;
+          return monad::IO<void>::pure();
+        }
 
-  return apply_copy_and_import(config_ptr, options);
+        self->output_.logger().info() << "Applying install-config version "
+                                      << config_ptr->version << std::endl;
+
+        return self->install_config_manager_
+            ->rearm_local_install_update_window()
+            .then([self, config_ptr]() {
+              return self->install_config_manager_
+                  ->approve_after_update_script_hash(*config_ptr);
+            })
+            .then([self, config_ptr, options]() {
+              return self->apply_copy_and_import(config_ptr, options);
+            });
+      });
 }
 
 monad::IO<void> InstallConfigHandler::handle_show() {

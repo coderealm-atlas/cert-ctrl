@@ -19,12 +19,9 @@ Typical runtime contents:
 
 ```
 state/
-  access_token.txt
-  refresh_token.txt
+  session_state.db
   processed_signals.json
-  websocket_resume_token.txt
   websocket_instance.lock
-  last_cursor.txt                 # polling only
   install_config.json
   install_version.txt
 resources/
@@ -86,7 +83,7 @@ See the protocol and migration spec: `docs/WEBSOCKET_POLLING_MIGRATION_COMBINED.
 ### HTTP updates polling (legacy / fallback)
 
 - Endpoint: `GET /apiv1/devices/self/updates`
-- Cursor: persisted to `state/last_cursor.txt` (from `data.cursor` or `ETag`)
+- Cursor: persisted to the SQLite state store in `state/session_state.db` (from `data.cursor` or `ETag`)
 - `--wait N` enables long-poll.
 
 This mechanism remains useful as a fallback or in environments where long-lived connections are undesirable.
@@ -126,11 +123,11 @@ Update signals are dispatched through a synchronous dispatcher/handler pipeline.
 ### Known signal types
 
 - `install.updated`
-  - Stages the referenced install-config version.
-  - If `auto_apply_config=true`, executes copy/import actions immediately.
-  - If `auto_apply_config=false`, stages only and requires manual promotion (`cert-ctrl install-config apply`).
+  - Refreshes the local install-update grace countdown while that grace window remains open.
+  - If `auto_apply_config=true`, fetches the referenced install-config version and executes copy/import actions immediately.
+  - If `auto_apply_config=false`, unattended rollout is disabled and a local operator must promote the latest plan manually (`cert-ctrl install-config apply`).
   - `auto_apply_config` is local-only state stored in `application.local.json`; remote `config.updated` handling must not change it.
-  - Manual `cert-ctrl install-config apply` also pins the currently staged `after_update_script` hash into `application.local.json` before applying actions.
+  - Manual `cert-ctrl install-config apply` now pulls the latest server plan, re-opens the local grace window, pins the current `after_update_script` hash into `application.local.json`, and then applies actions.
 
 - `cert.updated`
   - Invalidates the cached materials for that cert id and re-materializes so hosts see rotations promptly.
@@ -149,6 +146,7 @@ Update signals are dispatched through a synchronous dispatcher/handler pipeline.
 
 - Local script trust pins
   - `after_update_script` trust pins are stored in `application.local.json` under `trusted_after_update_script_hashes`.
+  - The same local file stores `install_update_grace_period_seconds` and `install_update_grace_expires_at_epoch_seconds` for the temporary auto-apply window.
   - This file is intentionally separate from remotely updated override content.
 
 - Unknown types

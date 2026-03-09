@@ -11,11 +11,9 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <fstream>
 #include <random>
 
 #ifndef _WIN32
-#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -135,7 +133,6 @@ SessionRefresher::SessionRefresher(
       refresh_backoff_options_{}, rng_(std::random_device{}()),
       request_override_(std::move(request_override)),
       delay_observer_(std::move(delay_observer)) {
-  runtime_dir_ = config_provider_.get().runtime_dir;
 #ifdef _WIN32
   refresh_lock_owner_ = "winproc";
 #else
@@ -329,7 +326,7 @@ monad::IO<void> SessionRefresher::perform_refresh_request(
             auto err = monad::make_error(
                 my_errors::GENERAL::UNAUTHORIZED,
                 fmt::format(
-                    "{} (code {}) — please rerun 'cert-ctrl login --force' to "
+                "{} (code {}) - please rerun 'cert-ctrl login --force' to "
                     "re-authorize this device.",
                     base_msg, kRefreshTokenRotatedCode));
             err.key = std::string{kRefreshTokenRotatedKey};
@@ -412,23 +409,6 @@ monad::IO<void> SessionRefresher::perform_refresh_request(
               << *err << std::endl;
         }
 
-        auto state_path = state_dir();
-        if (state_path.empty()) {
-          return monad::IO<void>::fail(monad::make_error(
-            my_errors::GENERAL::UNEXPECTED_RESULT,
-            "Runtime state directory unavailable"));
-        }
-
-        auto access_path = state_path / "access_token.txt";
-        auto refresh_path = state_path / "refresh_token.txt";
-
-        if (auto err = write_text_0600(access_path, *new_access_token)) {
-          output_.logger().warning() << *err << std::endl;
-        }
-        if (auto err = write_text_0600(refresh_path, *new_refresh_token)) {
-          output_.logger().warning() << *err << std::endl;
-        }
-
         output_.logger().trace()
             << "Device session refreshed; new access token expires in "
             << new_expires_in.value_or(0) << "s" << std::endl;
@@ -440,11 +420,11 @@ monad::IO<void> SessionRefresher::perform_refresh_request(
 monad::IO<void> SessionRefresher::handle_refresh_error(
     std::shared_ptr<RefreshState> state, monad::Error err) {
   if (is_rotation_error(err) &&
-      detect_external_refresh(state->refresh_token_snapshot)) {
+      adopt_tokens_from_state(state->refresh_token_snapshot)) {
     output_.logger().info()
         << "Detected external session refresh while handling reason '"
         << state->primary_reason
-        << "'; using updated tokens from disk instead of failing"
+        << "'; using updated tokens from shared state instead of failing"
         << std::endl;
     return monad::IO<void>::pure();
   }
@@ -455,68 +435,14 @@ std::optional<std::string> SessionRefresher::load_refresh_token() const {
   if (auto stored = state_store_.get_refresh_token(); stored && !stored->empty()) {
     return stored;
   }
-
-  auto dir = state_dir();
-  if (dir.empty()) {
-    return std::nullopt;
-  }
-  auto token_path = dir / "refresh_token.txt";
-  std::ifstream ifs(token_path, std::ios::binary);
-  if (!ifs.is_open()) {
-    return std::nullopt;
-  }
-  std::string token((std::istreambuf_iterator<char>(ifs)),
-                    std::istreambuf_iterator<char>());
-  auto first = token.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) {
-    return std::nullopt;
-  }
-  auto last = token.find_last_not_of(" \t\r\n");
-  if (last == std::string::npos || last < first) {
-    return std::nullopt;
-  }
-  return token.substr(first, last - first + 1);
+  return std::nullopt;
 }
 
-bool SessionRefresher::detect_external_refresh(
-    const std::string &original_token) const {
-  auto latest = load_refresh_token();
-  return latest && *latest != original_token;
-}
-
-std::optional<std::string>
-SessionRefresher::write_text_0600(const std::filesystem::path &p,
-                                  const std::string &text) {
-  try {
-    std::error_code ec;
-    if (auto parent = p.parent_path(); !parent.empty()) {
-      std::filesystem::create_directories(parent, ec);
-      if (ec) {
-        return std::string{"create_directories failed: "} + ec.message();
-      }
-    }
-    std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-    if (!ofs.is_open()) {
-      return std::string{"open failed for "} + p.string();
-    }
-    ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
-    if (!ofs) {
-      return std::string{"write failed for "} + p.string();
-    }
-#ifndef _WIN32
-    ::chmod(p.c_str(), 0600);
-#endif
-    return std::nullopt;
-  } catch (const std::exception &e) {
-    return std::string{"write_text_0600 exception: "} + e.what();
-  }
-}
-
-std::filesystem::path SessionRefresher::state_dir() const {
-  if (runtime_dir_.empty()) {
-    return {};
-  }
-  return runtime_dir_ / "state";
+bool SessionRefresher::adopt_tokens_from_state(
+    const std::string &original_refresh_token) const {
+  auto latest_refresh = state_store_.get_refresh_token();
+  return latest_refresh && !latest_refresh->empty() &&
+         *latest_refresh != original_refresh_token;
 }
 
 bool SessionRefresher::is_rotation_error(const monad::Error &err) {

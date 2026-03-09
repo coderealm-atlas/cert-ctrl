@@ -139,6 +139,7 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
   try {
     js::object application{
       {"auto_apply_config", true},
+        {"install_update_grace_period_seconds", 21600},
         {"verbose", "info"},
         {"events_trigger_script",
          js::array{"install.updated", "cert.updated", "cert.wrap_ready",

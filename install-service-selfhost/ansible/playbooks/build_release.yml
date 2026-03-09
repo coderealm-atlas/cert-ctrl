@@ -176,6 +176,83 @@
       changed_when: false
       environment: "{{ install_service_proxy_env | default({}) }}"
 
+    - name: Derive expected proxy for linux-docker builds
+      set_fact:
+        install_service_linux_docker_expected_proxy: >-
+          {{
+            install_service_proxy_env.HTTPS_PROXY
+            | default(install_service_proxy_env.HTTP_PROXY | default(''))
+            | string
+            | trim
+          }}
+
+    - name: Inspect Docker daemon proxy configuration
+      shell: |
+        set -eu
+        http_proxy="$(docker info 2>/dev/null | sed -n 's/^ HTTP Proxy: //p' | head -n1)"
+        https_proxy="$(docker info 2>/dev/null | sed -n 's/^ HTTPS Proxy: //p' | head -n1)"
+        no_proxy="$(docker info 2>/dev/null | sed -n 's/^ No Proxy: //p' | head -n1)"
+        printf 'http=%s\nhttps=%s\nno_proxy=%s\n' "$http_proxy" "$https_proxy" "$no_proxy"
+      changed_when: false
+      register: install_service_linux_docker_daemon_proxy
+
+    - name: Fail when Docker daemon proxy does not match requested linux-docker proxy
+      vars:
+        docker_http_proxy: >-
+          {{
+            (install_service_linux_docker_daemon_proxy.stdout_lines
+              | select('match', '^http=') | list | first | default('http='))
+            | regex_replace('^http=', '')
+            | trim
+          }}
+        docker_https_proxy: >-
+          {{
+            (install_service_linux_docker_daemon_proxy.stdout_lines
+              | select('match', '^https=') | list | first | default('https='))
+            | regex_replace('^https=', '')
+            | trim
+          }}
+      fail:
+        msg: >-
+          Docker daemon proxy mismatch for linux-docker build.
+          Ansible build env expects {{ install_service_linux_docker_expected_proxy }},
+          but docker info reports HTTP Proxy={{ docker_http_proxy | default('') }}
+          and HTTPS Proxy={{ docker_https_proxy | default('') }}.
+          The linux-docker build uses the Docker daemon / BuildKit network path,
+          so update the Docker service proxy configuration before retrying.
+      when:
+        - install_service_linux_docker_expected_proxy | length > 0
+        - install_service_linux_docker_daemon_proxy.stdout is defined
+        - docker_http_proxy != install_service_linux_docker_expected_proxy or docker_https_proxy != install_service_linux_docker_expected_proxy
+
+    - name: Preflight Docker daemon proxy connectivity for linux-docker
+      when: install_service_linux_docker_daemon_proxy.stdout is defined
+      vars:
+        docker_https_proxy: >-
+          {{
+            (install_service_linux_docker_daemon_proxy.stdout_lines
+              | select('match', '^https=') | list | first | default('https='))
+            | regex_replace('^https=', '')
+            | trim
+          }}
+        docker_http_proxy: >-
+          {{
+            (install_service_linux_docker_daemon_proxy.stdout_lines
+              | select('match', '^http=') | list | first | default('http='))
+            | regex_replace('^http=', '')
+            | trim
+          }}
+      shell: |
+        set -eu
+        proxy="{{ docker_https_proxy if (docker_https_proxy | length > 0) else docker_http_proxy }}"
+        if [ -z "$proxy" ]; then
+          echo "docker_proxy=none"
+          exit 0
+        fi
+        curl -fsS -x "$proxy" -I --max-time 10 https://github.com >/dev/null
+        echo "docker_proxy_ok=$proxy"
+      changed_when: false
+
     - name: Preflight connectivity to GitHub (curl)
       shell: |
         set -eu

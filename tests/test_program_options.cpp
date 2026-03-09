@@ -195,3 +195,16 @@ TEST(CliCtxTest, RescuesSubcommandAfterUnknownOptionValue) {
   ASSERT_EQ(positionals.size(), 1u);
   EXPECT_EQ(positionals.front(), "login");
 }
+
+TEST(CliCtxTest, NormalizesUpdatesSubcommandAndAction) {
+  std::vector<std::string> positionals;
+  std::vector<std::string> unrecognized{"updates", "clear-cursor"};
+  std::string subcmd;
+
+  certctrl::normalize_cli_subcommand(subcmd, positionals, unrecognized);
+
+  EXPECT_EQ(subcmd, "updates");
+  ASSERT_EQ(positionals.size(), 2u);
+  EXPECT_EQ(positionals[0], "updates");
+  EXPECT_EQ(positionals[1], "clear-cursor");
+}

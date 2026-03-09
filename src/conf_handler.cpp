@@ -21,6 +21,9 @@ VoidPureIO ConfHandler::start() {
       if (bool_value != certctrl_config_provider_.get().auto_apply_config) {
         certctrl_config_provider_.get().auto_apply_config = bool_value;
         certctrl_config_provider_.save({{"auto_apply_config", bool_value}});
+        if (bool_value) {
+          certctrl_config_provider_.refresh_install_update_grace_window(false);
+        }
       }
       output_hub_.logger().info()
           << "Set auto_apply_config to " << (bool_value ? "true" : "false")
@@ -46,6 +49,9 @@ VoidPureIO ConfHandler::start() {
           bool_value;
         certctrl_config_provider_.save(
           {{"auto_allow_after_update_script_hash", bool_value}});
+        if (bool_value) {
+          certctrl_config_provider_.refresh_install_update_grace_window(false);
+        }
         }
         output_hub_.logger().info()
           << "Set auto_allow_after_update_script_hash to "

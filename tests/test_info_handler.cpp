@@ -147,7 +147,7 @@ TEST(InfoHandlerTokensTest, UsesStoreTokensWhenPresent) {
   EXPECT_EQ(*snapshot.refresh_token, "db-refresh");
 }
 
-TEST(InfoHandlerTokensTest, FallsBackToLegacyFilesWhenStoreMissing) {
+TEST(InfoHandlerTokensTest, DoesNotFallBackToLegacyFilesWhenStoreMissing) {
   FakeStateStore store;
   ScopedTempDir temp;
   auto state_dir = temp.path / "state";
@@ -164,10 +164,8 @@ TEST(InfoHandlerTokensTest, FallsBackToLegacyFilesWhenStoreMissing) {
   auto snapshot =
       certctrl::load_session_tokens_from_state(temp.path, store);
 
-  ASSERT_TRUE(snapshot.has_access());
-  ASSERT_TRUE(snapshot.has_refresh());
-  EXPECT_EQ(*snapshot.access_token, "file-access");
-  EXPECT_EQ(*snapshot.refresh_token, "file-refresh");
+  EXPECT_FALSE(snapshot.has_access());
+  EXPECT_FALSE(snapshot.has_refresh());
 }
 
 } // namespace
