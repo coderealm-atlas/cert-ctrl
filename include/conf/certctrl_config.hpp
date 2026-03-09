@@ -3,6 +3,7 @@
 #include <boost/asio/thread_pool.hpp>
 #include <boost/json/fwd.hpp>
 #include <boost/log/trivial.hpp>
+#include <fstream>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
@@ -54,6 +55,8 @@ struct ExpiryGuardConfig {
 
 struct CertctrlConfig {
   bool auto_apply_config{true};
+  bool auto_allow_after_update_script_hash{true};
+  std::vector<std::string> trusted_after_update_script_hashes;
   std::string verbose{};
   // Allowlist of signal types that should trigger after_update_script.
   // Missing/empty means disabled.
@@ -87,8 +90,21 @@ struct CertctrlConfig {
         if (auto *p = jo_p->if_contains("auto_apply_config")) {
           cc.auto_apply_config = p->as_bool();
         }
+        if (auto *p = jo_p->if_contains("auto_allow_after_update_script_hash")) {
+          cc.auto_allow_after_update_script_hash = p->as_bool();
+        }
         if (auto *p = jo_p->if_contains("verbose"))
           cc.verbose = p->as_string().c_str();
+        if (auto *p = jo_p->if_contains("trusted_after_update_script_hashes")) {
+          if (p->is_array()) {
+            for (const auto &v : p->as_array()) {
+              if (v.is_string()) {
+                cc.trusted_after_update_script_hashes.emplace_back(
+                    v.as_string().c_str());
+              }
+            }
+          }
+        }
         if (auto *p = jo_p->if_contains("url_base"))
           cc.base_url = p->as_string().c_str();
         if (auto *p = jo_p->if_contains("update_check_url"))
@@ -202,6 +218,106 @@ private:
   customio::IOutput &output_;
   cjj365::ConfigSources &config_sources_;
 
+  static constexpr const char *kApplicationOverrideFile =
+      "application.override.json";
+  static constexpr const char *kApplicationLocalFile =
+      "application.local.json";
+
+  static bool is_local_only_key(const std::string &key) {
+    return key == "auto_apply_config" ||
+           key == "auto_allow_after_update_script_hash" ||
+           key == "trusted_after_update_script_hashes";
+  }
+
+  static monad::MyResult<json::object> read_json_object(const fs::path &path) {
+    if (!fs::exists(path)) {
+      return monad::MyResult<json::object>::Ok(json::object{});
+    }
+
+    std::ifstream ifs(path);
+    if (!ifs) {
+      monad::Error err{};
+      err.code = my_errors::GENERAL::FILE_READ_WRITE;
+      err.what = "Unable to open configuration file: " + path.string();
+      return monad::MyResult<json::object>::Err(std::move(err));
+    }
+
+    std::string existing_content((std::istreambuf_iterator<char>(ifs)),
+                                 std::istreambuf_iterator<char>());
+    ifs.close();
+
+    auto parsed = json::parse(existing_content);
+    if (!parsed.is_object()) {
+      monad::Error err{};
+      err.code = my_errors::GENERAL::INVALID_ARGUMENT;
+      err.what = "Configuration file is not a JSON object: " + path.string();
+      return monad::MyResult<json::object>::Err(std::move(err));
+    }
+
+    return monad::MyResult<json::object>::Ok(parsed.as_object());
+  }
+
+  static monad::MyVoidResult write_json_object(const fs::path &path,
+                                               const json::object &content) {
+    std::ofstream ofs(path);
+    if (!ofs) {
+      monad::Error err{};
+      err.code = my_errors::GENERAL::FILE_READ_WRITE;
+      err.what = "Unable to open configuration file for writing: " +
+                 path.string();
+      return monad::MyVoidResult::Err(std::move(err));
+    }
+    ofs << boost::json::serialize(content);
+    ofs.close();
+    return monad::MyVoidResult::Ok();
+  }
+
+  monad::MyVoidResult merge_and_write_patch(const fs::path &path,
+                                            const json::object &patch) {
+    if (patch.empty()) {
+      return monad::MyVoidResult::Ok();
+    }
+
+    auto existing_r = read_json_object(path);
+    if (existing_r.is_err()) {
+      return monad::MyVoidResult::Err(existing_r.error());
+    }
+
+    auto merged = existing_r.value();
+    for (const auto &[key, value] : patch) {
+      merged[key] = value;
+    }
+    return write_json_object(path, merged);
+  }
+
+  void apply_local_only_overrides() {
+    const auto local_path = config_sources_.paths_.back() / kApplicationLocalFile;
+    auto local_r = read_json_object(local_path);
+    if (local_r.is_err()) {
+      output_.error() << local_r.error().what << std::endl;
+      throw std::runtime_error(local_r.error().what);
+    }
+
+    const auto local = local_r.value();
+    if (auto *p = local.if_contains("auto_apply_config")) {
+      config_.auto_apply_config = p->as_bool();
+    }
+    if (auto *p = local.if_contains("auto_allow_after_update_script_hash")) {
+      config_.auto_allow_after_update_script_hash = p->as_bool();
+    }
+    if (auto *p = local.if_contains("trusted_after_update_script_hashes")) {
+      config_.trusted_after_update_script_hashes.clear();
+      if (p->is_array()) {
+        for (const auto &v : p->as_array()) {
+          if (v.is_string()) {
+            config_.trusted_after_update_script_hashes.emplace_back(
+                v.as_string().c_str());
+          }
+        }
+      }
+    }
+  }
+
 public:
   CertctrlConfigProviderFile(cjj365::AppProperties &app_properties,
                              cjj365::ConfigSources &config_sources,
@@ -215,6 +331,7 @@ public:
     jsonutil::substitue_envs(jv, config_sources.cli_overrides(),
                              app_properties.properties);
     config_ = json::value_to<CertctrlConfig>(std::move(jv));
+    apply_local_only_overrides();
 
     if (auto it = config_sources.cli_overrides().find("url_base");
         it != config_sources.cli_overrides().end() && !it->second.empty()) {
@@ -226,56 +343,53 @@ public:
   CertctrlConfig &get() override { return config_; }
 
   monad::MyVoidResult save(const json::object &content) override {
-    auto f = config_sources_.paths_.back() / "application.override.json";
-    json::value jv;
-    if (fs::exists(f)) {
-      std::ifstream ifs(f);
-      if (!ifs) {
-        monad::Error err{};
-        err.code = my_errors::GENERAL::FILE_READ_WRITE;
-        err.what = "Unable to open configuration file: " + f.string();
-        return monad::MyVoidResult::Err(std::move(err));
+    json::object remote_patch;
+    json::object local_patch;
+    for (const auto &[key, value] : content) {
+      if (is_local_only_key(std::string(key))) {
+        local_patch[key] = value;
+      } else {
+        remote_patch[key] = value;
       }
-      std::string existing_content((std::istreambuf_iterator<char>(ifs)),
-                                   std::istreambuf_iterator<char>());
-      ifs.close();
-      jv = json::parse(existing_content);
-      if (!jv.is_object()) {
-        monad::Error err{};
-        err.code = my_errors::GENERAL::INVALID_ARGUMENT;
-        err.what = "Configuration file is not a JSON object: " + f.string();
-        return monad::MyVoidResult::Err(std::move(err));
-      }
-      json::object &jo = jv.as_object();
-      for (const auto &[key, value] : content) {
-        jo[key] = value;
-      }
-    } else {
-      jv = content;
     }
-    std::ofstream ofs(f);
-    if (!ofs) {
-      monad::Error err{};
-      err.code = my_errors::GENERAL::FILE_READ_WRITE;
-      err.what = "Unable to open configuration file for writing: " + f.string();
-      return monad::MyVoidResult::Err(std::move(err));
+
+    auto remote_r = merge_and_write_patch(
+        config_sources_.paths_.back() / kApplicationOverrideFile, remote_patch);
+    if (remote_r.is_err()) {
+      return remote_r;
     }
-    ofs << content;
-    ofs.close();
-    return monad::MyVoidResult::Ok();
+
+    return merge_and_write_patch(config_sources_.paths_.back() /
+                                     kApplicationLocalFile,
+                                 local_patch);
   }
 
   monad::MyVoidResult save_replace(const json::object &content) override {
-    auto f = config_sources_.paths_.back() / "application.override.json";
-    std::ofstream ofs(f);
-    if (!ofs) {
-      monad::Error err{};
-      err.code = my_errors::GENERAL::FILE_READ_WRITE;
-      err.what = "Unable to open configuration file for writing: " + f.string();
-      return monad::MyVoidResult::Err(std::move(err));
+    json::object remote_content;
+    json::object local_content;
+    for (const auto &[key, value] : content) {
+      if (is_local_only_key(std::string(key))) {
+        local_content[key] = value;
+      } else {
+        remote_content[key] = value;
+      }
     }
-    ofs << content;
-    ofs.close();
+
+    if (!remote_content.empty()) {
+      auto remote_r = write_json_object(
+          config_sources_.paths_.back() / kApplicationOverrideFile,
+          remote_content);
+      if (remote_r.is_err()) {
+        return remote_r;
+      }
+    }
+
+    if (!local_content.empty()) {
+      return write_json_object(config_sources_.paths_.back() /
+                                   kApplicationLocalFile,
+                               local_content);
+    }
+
     return monad::MyVoidResult::Ok();
   }
 };

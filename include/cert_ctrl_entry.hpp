@@ -360,7 +360,9 @@ public:
         std::cerr << "/**************************************************************" << std::endl;
         std::cerr << "* IMPORTANT: auto_apply_config = true                         *" << std::endl;
         std::cerr << "* install.updated is applied automatically.                   *" << std::endl;
-        std::cerr << "* Plans may include cmd/cmd_args; treat as privileged input.  *" << std::endl;
+        std::cerr << "* after_update_script hashes are auto-trusted by default.     *" << std::endl;
+        std::cerr << "* Once stable, disable auto-allow with:                       *" << std::endl;
+        std::cerr << "*    cert-ctrl conf set auto_allow_after_update_script_hash false *" << std::endl;
         std::cerr << "* To stage only (manual apply):                               *" << std::endl;
         std::cerr << "*    cert-ctrl conf set auto_apply_config false               *" << std::endl;
         std::cerr << "*    cert-ctrl install-config show --raw                      *" << std::endl;

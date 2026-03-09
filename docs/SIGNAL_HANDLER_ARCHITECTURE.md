@@ -50,13 +50,16 @@ Because deduplication relies on the backend timestamp, identical `type`/`ts_ms` 
 
 - Calls `InstallConfigManager::ensure_config_version(expected_version, expected_hash)` which fetches `/apiv1/devices/self/install-config` when the version/hash does not match the cached copy.
 - Persists the payload to `state/install_config.json` and updates `state/install_version.txt` atomically.
+- `auto_apply_config` only gates the `install.updated` path, and it is intended to be a local operator control rather than a server-managed setting.
 - When `auto_apply_config` is `true`, immediately invokes `apply_copy_actions()` to execute all copy/import directives and materialise resources under `runtime_dir/resources/{certs|cas}/<id>/current/`.
+- Cert-scoped install items no longer honor remote `cmd` / `cmd_argv`; certificate plans are limited to materialization and copy semantics.
 - When `auto_apply_config` is `false`, logs that the new plan has been staged and returns without executing actions. Operators promote staged configs via `cert-ctrl install-config apply`.
 
 ### CertUpdatedHandler
 
 - Handles backend `cert.updated` signals which fire any time a device certificate payload changes (renewals, wrap rotation, metadata edits).
 - Ensures the cached install configuration is available (fetching it if necessary) and reruns `apply_copy_actions()` for the targeted certificate ID.
+- This material-refresh path intentionally bypasses `auto_apply_config`; disabling auto-apply stages new install plans but does not stop refreshes for existing certificate or CA resources.
 - Reuses the same resource cache as the install handler, guaranteeing decrypted keys, PEM chains, DER files, and PFX bundles stay in sync. When deploy fetches return `409 WRAP_PENDING`, the handler logs the condition and waits for a subsequent `cert.updated` before retrying, per `DEVICE_POLLING_UPDATES.md`.
 
 ### CertUnassignedHandler
@@ -79,14 +82,21 @@ Key files under the runtime directory:
 - `state/processed_signals.json`
 - `resources/{certs|cas}/<id>/current/`
 
+Local operator-only config files:
+- `application.local.json`
+    - Stores local-only controls such as `auto_apply_config`, `auto_allow_after_update_script_hash`, and `trusted_after_update_script_hashes`.
+    - This file is intentionally separate from remote `config.updated` writes.
+
 Removing these files clears local state; the next poll will refetch and rebuild caches.
 
 ## Manual Approval Workflow
 
 - The dispatcher always stages the latest install plan, overwriting any previous version.
+- `auto_apply_config` remains a local setting. Remote `config.updated` handling must not change it.
+- `after_update_script` is guarded by a local content-hash trust list stored in `application.local.json`. By default the agent auto-pins newly seen hashes locally; once the script bundle is stable, disable that trust-on-first-use behavior with `cert-ctrl conf set auto_allow_after_update_script_hash false`.
 - With `auto_apply_config=false`, the handler logs that the plan is ready for manual promotion. Operators can:
     - Run `cert-ctrl install-config pull` to refresh the staged plan on demand (without waiting for another `install.updated` signal).
-    - Run `cert-ctrl install-config apply` to load the staged JSON, execute copy/import actions, and report results per target.
+    - Run `cert-ctrl install-config apply` to load the staged JSON, pin the current staged `after_update_script` hash into `application.local.json`, then execute copy/import actions and report results per target.
     - Use `cert-ctrl install-config show [--raw]` to inspect the cached plan before applying and `cert-ctrl install-config clear-cache` to reset the local state if corruption is suspected.
 - With `auto_apply_config=true`, staged plans are applied immediately and no manual intervention is required; `install-config apply` warns and exits to prevent duplicate work.
 

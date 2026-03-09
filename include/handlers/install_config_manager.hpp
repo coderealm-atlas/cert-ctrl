@@ -1,7 +1,6 @@
 #pragma once
 
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,7 +14,6 @@
 #include "handlers/install_actions/exec_action.hpp"
 #include "handlers/install_actions/exec_environment_resolver.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
-#include "handlers/install_actions/install_resource_materializer.hpp"
 #include "handlers/install_actions/materialize_password_manager.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
 #include "handlers/session_refresher.hpp"
@@ -24,8 +22,6 @@
 #include "io_context_manager.hpp"
 #include "io_monad.hpp"
 #include "resource_fetcher.hpp"
-#include "util/my_logging.hpp"
-
 namespace certctrl {
 
 // Lifetime: usually injected as a Boost.DI singleton within the App injector.
@@ -91,17 +87,22 @@ public:
   monad::IO<void> maybe_run_after_update_script_for_signal(
       const ::data::DeviceUpdateSignal &signal);
 
+  // Manual approval path: pin the staged after_update_script hash locally so
+  // a reviewed script becomes trusted before manual apply proceeds.
+  monad::IO<void> approve_after_update_script_hash(
+      const dto::DeviceInstallConfigDto &config);
+
   monad::IO<void> handle_ca_assignment(
       std::int64_t ca_id, std::optional<std::string> ca_name);
-    monad::IO<void> handle_ca_unassignment(
+  monad::IO<void> handle_ca_unassignment(
       std::int64_t ca_id, std::optional<std::string> ca_name);
 
   std::shared_ptr<dto::DeviceInstallConfigDto> cached_config_snapshot();
 
   void clear_cache();
-    void invalidate_all_caches();
-    void invalidate_resource_cache(const std::string &ob_type,
-                     std::int64_t ob_id);
+  void invalidate_all_caches();
+  void invalidate_resource_cache(const std::string &ob_type,
+                                 std::int64_t ob_id);
 
 private:
   monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>

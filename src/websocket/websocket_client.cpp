@@ -348,7 +348,13 @@ public:
     ws_.text(true);
   }
 
-  void Start() { Resolve(); }
+  void Start() {
+    if (tls_setup_error_) {
+      Fail("tls_setup", *tls_setup_error_);
+      return;
+    }
+    Resolve();
+  }
 
   void Stop() {
     closing_ = true;
@@ -632,6 +638,7 @@ private:
 
   void ConfigureSsl() {
     if (config_.verify_tls) {
+      ws_.next_layer().set_verify_mode(ssl::verify_peer);
       try {
         // Default verify paths work on many Unix-like systems, but on Windows
         // OpenSSL builds often ship without a usable default CA bundle.
@@ -696,11 +703,11 @@ private:
                    "Fix by setting websocket_config.verify_paths or installing cacert.pem in the config/runtime dir.";
           }
         }
-
-        ws_.next_layer().set_verify_mode(ssl::verify_peer);
       } catch (const std::exception &ex) {
-        BOOST_LOG_SEV(client_.lg, trivial::warning)
-            << "Websocket TLS verify setup failed, continuing: " << ex.what();
+        tls_setup_error_ = std::string("TLS verification setup failed: ") +
+                           ex.what();
+        BOOST_LOG_SEV(client_.lg, trivial::error) << "Websocket "
+                                                   << *tls_setup_error_;
       }
     } else {
       ws_.next_layer().set_verify_mode(ssl::verify_none);
@@ -1208,6 +1215,12 @@ private:
     NotifyClosed(true);
   }
 
+  void Fail(const char *context, const std::string &message) {
+    BOOST_LOG_SEV(client_.lg, trivial::error)
+      << "Websocket " << context << " error: " << message;
+    NotifyClosed(true);
+  }
+
   void NotifyClosed(bool should_retry) {
     if (notified_close_) {
       return;
@@ -1237,6 +1250,7 @@ private:
   bool closing_{false};
   bool notified_close_{false};
   bool hello_received_{false};
+  std::optional<std::string> tls_setup_error_;
   std::string websocket_id_;
   std::string webhook_ingress_path_;
   std::string auth_token_;

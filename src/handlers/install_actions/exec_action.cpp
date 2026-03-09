@@ -563,6 +563,10 @@ monad::IO<void> ExecActionHandler::apply(
         continue;
       }
 
+      if (item.ob_type && *item.ob_type == "cert") {
+        continue;
+      }
+
       if (!item.enabled) {
         continue;
       }

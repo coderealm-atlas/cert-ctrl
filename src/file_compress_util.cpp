@@ -220,6 +220,34 @@ struct Cleanup {
   }
 };
 
+fs::path validated_zip_output_path(const fs::path& out_folder_path,
+                                   const std::string& entry_name) {
+  fs::path entry_path(entry_name);
+  if (entry_path.empty()) {
+    throw std::runtime_error("ZIP entry path is empty.");
+  }
+  if (entry_path.is_absolute() || entry_path.has_root_name() ||
+      entry_path.has_root_directory()) {
+    throw std::runtime_error("ZIP entry uses an absolute path: " +
+                             entry_name);
+  }
+
+  fs::path normalized = entry_path.lexically_normal();
+  if (normalized.empty()) {
+    throw std::runtime_error("ZIP entry path normalized to empty: " +
+                             entry_name);
+  }
+
+  for (const auto& part : normalized) {
+    if (part == "..") {
+      throw std::runtime_error("ZIP entry escapes output directory: " +
+                               entry_name);
+    }
+  }
+
+  return out_folder_path / normalized;
+}
+
 // Main unzip function
 void unzip_to_folder(const fs::path& zip_file_path,
                      const fs::path& out_folder_path) {
@@ -262,7 +290,8 @@ void unzip_to_folder(const fs::path& zip_file_path,
         err = mz_zip_goto_next_entry(zip_handle);
         continue;
       }
-      fs::path out_path = out_folder_path / entry_name;
+      fs::path out_path =
+          validated_zip_output_path(out_folder_path, entry_name);
       fs::create_directories(out_path.parent_path());
 
       if (mz_zip_entry_is_dir(zip_handle)) {

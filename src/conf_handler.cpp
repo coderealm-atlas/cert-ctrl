@@ -9,6 +9,10 @@ VoidPureIO ConfHandler::start() {
   auto normalize_websocket_key = [](const std::string &key) {
     return key == "websocket_enabled" || key == "websocket.enabled";
   };
+  auto normalize_script_hash_key = [](const std::string &key) {
+    return key == "auto_allow_after_update_script_hash" ||
+           key == "after_update_script.auto_allow_hash";
+  };
 
   if (auto setv_r = cli_ctx_.get_set_kv(); setv_r.is_ok()) {
     auto [key, value] = setv_r.value();
@@ -34,9 +38,21 @@ VoidPureIO ConfHandler::start() {
       output_hub_.logger().info()
           << "Set websocket.enabled to " << (bool_value ? "true" : "false")
           << std::endl;
+      } else if (normalize_script_hash_key(key)) {
+        bool bool_value = parse_bool(value);
+        if (bool_value !=
+          certctrl_config_provider_.get().auto_allow_after_update_script_hash) {
+        certctrl_config_provider_.get().auto_allow_after_update_script_hash =
+          bool_value;
+        certctrl_config_provider_.save(
+          {{"auto_allow_after_update_script_hash", bool_value}});
+        }
+        output_hub_.logger().info()
+          << "Set auto_allow_after_update_script_hash to "
+          << (bool_value ? "true" : "false") << std::endl;
     } else {
       std::string msg = fmt::format(
-          "Unknown configuration key: {}, supported keys are: auto_apply_config, verbose, websocket.enabled",
+          "Unknown configuration key: {}, supported keys are: auto_apply_config, auto_allow_after_update_script_hash, verbose, websocket.enabled",
           key);
       return show_usage(msg);
     }
@@ -57,9 +73,16 @@ VoidPureIO ConfHandler::start() {
           << "websocket.enabled = "
           << (websocket_config_provider_.get().enabled ? "true" : "false")
           << std::endl;
+    } else if (normalize_script_hash_key(key)) {
+      output_hub_.logger().info()
+          << "auto_allow_after_update_script_hash = "
+          << (certctrl_config_provider_.get().auto_allow_after_update_script_hash
+                  ? "true"
+                  : "false")
+          << std::endl;
     } else {
       std::string msg = fmt::format(
-          "Unknown configuration key: {}, supported keys are: auto_apply_config, verbose, websocket.enabled",
+          "Unknown configuration key: {}, supported keys are: auto_apply_config, auto_allow_after_update_script_hash, verbose, websocket.enabled",
           key);
       return show_usage(msg);
     }

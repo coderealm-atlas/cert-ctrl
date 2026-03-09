@@ -1,9 +1,6 @@
 #include "handlers/install_workflow/install_workflow_runner.hpp"
 
 #include "customio/console_output.hpp"
-#include "handlers/install_actions/copy_action.hpp"
-#include "handlers/install_actions/exec_action.hpp"
-#include "handlers/install_actions/import_ca_action.hpp"
 #include "handlers/install_config_manager.hpp"
 
 namespace certctrl {
@@ -31,8 +28,11 @@ monad::IO<void> InstallWorkflowRunner::start(const Options &options) {
         << "Applying staged install-config version " << version << std::endl;
 
     return manager_
-        ->apply_copy_actions(*config_ptr, options.target_ob_type,
-                             options.target_ob_id)
+        ->approve_after_update_script_hash(*config_ptr)
+        .then([this, config_ptr, options]() {
+          return manager_->apply_copy_actions(*config_ptr, options.target_ob_type,
+                                              options.target_ob_id);
+        })
         .then([this, version]() {
           output_.logger().info() << "Installed configuration version "
                                   << version << " successfully." << std::endl;

@@ -373,6 +373,7 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
             my_errors::GENERAL::INVALID_ARGUMENT,
             fmt::format("Payload entry {} missing non-empty ob_type.", idx)));
       }
+      const std::string ob_type_value = std::string(ob_type->as_string().c_str());
 
       auto* ob_id = patch_obj.if_contains("ob_id");
       if (!ob_id || !(ob_id->is_int64() || ob_id->is_uint64())) {
@@ -417,6 +418,29 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
               fmt::format("Payload entry {} has non-object details.", idx)));
         }
         patch_obj.erase("details");
+      }
+
+      auto has_exec_payload = [](const json::value* value) {
+        if (value == nullptr) {
+          return false;
+        }
+        if (value->is_string()) {
+          return !value->as_string().empty();
+        }
+        if (value->is_array()) {
+          return !value->as_array().empty();
+        }
+        return true;
+      };
+
+      if (ob_type_value == "cert" &&
+          (has_exec_payload(patch_obj.if_contains("cmd")) ||
+           has_exec_payload(patch_obj.if_contains("cmd_argv")))) {
+        return IO<void>::fail(monad::make_error(
+            my_errors::GENERAL::INVALID_ARGUMENT,
+            fmt::format(
+                "Payload entry {} must not set cmd/cmd_argv for cert resources.",
+                idx)));
       }
     }
   }

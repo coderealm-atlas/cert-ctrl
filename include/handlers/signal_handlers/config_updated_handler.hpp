@@ -11,7 +11,6 @@
 #include <functional>
 #include <optional>
 #include <string>
-#include <vector>
 
 namespace certctrl {
 namespace signal_handlers {
@@ -21,7 +20,7 @@ namespace signal_handlers {
  *
  * Canonical implementation (full-object workflow):
  * - Consumes ref.replace entries of {file, content}.
- * - application: selectively applies allowlisted keys (auto_apply_config, verbose)
+ * - application: selectively applies allowlisted keys (currently verbose only)
  *   and persists via ICertctrlConfigProvider::save (application.override.json).
  * - websocket: persists the full snapshot via IWebsocketConfigProvider::save_replace
  *   and triggers a websocket session restart callback (if provided).
@@ -96,9 +95,9 @@ public:
               return fail_invalid_argument(
                   "config.updated replace(application).content.auto_apply_config must be boolean");
             }
-            const bool bool_value = v->as_bool();
-            config_provider_.get().auto_apply_config = bool_value;
-            application_patch["auto_apply_config"] = bool_value;
+            BOOST_LOG_SEV(lg, trivial::warning)
+                << "Ignoring remote config.updated application.auto_apply_config; "
+                   "this setting is local-only";
           }
 
           if (const json::value *v = content_obj.if_contains("verbose")) {

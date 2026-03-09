@@ -1105,9 +1105,9 @@ TEST(WebsocketClientIntegrationTest, AppliesConfigUpdatedReplaceAndAcks) {
 
   EXPECT_TRUE(saw_updates_ack) << "did not observe updates.ack";
   EXPECT_EQ(state_store.get_websocket_resume_token().value_or(""), "rt-cfg-1");
-  EXPECT_TRUE(certctrl_config_provider.get().auto_apply_config);
+  EXPECT_FALSE(certctrl_config_provider.get().auto_apply_config);
   EXPECT_EQ(certctrl_config_provider.get().verbose, "debug");
-  EXPECT_TRUE(certctrl_config_provider.saved().if_contains("auto_apply_config"));
+  EXPECT_FALSE(certctrl_config_provider.saved().if_contains("auto_apply_config"));
   EXPECT_TRUE(certctrl_config_provider.saved().if_contains("verbose"));
 
   client.Stop();

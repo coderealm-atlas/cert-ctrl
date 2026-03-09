@@ -271,13 +271,13 @@ Agent requirements (hot reload + reliability)
 
 Reloadability guidance (practical)
 - Some settings are reasonable to hot reload (no restart):
-  - `application.json`: `auto_apply_config` (staging vs auto apply behavior), `verbose` log level.
+  - `application.json`: `verbose` log level.
   - `websocket_config.json`: allowlist/routes used by the tunnel router (if the implementation supports swapping route tables safely).
 - Many settings are safer as restart-only (agent should stage + request restart):
-  - `runtime_dir`, `--config-dirs` behavior, thread pool sizing, HTTP/TLS client configuration, or WebSocket endpoint/TLS verification.
+  - `auto_apply_config`, `runtime_dir`, `--config-dirs` behavior, thread pool sizing, HTTP/TLS client configuration, or WebSocket endpoint/TLS verification.
 
 Implementation note (current agent behavior):
-- `application` replace: selectively applies `auto_apply_config` + `verbose` and persists them to `application.override.json`.
+- `application` replace: selectively applies `verbose` and persists it to `application.override.json`. `auto_apply_config` is local-only and ignored if sent remotely.
 - `websocket` replace: persists the incoming object to `websocket_config.override.json` and restarts the websocket session so it takes effect.
 
 Rationale:

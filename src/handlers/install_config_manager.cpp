@@ -70,6 +70,91 @@ namespace {
 // - The variable is set only for relevant cert-related events where the agent
 //   can resolve the cert_id and find the stored password.
 constexpr const char kPfxPasswordEnvVar[] = "CERTCTRL_PFX_PASSWORD";
+constexpr const char kDisableAutoAllowScriptHashesCommand[] =
+    "cert-ctrl conf set auto_allow_after_update_script_hash false";
+
+std::string normalize_hash_copy(std::string value) {
+  value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char ch) {
+                return std::isspace(ch) != 0;
+              }),
+              value.end());
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char ch) {
+                   return static_cast<char>(std::tolower(ch));
+                 });
+  return value;
+}
+
+bool item_has_exec_payload(const dto::InstallItem &item) {
+  const bool has_cmd = item.cmd && !item.cmd->empty();
+  const bool has_cmd_argv =
+      item.cmd_argv &&
+      std::any_of(item.cmd_argv->begin(), item.cmd_argv->end(),
+                  [](const std::string &value) { return !value.empty(); });
+  return has_cmd || has_cmd_argv;
+}
+
+bool strip_cert_scoped_exec_fields(dto::DeviceInstallConfigDto &config,
+                                   customio::ConsoleOutput *output = nullptr) {
+  bool changed = false;
+  for (auto &item : config.installs) {
+    if (!item.ob_type || *item.ob_type != "cert") {
+      continue;
+    }
+    if (!item_has_exec_payload(item)) {
+      continue;
+    }
+
+    item.cmd.reset();
+    item.cmd_argv.reset();
+    item.timeout_ms.reset();
+    item.run_as.reset();
+    item.env.reset();
+    changed = true;
+
+    if (output != nullptr) {
+      output->logger().warning()
+          << "Stripped cmd/cmd_argv from cert-scoped install item '"
+          << item.id << "'; cert resources no longer accept remote exec "
+             "commands."
+          << std::endl;
+    }
+  }
+  return changed;
+}
+
+boost::json::array hash_array_from_vector(
+    const std::vector<std::string> &hashes) {
+  boost::json::array result;
+  result.reserve(hashes.size());
+  for (const auto &hash : hashes) {
+    result.emplace_back(hash);
+  }
+  return result;
+}
+
+std::string compute_after_update_script_hash(const std::string &variant_name,
+                                             const std::string &script_content) {
+  return normalize_hash_copy(
+      cjj365::opensslutil::sha256_hex(variant_name + "\n" + script_content));
+}
+
+static std::vector<std::string> normalize_trusted_hashes(
+    std::vector<std::string> trusted_hashes) {
+  trusted_hashes.erase(
+      std::remove_if(trusted_hashes.begin(), trusted_hashes.end(),
+                     [](const std::string &value) { return value.empty(); }),
+      trusted_hashes.end());
+  std::transform(trusted_hashes.begin(), trusted_hashes.end(),
+                 trusted_hashes.begin(), [](std::string value) {
+                   return normalize_hash_copy(std::move(value));
+                 });
+  std::sort(trusted_hashes.begin(), trusted_hashes.end());
+  trusted_hashes.erase(
+      std::unique(trusted_hashes.begin(), trusted_hashes.end()),
+      trusted_hashes.end());
+  return trusted_hashes;
+}
 
 static std::optional<std::unordered_map<std::string, std::string>>
 resolve_after_update_script_env(
@@ -140,9 +225,8 @@ resolve_after_update_script_env(
 struct CertActionScanResult {
   bool has_matching_items{false};
   bool has_copy_targets{false};
-  bool has_exec_targets{false};
 
-  bool actionable() const { return has_copy_targets || has_exec_targets; }
+  bool actionable() const { return has_copy_targets; }
 };
 
 bool has_non_empty_entry(
@@ -173,12 +257,6 @@ scan_cert_actionability(const dto::DeviceInstallConfigDto &config,
 
     if (item.type == "copy" && has_non_empty_entry(item.to)) {
       result.has_copy_targets = true;
-    }
-
-    const bool has_cmd =
-        (item.cmd && !item.cmd->empty()) || has_non_empty_entry(item.cmd_argv);
-    if (has_cmd) {
-      result.has_exec_targets = true;
     }
 
     if (result.actionable()) {
@@ -1519,6 +1597,7 @@ InstallConfigManager::load_from_disk() {
     auto jv = boost::json::parse(content);
     dto::DeviceInstallConfigDto dto_config =
         boost::json::value_to<dto::DeviceInstallConfigDto>(jv);
+    strip_cert_scoped_exec_fields(dto_config, &output_);
     local_version_ = dto_config.version;
     return dto_config;
   } catch (const std::exception &e) {
@@ -1534,7 +1613,10 @@ monad::IO<void> InstallConfigManager::persist_config(
   try {
     std::filesystem::create_directories(state_dir());
 
-    auto config_json = boost::json::value_from(config);
+    dto::DeviceInstallConfigDto sanitized = config;
+    strip_cert_scoped_exec_fields(sanitized, &output_);
+
+    auto config_json = boost::json::value_from(sanitized);
     std::string serialized = boost::json::serialize(config_json);
 
     auto tmp_name = config_file_path();
@@ -1562,7 +1644,7 @@ monad::IO<void> InstallConfigManager::persist_config(
     version_tmp += generate_temp_suffix();
     {
       std::ofstream ofs(version_tmp, std::ios::binary | std::ios::trunc);
-      ofs << config.version;
+      ofs << sanitized.version;
     }
     std::filesystem::rename(version_tmp, version_file_path());
 #ifndef _WIN32
@@ -1572,12 +1654,12 @@ monad::IO<void> InstallConfigManager::persist_config(
                                  std::filesystem::perm_options::replace);
 #endif
 
-    cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(config);
+    cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(sanitized);
     output_.logger().info()
         << "persist_config cached_config_="
         << static_cast<const void *>(cached_config_.get())
         << " version=" << cached_config_->version << std::endl;
-    local_version_ = config.version;
+    local_version_ = sanitized.version;
 
     return ReturnIO::pure();
   } catch (const std::exception &e) {
@@ -1817,6 +1899,50 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
 
     const auto &variant_name = selected->first;
     const auto &script_content = selected->second;
+    const auto script_hash =
+      compute_after_update_script_hash(variant_name, script_content);
+
+    auto &runtime_cfg = config_provider_.get();
+    auto trusted_hashes = normalize_trusted_hashes(
+        runtime_cfg.trusted_after_update_script_hashes);
+
+    const bool trusted =
+      std::find(trusted_hashes.begin(), trusted_hashes.end(), script_hash) !=
+      trusted_hashes.end();
+    if (!trusted) {
+      if (!runtime_cfg.auto_allow_after_update_script_hash) {
+      BOOST_LOG_SEV(lg, trivial::warning)
+        << "after_update_script skipped for type=" << signal.type
+        << " variant=" << variant_name << " hash=" << script_hash
+        << " because it is not pinned locally. Once the script is stable, "
+           "keep trust-on-first-use disabled; command: "
+        << kDisableAutoAllowScriptHashesCommand;
+      return ReturnIO::pure();
+      }
+
+      trusted_hashes.push_back(script_hash);
+      std::sort(trusted_hashes.begin(), trusted_hashes.end());
+      trusted_hashes.erase(
+        std::unique(trusted_hashes.begin(), trusted_hashes.end()),
+        trusted_hashes.end());
+      runtime_cfg.trusted_after_update_script_hashes = trusted_hashes;
+
+      auto save_r = config_provider_.save({{
+        "trusted_after_update_script_hashes",
+        hash_array_from_vector(trusted_hashes),
+      }});
+      if (save_r.is_err()) {
+      BOOST_LOG_SEV(lg, trivial::warning)
+        << "after_update_script auto-allow hash=" << script_hash
+        << " but failed to persist trust pin: " << save_r.error();
+      } else {
+      BOOST_LOG_SEV(lg, trivial::warning)
+        << "Auto-allowed new after_update_script hash=" << script_hash
+        << " for variant=" << variant_name << ". Once the script is stable, "
+           "disable trust-on-first-use with '"
+        << kDisableAutoAllowScriptHashesCommand << "'.";
+      }
+    }
 
     const auto script_path =
 #ifdef _WIN32
@@ -1846,13 +1972,63 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
 
     BOOST_LOG_SEV(lg, trivial::info)
         << "after_update_script executed for type=" << signal.type
-        << " variant=" << variant_name;
+    << " variant=" << variant_name << " hash=" << script_hash;
     return ReturnIO::pure();
   } catch (const std::exception &ex) {
     BOOST_LOG_SEV(lg, trivial::warning)
         << "after_update_script unexpected error: " << ex.what();
     return ReturnIO::pure();
   }
+}
+
+monad::IO<void> InstallConfigManager::approve_after_update_script_hash(
+    const dto::DeviceInstallConfigDto &config) {
+  using ReturnIO = monad::IO<void>;
+
+  if (!config.after_update_script || config.after_update_script->empty()) {
+    return ReturnIO::pure();
+  }
+
+  auto selected = select_platform_script(*config.after_update_script);
+  if (!selected || selected->second.empty()) {
+    return ReturnIO::pure();
+  }
+
+  const auto &variant_name = selected->first;
+  const auto &script_content = selected->second;
+  const auto script_hash =
+      compute_after_update_script_hash(variant_name, script_content);
+
+  auto &runtime_cfg = config_provider_.get();
+  auto trusted_hashes =
+      normalize_trusted_hashes(runtime_cfg.trusted_after_update_script_hashes);
+  const bool trusted =
+      std::find(trusted_hashes.begin(), trusted_hashes.end(), script_hash) !=
+      trusted_hashes.end();
+  if (trusted) {
+    BOOST_LOG_SEV(lg, trivial::info)
+        << "after_update_script hash already trusted for manual apply: "
+        << script_hash << " variant=" << variant_name;
+    return ReturnIO::pure();
+  }
+
+  trusted_hashes.push_back(script_hash);
+  trusted_hashes = normalize_trusted_hashes(std::move(trusted_hashes));
+  runtime_cfg.trusted_after_update_script_hashes = trusted_hashes;
+
+  auto save_r = config_provider_.save({{
+      "trusted_after_update_script_hashes",
+      hash_array_from_vector(trusted_hashes),
+  }});
+  if (save_r.is_err()) {
+    return ReturnIO::fail(save_r.error());
+  }
+
+  BOOST_LOG_SEV(lg, trivial::info)
+      << "Approved staged after_update_script hash=" << script_hash
+      << " for variant=" << variant_name
+      << " during manual install-config apply";
+  return ReturnIO::pure();
 }
 
 monad::IO<void>

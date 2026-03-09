@@ -129,6 +129,8 @@ Update signals are dispatched through a synchronous dispatcher/handler pipeline.
   - Stages the referenced install-config version.
   - If `auto_apply_config=true`, executes copy/import actions immediately.
   - If `auto_apply_config=false`, stages only and requires manual promotion (`cert-ctrl install-config apply`).
+  - `auto_apply_config` is local-only state stored in `application.local.json`; remote `config.updated` handling must not change it.
+  - Manual `cert-ctrl install-config apply` also pins the currently staged `after_update_script` hash into `application.local.json` before applying actions.
 
 - `cert.updated`
   - Invalidates the cached materials for that cert id and re-materializes so hosts see rotations promptly.
@@ -144,6 +146,10 @@ Update signals are dispatched through a synchronous dispatcher/handler pipeline.
 
 - `ca.unassigned`
   - Purges cached CA bundle and removes trust anchors from the platform/browser stores.
+
+- Local script trust pins
+  - `after_update_script` trust pins are stored in `application.local.json` under `trusted_after_update_script_hashes`.
+  - This file is intentionally separate from remotely updated override content.
 
 - Unknown types
   - Must be ignored for forward compatibility (but still dedup/ack as described above for WebSocket `updates.signal`).

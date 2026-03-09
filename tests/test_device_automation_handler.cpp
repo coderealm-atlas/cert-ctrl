@@ -182,15 +182,16 @@ public:
       using tcp = asio::ip::tcp;
       tcp::socket wake_sock{ioc_};
       boost::system::error_code ec;
-      wake_sock.connect(
+      [[maybe_unused]] auto connect_status = wake_sock.connect(
           tcp::endpoint(asio::ip::make_address("127.0.0.1"), port_), ec);
       if (!ec) {
         const std::string req =
             "GET /__shutdown__ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
         asio::write(wake_sock, asio::buffer(req), ec);
       }
-      wake_sock.shutdown(tcp::socket::shutdown_both, ec);
-      wake_sock.close(ec);
+      [[maybe_unused]] auto shutdown_status =
+          wake_sock.shutdown(tcp::socket::shutdown_both, ec);
+      [[maybe_unused]] auto close_status = wake_sock.close(ec);
     } catch (...) {
       // Best-effort wake-up; ignore any errors.
     }
@@ -322,14 +323,14 @@ struct HandlerHarness {
   }
 };
 
-TEST(DeviceAutomationInstallConfigUpdate, AcceptsObjectPayloadWithPatchesAndAfterUpdateScriptNull) {
+TEST(DeviceAutomationInstallConfigUpdate, AcceptsObjectPayloadWithCaPatchAndAfterUpdateScriptNull) {
   TestInstallConfigUpdateServer server;
   HandlerHarness harness(server.base_url());
 
   harness.state_store.device_public_id = std::string("dev-123");
 
   const std::string payload =
-      R"({"patches":[{"ob_type":"cert","ob_id":10,"changes":{"cmd":"echo hi"},"details":{"ignored":true}}],"after_update_script":null})";
+      R"({"patches":[{"ob_type":"ca","ob_id":10,"changes":{"cmd":"echo hi"},"details":{"ignored":true}}],"after_update_script":null})";
 
   po::variables_map vm;
   certctrl::CliParams params;
@@ -374,6 +375,42 @@ TEST(DeviceAutomationInstallConfigUpdate, AcceptsObjectPayloadWithPatchesAndAfte
   EXPECT_TRUE(p0.contains("cmd")) << "expected legacy changes flattened";
   EXPECT_FALSE(p0.contains("changes"));
   EXPECT_FALSE(p0.contains("details"));
+}
+
+TEST(DeviceAutomationInstallConfigUpdate, RejectsCertScopedExecPatchWithoutSendingRequest) {
+  TestInstallConfigUpdateServer server;
+  HandlerHarness harness(server.base_url());
+
+  harness.state_store.device_public_id = std::string("dev-123");
+
+  const std::string payload =
+      R"({"patches":[{"ob_type":"cert","ob_id":10,"changes":{"cmd":"echo hi"}}],"after_update_script":null})";
+
+  po::variables_map vm;
+  certctrl::CliParams params;
+  certctrl::CliCtx cli_ctx(std::move(vm),
+                           std::vector<std::string>{"device", "install-config-update"},
+                           std::vector<std::string>{"--apikey", "tok", "--payload", payload},
+                           std::move(params));
+
+  certctrl::DeviceAutomationHandler handler(cli_ctx, *harness.output, *harness.cert_cfg,
+                                            *harness.http_mgr, harness.state_store);
+
+  misc::ThreadNotifier notifier(5000);
+  std::optional<monad::MyVoidResult> result;
+  handler.start().run([&](auto r) {
+    result = std::move(r);
+    notifier.notify();
+  });
+  notifier.waitForNotification();
+
+  ASSERT_TRUE(result.has_value()) << "handler produced no result";
+  ASSERT_TRUE(result->is_err()) << "expected cert-scoped exec payload to fail";
+  EXPECT_NE(result->error().what.find("must not set cmd/cmd_argv for cert resources"),
+            std::string::npos);
+
+  EXPECT_FALSE(server.wait_for_records(1, std::chrono::milliseconds(300)))
+      << "expected no HTTP request to be sent";
 }
 
 TEST(DeviceAutomationInstallConfigUpdate, AcceptsObjectPayloadWithOnlyAfterUpdateScript) {

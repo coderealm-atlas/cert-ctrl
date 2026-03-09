@@ -204,10 +204,6 @@ void handleOpenSSLErrorWithDetails() {
 std::vector<unsigned char> encrypt(const std::string& plaintext,
                                    const std::vector<unsigned char>& key,
                                    const std::vector<unsigned char>& iv) {
-  std::cerr << "Encrypting with key: " << vectorToHex(key) << std::endl;
-  std::cerr << "Encrypting with iv: " << vectorToHex(iv) << std::endl;
-  std::cerr << "Plaintext size: " << plaintext.size() << std::endl;
-
   if (key.size() != EVP_CIPHER_key_length(EVP_aes_256_cbc())) {
     std::cerr << "Invalid key size: " << key.size() << std::endl;
     throw std::runtime_error("Invalid key size");
@@ -241,9 +237,6 @@ std::vector<unsigned char> encrypt(const std::string& plaintext,
   }
   ciphertext_len += len;
 
-  std::cerr << "Ciphertext length after update: " << ciphertext_len
-            << std::endl;
-
   // Finalize encryption
   if (EVP_EncryptFinal_ex(ctx.get(), ciphertext.data() + ciphertext_len,
                           &len) != 1) {
@@ -255,7 +248,6 @@ std::vector<unsigned char> encrypt(const std::string& plaintext,
 }
 
 std::string decrypt(const std::string& ciphertext, const std::string& secret) {
-  std::cout << "secret: " << secret << std::endl;
   std::pair<std::vector<unsigned char>, std::vector<unsigned char>> key_iv =
       hex_to_key_iv(secret);
   std::vector<unsigned char> ciphertext_vec{ciphertext.begin(),
@@ -270,13 +262,6 @@ std::string decrypt(const std::vector<unsigned char>& ciphertext,
   // std::string decrypt(std::vector<unsigned char> ciphertext,
   //                     std::vector<unsigned char> key,
   //                     std::vector<unsigned char> iv) {
-  std::cout << "Decrypting with key: " << vectorToHex(key)
-            << "size: " << key.size() << std::endl;
-  std::cout << "Decrypting with iv: " << vectorToHex(iv)
-            << "size: " << iv.size() << std::endl;
-  std::cout << "Ciphertext size: " << ciphertext.size() << std::endl;
-  // std::cout << "Ciphertext: " << vectorToHex(ciphertext) << std::endl;
-
   if (key.size() != EVP_CIPHER_key_length(EVP_aes_256_cbc())) {
     std::cerr << "Invalid key size: " << key.size() << std::endl;
     throw std::runtime_error("Invalid key size");
