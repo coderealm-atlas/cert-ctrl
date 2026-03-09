@@ -212,6 +212,21 @@
             | regex_replace('^https=', '')
             | trim
           }}
+        expected_proxy_normalized: >-
+          {{
+            install_service_linux_docker_expected_proxy
+            | regex_replace('://localhost([:/]|$)', '://127.0.0.1\1')
+          }}
+        docker_http_proxy_normalized: >-
+          {{
+            docker_http_proxy
+            | regex_replace('://localhost([:/]|$)', '://127.0.0.1\1')
+          }}
+        docker_https_proxy_normalized: >-
+          {{
+            docker_https_proxy
+            | regex_replace('://localhost([:/]|$)', '://127.0.0.1\1')
+          }}
       fail:
         msg: >-
           Docker daemon proxy mismatch for linux-docker build.
@@ -223,7 +238,7 @@
       when:
         - install_service_linux_docker_expected_proxy | length > 0
         - install_service_linux_docker_daemon_proxy.stdout is defined
-        - docker_http_proxy != install_service_linux_docker_expected_proxy or docker_https_proxy != install_service_linux_docker_expected_proxy
+        - docker_http_proxy_normalized != expected_proxy_normalized or docker_https_proxy_normalized != expected_proxy_normalized
 
     - name: Preflight Docker daemon proxy connectivity for linux-docker
       when: install_service_linux_docker_daemon_proxy.stdout is defined
