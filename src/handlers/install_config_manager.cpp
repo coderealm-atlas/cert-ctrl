@@ -1868,7 +1868,8 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
 }
 
 monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
-    const ::data::DeviceUpdateSignal &signal) {
+  const ::data::DeviceUpdateSignal &signal,
+  bool bypass_auto_apply_config_gate) {
   using ReturnIO = monad::IO<void>;
 
   try {
@@ -1887,7 +1888,8 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
     }
 
     // auto_apply_config gating, bypassed for cert/CA material events.
-    if (!cfg.auto_apply_config && !is_bypass_auto_apply_event(signal.type)) {
+    if (!bypass_auto_apply_config_gate && !cfg.auto_apply_config &&
+      !is_bypass_auto_apply_event(signal.type)) {
       BOOST_LOG_SEV(lg, trivial::debug)
           << "auto_apply_config disabled; after_update_script skipped for type="
           << signal.type;

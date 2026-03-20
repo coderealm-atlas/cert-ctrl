@@ -90,7 +90,8 @@ public:
   //   cert/CA material events.
   // - Failures only log; never fail the caller.
   monad::IO<void> maybe_run_after_update_script_for_signal(
-      const ::data::DeviceUpdateSignal &signal);
+      const ::data::DeviceUpdateSignal &signal,
+      bool bypass_auto_apply_config_gate = false);
 
     monad::IO<void> rearm_local_install_update_window();
 
