@@ -236,6 +236,11 @@ monad::IO<void> InstallConfigHandler::apply_copy_and_import(
   return run_copy_stage()
       .then([self]() { return self->run_import_stage(); })
       .then([self]() {
+      if (!self->active_config_) {
+        return monad::IO<void>::fail(
+            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                              "after_update_script invoked without active config"));
+      }
       ::data::DeviceUpdateSignal synthetic_signal{};
       synthetic_signal.type = "install.updated";
       synthetic_signal.ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -243,6 +248,7 @@ monad::IO<void> InstallConfigHandler::apply_copy_and_import(
                      .count();
       return self->install_config_manager_
         ->maybe_run_after_update_script_for_signal(
+          *self->active_config_,
           synthetic_signal,
           /*bypass_auto_apply_config_gate=*/true);
       })

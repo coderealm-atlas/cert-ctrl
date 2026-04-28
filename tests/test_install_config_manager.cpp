@@ -381,6 +381,15 @@ private:
   return json::value_to<::data::DeviceUpdateSignal>(signal);
 }
 
+::data::DeviceUpdateSignal make_install_updated_signal() {
+  json::object payload;
+  payload["type"] = "install.updated";
+  payload["ts_ms"] = 1234567;
+  payload["ref"] = json::object{};
+  json::value signal = payload;
+  return json::value_to<::data::DeviceUpdateSignal>(signal);
+}
+
 struct MockAccessTokenLoaderFixed
     : public certctrl::install_actions::IAccessTokenLoader {
   std::optional<std::string> token;
@@ -1795,6 +1804,69 @@ TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
     ASSERT_TRUE(local_obj.if_contains("trusted_after_update_script_hashes"));
     ASSERT_TRUE(
       local_obj.at("trusted_after_update_script_hashes").is_array());
+  }
+
+  TEST_F(InstallConfigManagerFixture,
+       ExplicitConfigAfterUpdateScriptPathDoesNotRequireCachedInstallConfig) {
+    misc::ThreadNotifier notifier(3000);
+    auto config_dir = make_temp_runtime_dir();
+    auto runtime_dir = make_temp_runtime_dir();
+
+    createHarness(config_dir, runtime_dir,
+          std::make_unique<MockInstallConfigFetcher>(dto::DeviceInstallConfigDto{}),
+          std::make_unique<MockerResourceFetcher>(""),
+          std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+
+    dto::DeviceInstallConfigDto config{};
+    config.id = 10;
+    config.user_device_id = 100;
+    config.version = 34;
+    config.after_update_script = fmt::format(
+      "@@@BEGIN posix.sh\nprintf '%s\\n' \"$1\" >> '{}'\n@@@END\n",
+      (runtime_dir / "state" / "after_update_script_events.txt").string());
+
+    harness_->config_provider().get().auto_allow_after_update_script_hash =
+      false;
+    auto save_r = harness_->config_provider().save(
+      {{"auto_allow_after_update_script_hash", false}});
+    ASSERT_TRUE(save_r.is_ok()) << save_r.error();
+
+    std::optional<monad::MyVoidResult> approve_r;
+    harness_->install_manager()
+      .approve_after_update_script_hash(config)
+      .run([&](auto result) {
+      approve_r = std::move(result);
+      notifier.notify();
+      });
+    notifier.waitForNotification();
+
+    ASSERT_TRUE(approve_r.has_value());
+    ASSERT_TRUE(approve_r->is_ok()) << approve_r->error();
+
+    const auto staged_config_path = runtime_dir / "state" / "install_config.json";
+    EXPECT_FALSE(std::filesystem::exists(staged_config_path));
+
+    auto signal = make_install_updated_signal();
+    std::optional<monad::MyVoidResult> script_r;
+    harness_->install_manager()
+      .maybe_run_after_update_script_for_signal(
+        config, signal, /*bypass_auto_apply_config_gate=*/true)
+      .run([&](auto result) {
+      script_r = std::move(result);
+      notifier.notify();
+      });
+    notifier.waitForNotification();
+
+    ASSERT_TRUE(script_r.has_value());
+    ASSERT_TRUE(script_r->is_ok()) << script_r->error();
+
+    const auto marker_path =
+      runtime_dir / "state" / "after_update_script_events.txt";
+    ASSERT_TRUE(std::filesystem::exists(marker_path));
+    EXPECT_NE(read_file(marker_path).find("install.updated"), std::string::npos);
+
+    const auto persisted_script = runtime_dir / "state" / "after_update_script.sh";
+    ASSERT_TRUE(std::filesystem::exists(persisted_script));
   }
 
   TEST_F(InstallConfigManagerFixture,

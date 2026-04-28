@@ -92,8 +92,12 @@ public:
   monad::IO<void> maybe_run_after_update_script_for_signal(
       const ::data::DeviceUpdateSignal &signal,
       bool bypass_auto_apply_config_gate = false);
+  monad::IO<void> maybe_run_after_update_script_for_signal(
+      const dto::DeviceInstallConfigDto &config,
+      const ::data::DeviceUpdateSignal &signal,
+      bool bypass_auto_apply_config_gate = false);
 
-    monad::IO<void> rearm_local_install_update_window();
+  monad::IO<void> rearm_local_install_update_window();
 
   // Manual approval path: pin the staged after_update_script hash locally so
   // a reviewed script becomes trusted before manual apply proceeds.

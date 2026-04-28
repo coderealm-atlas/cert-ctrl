@@ -1868,8 +1868,23 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
 }
 
 monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
-  const ::data::DeviceUpdateSignal &signal,
-  bool bypass_auto_apply_config_gate) {
+    const ::data::DeviceUpdateSignal &signal,
+    bool bypass_auto_apply_config_gate) {
+  auto config_ptr = cached_config_snapshot();
+  if (!config_ptr) {
+    BOOST_LOG_SEV(lg, trivial::debug)
+        << "after_update_script skipped: install config not cached";
+    return monad::IO<void>::pure();
+  }
+
+  return maybe_run_after_update_script_for_signal(
+      *config_ptr, signal, bypass_auto_apply_config_gate);
+}
+
+monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
+    const dto::DeviceInstallConfigDto &config,
+    const ::data::DeviceUpdateSignal &signal,
+    bool bypass_auto_apply_config_gate) {
   using ReturnIO = monad::IO<void>;
 
   try {
@@ -1877,6 +1892,9 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
 
     // Allowlist gating.
     if (cfg.events_trigger_script.empty()) {
+      BOOST_LOG_SEV(lg, trivial::debug)
+          << "after_update_script skipped for type=" << signal.type
+          << ": events_trigger_script allowlist is empty";
       return ReturnIO::pure();
     }
     const bool allowlisted =
@@ -1884,6 +1902,9 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
                   cfg.events_trigger_script.end(),
                   signal.type) != cfg.events_trigger_script.end();
     if (!allowlisted) {
+      BOOST_LOG_SEV(lg, trivial::debug)
+          << "after_update_script skipped for type=" << signal.type
+          << ": signal is not allowlisted";
       return ReturnIO::pure();
     }
 
@@ -1896,19 +1917,14 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
       return ReturnIO::pure();
     }
 
-    auto config_ptr = cached_config_snapshot();
-    if (!config_ptr) {
+    if (!config.after_update_script || config.after_update_script->empty()) {
       BOOST_LOG_SEV(lg, trivial::debug)
-          << "after_update_script skipped: install config not cached";
+          << "after_update_script skipped for type=" << signal.type
+          << ": staged config has no script payload";
       return ReturnIO::pure();
     }
 
-    if (!config_ptr->after_update_script ||
-        config_ptr->after_update_script->empty()) {
-      return ReturnIO::pure();
-    }
-
-    auto selected = select_platform_script(*config_ptr->after_update_script);
+    auto selected = select_platform_script(*config.after_update_script);
     if (!selected || selected->second.empty()) {
       BOOST_LOG_SEV(lg, trivial::debug)
           << "after_update_script bundle has no matching platform block";
