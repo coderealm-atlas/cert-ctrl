@@ -73,6 +73,18 @@ constexpr const char kPfxPasswordEnvVar[] = "CERTCTRL_PFX_PASSWORD";
 constexpr const char kDisableAutoAllowScriptHashesCommand[] =
     "cert-ctrl conf set auto_allow_after_update_script_hash false";
 
+std::string fmt_script_output(std::string_view s) {
+  if (s.empty()) return {};
+  std::string out{s};
+  while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) {
+    out.pop_back();
+  }
+  if (out.size() >= 64 * 1024) {
+    out += "\n<output truncated>";
+  }
+  return out;
+}
+
 std::string normalize_hash_copy(std::string value) {
   value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char ch) {
                 return std::isspace(ch) != 0;
@@ -446,7 +458,11 @@ static std::optional<std::string>
 run_script_file_best_effort(const std::filesystem::path &script_path,
                             const std::string &variant_name,
                             const std::string &event_name,
-                            const std::optional<std::unordered_map<std::string, std::string>> &extra_env) {
+                            const std::optional<std::unordered_map<std::string, std::string>> &extra_env,
+                            std::string *stdout_text = nullptr,
+                            std::string *stderr_text = nullptr,
+                            std::optional<int> *exit_code = nullptr,
+                            std::optional<int> *term_signal = nullptr) {
 #ifdef _WIN32
   (void)extra_env;
   // On Windows, use a best-effort approach. We construct argv in a way that
@@ -457,18 +473,6 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
     if (dst.size() >= kMax) return;
     const std::size_t room = kMax - dst.size();
     dst.append(data, data + std::min(room, n));
-  };
-
-  auto fmt_output = [](std::string_view s) -> std::string {
-    if (s.empty()) return {};
-    std::string out{s};
-    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) {
-      out.pop_back();
-    }
-    if (out.size() >= 64 * 1024) {
-      out += "\n<output truncated>";
-    }
-    return out;
   };
 
   std::vector<std::string> argv;
@@ -570,6 +574,21 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
 
   std::string out_text;
   std::string err_text;
+  auto store_details = [&](std::optional<int> maybe_exit_code,
+                           std::optional<int> maybe_term_signal) {
+    if (stdout_text != nullptr) {
+      *stdout_text = out_text;
+    }
+    if (stderr_text != nullptr) {
+      *stderr_text = err_text;
+    }
+    if (exit_code != nullptr) {
+      *exit_code = maybe_exit_code;
+    }
+    if (term_signal != nullptr) {
+      *term_signal = maybe_term_signal;
+    }
+  };
 
   auto drain_pipe = [&](HANDLE h, std::string &dst) {
     while (true) {
@@ -609,6 +628,7 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
     WaitForSingleObject(pi.hProcess, INFINITE);
     drain_pipe(out_read, out_text);
     drain_pipe(err_read, err_text);
+    store_details(std::nullopt, std::nullopt);
     CloseHandle(out_read);
     CloseHandle(err_read);
     CloseHandle(pi.hThread);
@@ -618,6 +638,7 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   if (wait_result != WAIT_OBJECT_0) {
     drain_pipe(out_read, out_text);
     drain_pipe(err_read, err_text);
+    store_details(std::nullopt, std::nullopt);
     CloseHandle(out_read);
     CloseHandle(err_read);
     CloseHandle(pi.hThread);
@@ -633,16 +654,18 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
 
   DWORD exit_code = 0;
   if (!GetExitCodeProcess(pi.hProcess, &exit_code)) {
+    store_details(std::nullopt, std::nullopt);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return std::optional<std::string>("GetExitCodeProcess failed");
   }
 
+  store_details(static_cast<int>(exit_code), std::nullopt);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
 
-  const auto out_for_log = fmt_output(out_text);
-  const auto err_for_log = fmt_output(err_text);
+  const auto out_for_log = fmt_script_output(out_text);
+  const auto err_for_log = fmt_script_output(err_text);
   if (!out_for_log.empty()) {
     BOOST_LOG_TRIVIAL(info)
         << "after_update_script stdout (event=" << event_name
@@ -699,19 +722,6 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
       // Any other error: stop reading.
       break;
     }
-  };
-
-  auto fmt_output = [](std::string_view s) -> std::string {
-    if (s.empty()) return {};
-    std::string out{s};
-    // Make logs friendlier; keep it minimal.
-    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) {
-      out.pop_back();
-    }
-    if (out.size() >= 64 * 1024) {
-      out += "\n<output truncated>";
-    }
-    return out;
   };
 
   auto wants_bash = [&]() -> bool {
@@ -805,6 +815,21 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   close(err_pipe[1]);
 
   ScriptRunResult run_result;
+  auto store_details = [&](std::optional<int> maybe_exit_code,
+                           std::optional<int> maybe_term_signal) {
+    if (stdout_text != nullptr) {
+      *stdout_text = run_result.stdout_text;
+    }
+    if (stderr_text != nullptr) {
+      *stderr_text = run_result.stderr_text;
+    }
+    if (exit_code != nullptr) {
+      *exit_code = maybe_exit_code;
+    }
+    if (term_signal != nullptr) {
+      *term_signal = maybe_term_signal;
+    }
+  };
 
   int status = 0;
   auto start = std::chrono::steady_clock::now();
@@ -819,6 +844,7 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
       break;
     }
     if (w == -1) {
+      store_details(std::nullopt, std::nullopt);
       close(out_pipe[0]);
       close(err_pipe[0]);
       return std::optional<std::string>(std::string("waitpid failed: ") +
@@ -829,6 +855,7 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
       waitpid(pid, &status, 0);
       drain_fd(out_pipe[0], run_result.stdout_text);
       drain_fd(err_pipe[0], run_result.stderr_text);
+      store_details(std::nullopt, std::nullopt);
       close(out_pipe[0]);
       close(err_pipe[0]);
       return std::optional<std::string>("script timed out");
@@ -851,8 +878,8 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   close(out_pipe[0]);
   close(err_pipe[0]);
 
-  const auto out_for_log = fmt_output(run_result.stdout_text);
-  const auto err_for_log = fmt_output(run_result.stderr_text);
+  const auto out_for_log = fmt_script_output(run_result.stdout_text);
+  const auto err_for_log = fmt_script_output(run_result.stderr_text);
   if (!out_for_log.empty()) {
     BOOST_LOG_TRIVIAL(info)
         << "after_update_script stdout (event=" << event_name
@@ -866,6 +893,7 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
 
   if (WIFEXITED(status)) {
     int rc = WEXITSTATUS(status);
+    store_details(rc, std::nullopt);
     if (rc != 0) {
       std::string msg = fmt::format("script exited with code {}", rc);
       if (!err_for_log.empty()) {
@@ -879,9 +907,11 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
     return std::nullopt;
   }
   if (WIFSIGNALED(status)) {
+    store_details(std::nullopt, WTERMSIG(status));
     return std::optional<std::string>(
         fmt::format("script killed by signal {}", WTERMSIG(status)));
   }
+  store_details(std::nullopt, std::nullopt);
   return std::optional<std::string>("unknown script result");
 #endif
 }
@@ -1996,8 +2026,42 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
 
     const auto script_env =
       resolve_after_update_script_env(password_manager_, signal);
-    if (auto err = run_script_file_best_effort(script_path, variant_name,
-                           signal.type, script_env)) {
+    std::string script_stdout;
+    std::string script_stderr;
+    std::optional<int> script_exit_code;
+    std::optional<int> script_term_signal;
+    auto err = run_script_file_best_effort(script_path, variant_name,
+                                           signal.type, script_env,
+                                           &script_stdout, &script_stderr,
+                                           &script_exit_code,
+                                           &script_term_signal);
+    const auto script_name = script_path.filename().string();
+    const auto out_for_console = fmt_script_output(script_stdout);
+    const auto err_for_console = fmt_script_output(script_stderr);
+    if (!out_for_console.empty()) {
+      output_.logger().info()
+          << script_name << " stdout (event=" << signal.type << "):\n"
+          << out_for_console << std::endl;
+    }
+    if (!err_for_console.empty()) {
+      output_.logger().info()
+          << script_name << " stderr (event=" << signal.type << "):\n"
+          << err_for_console << std::endl;
+    }
+    if (script_exit_code.has_value()) {
+      output_.logger().info()
+          << script_name << " exit code=" << *script_exit_code
+          << " (event=" << signal.type << ")" << std::endl;
+    } else if (script_term_signal.has_value()) {
+      output_.logger().warning()
+          << script_name << " terminated by signal=" << *script_term_signal
+          << " (event=" << signal.type << ")" << std::endl;
+    }
+    if (err) {
+      output_.logger().warning()
+          << script_name << " execution failed for type=" << signal.type
+          << " variant=" << variant_name << " error=" << *err
+          << std::endl;
       BOOST_LOG_SEV(lg, trivial::warning)
           << "after_update_script execution failed for type=" << signal.type
           << " variant=" << variant_name << " error=" << *err;
