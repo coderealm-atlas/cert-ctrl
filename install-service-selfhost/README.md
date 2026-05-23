@@ -78,13 +78,6 @@ To control GitHub publishing:
 ./deploy.sh --publish-github-release
 ```
 
-If the build already succeeded and you only forgot the GitHub release step:
-```bash
-./deploy.sh --skip-build --publish-github-release
-```
-This skips the build playbook, collects/prepares existing artifacts, then
-publishes the GitHub release.
-
 ### Remote deploy (nginx + app + assets)
 
 If you already have assets staged locally under `assets-staging/` (or you ran the pipeline),
