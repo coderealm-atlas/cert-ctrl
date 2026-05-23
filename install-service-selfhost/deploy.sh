@@ -27,7 +27,7 @@ set -euo pipefail
 #
 # 5. Publish (optional): Deploys to remote servers via publish.sh
 #
-# 6. GitHub release (optional): Creates GitHub release via github-release.sh
+# 6. GitHub release: Creates GitHub release via github-release.sh by default
 #
 # ARTIFACT LOCATIONS:
 # - Remote build hosts (temporary packaging): /tmp/install-service-assets/<version>/
@@ -57,8 +57,7 @@ extra_vars=()      # Array of extra Ansible variables to pass
 docker_buildkit="" # Docker BuildKit setting (0/1)
 release_version="" # Target release version (empty = auto-detect from git)
 run_publish="false"         # Whether to run publish.sh after build
-run_github_release="false"  # Whether to create GitHub release after build
-github_release_override="false"  # Flag to override default GitHub release behavior
+run_github_release="true"   # Whether to create GitHub release after build
 reconfig_cmake="false"      # Whether to force CMake reconfiguration
 skip_preflight="false"      # Skip preflight checks (only for publishing)
 preflight_docker_pull="false"  # Whether preflight should docker pull base images
@@ -185,7 +184,7 @@ Actions (default: pipeline)
            build: Only build executables on remote hosts
            collect: Only collect built artifacts to local assets-staging/
            prepare: Only prepare assets for deployment
-           pipeline: Full workflow (build + collect + prepare)
+           pipeline: Full workflow (build + collect + prepare + GitHub release)
            quick: Pipeline + publish + GitHub release
            cleanup: Stop/remove stale linux-docker builder containers
   --build windows|macos|freebsd|linux-docker|all
@@ -204,9 +203,7 @@ Options
            Specify release version explicitly (default: auto-detect from git)
   --release-version-latest
            Use the latest version from assets-staging directory
-  --publish-github-release
-           Create GitHub release after successful build
-  --skip-github-release
+  --not-publish-github-release
            Skip GitHub release creation
   --force-build
            Force rebuild even if artifacts already exist
@@ -217,7 +214,7 @@ Options
   --skip-git-fetch-tags
            Skip fetching git tags on remote build hosts
   --skip-preflight
-           Skip preflight checks (only relevant with --publish-github-release)
+           Skip preflight checks (only relevant when GitHub release publishing is enabled)
   --preflight-docker-pull
            Also docker pull base images during preflight (can be slow behind proxies)
   --stop-running-linux-docker-builds
@@ -240,6 +237,9 @@ Examples:
 
   # Quick deployment with GitHub release
   ./deploy.sh --action quick --release-version v1.2.3
+
+  # Build assets without publishing a GitHub release
+  ./deploy.sh --not-publish-github-release
 
   # Build all platforms in parallel (faster when you have VMs)
   ./deploy.sh --action pipeline --parallel-builds
@@ -326,14 +326,8 @@ while [[ $# -gt 0 ]]; do
       release_version="latest"
       shift
       ;;
-    --publish-github-release)
-      run_github_release="true"
-      github_release_override="true"
-      shift
-      ;;
-    --skip-github-release)
+    --not-publish-github-release)
       run_github_release="false"
-      github_release_override="true"
       shift
       ;;
     --force-build)
@@ -404,6 +398,14 @@ if [[ -n "${linux_docker_variant:-}" ]]; then
       ;;
   esac
 fi
+
+# GitHub release publishing is the default for deploy-style workflows. Keep
+# single-purpose actions scoped to what their names say.
+case "$action" in
+  build|collect|prepare|cleanup)
+    run_github_release="false"
+    ;;
+esac
 
 # Pass release version to Ansible if specified
 if [[ -n "$release_version" && "$release_version" != "latest" ]]; then
@@ -481,7 +483,7 @@ if [[ "$run_github_release" == "true" ]]; then
   if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     dirty_lines="$(git -C "$repo_root" status --porcelain || true)"
     if [[ -n "$dirty_lines" ]]; then
-      echo "error: repository has uncommitted changes; commit/push (or use --skip-github-release)." >&2
+      echo "error: repository has uncommitted changes; commit/push (or use --not-publish-github-release)." >&2
       echo "debug: dirty files:" >&2
       printf '%s\n' "$dirty_lines" >&2
       exit 1
@@ -504,12 +506,9 @@ case "$action" in
   prepare) playbook="${ANSIBLE_DIR}/playbooks/prepare_assets.yml" ;;
   pipeline) playbook="${ANSIBLE_DIR}/playbooks/pipeline.yml" ;;
   quick)
-    # Quick mode: full pipeline + publish + optional GitHub release
+    # Quick mode: full pipeline + publish + GitHub release unless opted out.
     playbook="${ANSIBLE_DIR}/playbooks/pipeline.yml"
     run_publish="true"
-    if [[ "$github_release_override" != "true" ]]; then
-      run_github_release="true"
-    fi
     ;;
   cleanup) playbook="${ANSIBLE_DIR}/playbooks/cleanup_linux_docker.yml" ;;
   *)
@@ -641,7 +640,7 @@ if [[ "$run_publish" == "true" ]]; then
   "${publish_cmd[@]}"
 fi
 
-# Optional: Create GitHub release from collected artifacts
+# Create GitHub release from collected artifacts unless opted out.
 if [[ "$run_github_release" == "true" ]]; then
   release_cmd=("${ROOT_DIR}/github-release.sh")
   if [[ -n "$release_version" ]]; then

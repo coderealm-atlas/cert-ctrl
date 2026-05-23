@@ -61,7 +61,7 @@ Default behavior (no `--action`):
 - Collects assets into `install-service-selfhost/assets-staging/`.
 - Prepares `/opt/install-service/assets` and writes `latest.json` locally.
 - Does **not** deploy to the remote server.
-- Does **not** publish GitHub releases.
+- Publishes the latest release to GitHub.
 
 Quick end-to-end deploy:
 ```bash
@@ -72,10 +72,9 @@ This runs the pipeline above, then:
 - Syncs assets to the remote server.
 - Publishes the latest release to GitHub (used by the Cloudflare worker).
 
-To control GitHub publishing:
+To skip GitHub publishing:
 ```bash
-./deploy.sh --action quick --skip-github-release
-./deploy.sh --publish-github-release
+./deploy.sh --not-publish-github-release
 ```
 
 ### Remote deploy (nginx + app + assets)
