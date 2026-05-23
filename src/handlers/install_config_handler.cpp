@@ -167,7 +167,15 @@ monad::IO<void> InstallConfigHandler::handle_pull() {
           return monad::IO<void>::pure();
         }
 
-        return self->apply_copy_and_import(config_ptr, options);
+        return self->install_config_manager_
+            ->rearm_local_install_update_window()
+            .then([self, config_ptr]() {
+              return self->install_config_manager_
+                  ->approve_and_persist_after_update_script(*config_ptr);
+            })
+            .then([self, config_ptr, options]() {
+              return self->apply_copy_and_import(config_ptr, options);
+            });
       });
 }
 
@@ -181,8 +189,8 @@ monad::IO<void> InstallConfigHandler::handle_apply() {
   auto self = shared_from_this();
   return install_config_manager_
       ->ensure_config_version(std::nullopt, std::nullopt)
-      .then([self, options](std::shared_ptr<const dto::DeviceInstallConfigDto>
-                                config_ptr) {
+      .then([self, options](
+                std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr) {
         if (!config_ptr) {
           self->output_.logger().warning()
               << "install-config fetch returned no payload" << std::endl;
@@ -196,7 +204,7 @@ monad::IO<void> InstallConfigHandler::handle_apply() {
             ->rearm_local_install_update_window()
             .then([self, config_ptr]() {
               return self->install_config_manager_
-                  ->approve_after_update_script_hash(*config_ptr);
+                  ->approve_and_persist_after_update_script(*config_ptr);
             })
             .then([self, config_ptr, options]() {
               return self->apply_copy_and_import(config_ptr, options);
@@ -236,21 +244,21 @@ monad::IO<void> InstallConfigHandler::apply_copy_and_import(
   return run_copy_stage()
       .then([self]() { return self->run_import_stage(); })
       .then([self]() {
-      if (!self->active_config_) {
-        return monad::IO<void>::fail(
-            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                              "after_update_script invoked without active config"));
-      }
-      ::data::DeviceUpdateSignal synthetic_signal{};
-      synthetic_signal.type = "install.updated";
-      synthetic_signal.ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                     std::chrono::system_clock::now().time_since_epoch())
-                     .count();
-      return self->install_config_manager_
-        ->maybe_run_after_update_script_for_signal(
-          *self->active_config_,
-          synthetic_signal,
-          /*bypass_auto_apply_config_gate=*/true);
+        if (!self->active_config_) {
+          return monad::IO<void>::fail(monad::make_error(
+              my_errors::GENERAL::INVALID_ARGUMENT,
+              "after_update_script invoked without active config"));
+        }
+        ::data::DeviceUpdateSignal synthetic_signal{};
+        synthetic_signal.type = "install.updated";
+        synthetic_signal.ts_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        return self->install_config_manager_
+            ->maybe_run_after_update_script_for_signal(
+                *self->active_config_, synthetic_signal,
+                /*bypass_auto_apply_config_gate=*/true);
       })
       .then([self]() {
         self->output_.logger().info()

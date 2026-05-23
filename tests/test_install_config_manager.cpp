@@ -6,8 +6,8 @@
 #include <boost/di.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
-#include <ctime>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fmt/format.h>
 #include <fstream>
@@ -71,7 +71,8 @@ public:
         asio::ip::tcp::socket poke_socket(poke_ctx);
         asio::ip::tcp::endpoint endpoint{asio::ip::make_address("127.0.0.1"),
                                          port_};
-        [[maybe_unused]] auto connect_status = poke_socket.connect(endpoint, ec);
+        [[maybe_unused]] auto connect_status =
+            poke_socket.connect(endpoint, ec);
         if (ec) {
           ec.clear();
         } else {
@@ -192,7 +193,8 @@ public:
         asio::ip::tcp::socket poke_socket(poke_ctx);
         asio::ip::tcp::endpoint endpoint{asio::ip::make_address("127.0.0.1"),
                                          port_};
-        [[maybe_unused]] auto connect_status = poke_socket.connect(endpoint, ec);
+        [[maybe_unused]] auto connect_status =
+            poke_socket.connect(endpoint, ec);
         if (!ec) {
           boost::system::error_code shutdown_ec;
           [[maybe_unused]] auto shutdown_status = poke_socket.shutdown(
@@ -788,7 +790,7 @@ TEST_F(InstallConfigManagerFixture, SkipsCopyActionsWithEmptyDestinations) {
 }
 
 TEST_F(InstallConfigManagerFixture,
-  CertUpdatedAppliesCopyActionsWhenInstallItemsActionable) {
+       CertUpdatedAppliesCopyActionsWhenInstallItemsActionable) {
   misc::ThreadNotifier notifier;
   auto config_dir = make_temp_runtime_dir();
   auto runtime_dir = make_temp_runtime_dir();
@@ -813,7 +815,8 @@ TEST_F(InstallConfigManagerFixture,
                 std::make_unique<MockerResourceFetcher>(""),
                 std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
-  std::optional<monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+  std::optional<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       plan_result;
   harness_->install_manager()
       .ensure_config_version(config.version, std::nullopt)
@@ -828,9 +831,8 @@ TEST_F(InstallConfigManagerFixture,
   auto signal = make_cert_updated_signal(target_cert);
 
   std::optional<monad::MyVoidResult> apply_r;
-  harness_->install_manager()
-      .apply_copy_actions_for_signal(signal)
-      .run([&](auto result) {
+  harness_->install_manager().apply_copy_actions_for_signal(signal).run(
+      [&](auto result) {
         apply_r = result;
         notifier.notify();
       });
@@ -846,7 +848,7 @@ TEST_F(InstallConfigManagerFixture,
 }
 
 TEST_F(InstallConfigManagerFixture,
-  CertUpdatedSkipsWhenInstallItemsLackTargets) {
+       CertUpdatedSkipsWhenInstallItemsLackTargets) {
   misc::ThreadNotifier notifier;
   auto config_dir = make_temp_runtime_dir();
   auto runtime_dir = make_temp_runtime_dir();
@@ -874,7 +876,8 @@ TEST_F(InstallConfigManagerFixture,
                       std::to_string(target_cert) / "current";
   write_file(resource_dir / "fullchain.pem", "CHAIN654\n");
 
-  std::optional<monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
+  std::optional<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       plan_result;
   harness_->install_manager()
       .ensure_config_version(config.version, std::nullopt)
@@ -889,9 +892,8 @@ TEST_F(InstallConfigManagerFixture,
   auto signal = make_cert_updated_signal(target_cert);
 
   std::optional<monad::MyVoidResult> apply_r;
-  harness_->install_manager()
-      .apply_copy_actions_for_signal(signal)
-      .run([&](auto result) {
+  harness_->install_manager().apply_copy_actions_for_signal(signal).run(
+      [&](auto result) {
         apply_r = result;
         notifier.notify();
       });
@@ -1569,10 +1571,10 @@ TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
       std::make_unique<LambdaInstallConfigFetcher>(std::move(fetch_override)),
       std::make_unique<MockerResourceFetcher>(""), nullptr, base_url);
 
-  ASSERT_FALSE(harness_->state_store()
-                   .save_tokens("expired-access", "refresh-initial",
-                                std::nullopt)
-                   .has_value());
+  ASSERT_FALSE(
+      harness_->state_store()
+          .save_tokens("expired-access", "refresh-initial", std::nullopt)
+          .has_value());
 
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
@@ -1610,389 +1612,437 @@ TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
   std::filesystem::remove_all(runtime_dir);
 }
 
-  TEST_F(InstallConfigManagerFixture,
+TEST_F(InstallConfigManagerFixture,
        AutoAllowsAndPinsAfterUpdateScriptHashByDefault) {
-    misc::ThreadNotifier notifier(3000);
-    auto config_dir = make_temp_runtime_dir();
-    auto runtime_dir = make_temp_runtime_dir();
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
-    dto::DeviceInstallConfigDto config{};
-    config.id = 7;
-    config.user_device_id = 77;
-    config.version = 31;
-    config.after_update_script = fmt::format(
+  dto::DeviceInstallConfigDto config{};
+  config.id = 7;
+  config.user_device_id = 77;
+  config.version = 31;
+  config.after_update_script = fmt::format(
       "@@@BEGIN posix.sh\nprintf '%s\\n' \"$1\" >> '{}'\n@@@END\n",
       (runtime_dir / "state" / "after_update_script_events.txt").string());
 
-    createHarness(config_dir, runtime_dir,
-          std::make_unique<MockInstallConfigFetcher>(config),
-          std::make_unique<MockerResourceFetcher>(""),
-          std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
-    std::optional<
+  std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-    harness_->install_manager()
+  harness_->install_manager()
       .ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
-      op_r = std::move(result);
-      notifier.notify();
+        op_r = std::move(result);
+        notifier.notify();
       });
-    notifier.waitForNotification();
-    ASSERT_TRUE(op_r.has_value());
-    ASSERT_TRUE(op_r->is_ok()) << op_r->error();
+  notifier.waitForNotification();
+  ASSERT_TRUE(op_r.has_value());
+  ASSERT_TRUE(op_r->is_ok()) << op_r->error();
 
-    auto signal = make_cert_updated_signal(42);
-    std::optional<monad::MyVoidResult> script_r;
-    harness_->install_manager()
+  auto signal = make_cert_updated_signal(42);
+  std::optional<monad::MyVoidResult> script_r;
+  harness_->install_manager()
       .maybe_run_after_update_script_for_signal(signal)
       .run([&](auto result) {
-      script_r = std::move(result);
-      notifier.notify();
+        script_r = std::move(result);
+        notifier.notify();
       });
-    notifier.waitForNotification();
+  notifier.waitForNotification();
 
-    ASSERT_TRUE(script_r.has_value());
-    ASSERT_TRUE(script_r->is_ok()) << script_r->error();
+  ASSERT_TRUE(script_r.has_value());
+  ASSERT_TRUE(script_r->is_ok()) << script_r->error();
 
-    const auto marker_path =
+  const auto marker_path =
       runtime_dir / "state" / "after_update_script_events.txt";
-    ASSERT_TRUE(std::filesystem::exists(marker_path));
-    EXPECT_NE(read_file(marker_path).find("cert.updated"), std::string::npos);
+  ASSERT_TRUE(std::filesystem::exists(marker_path));
+  EXPECT_NE(read_file(marker_path).find("cert.updated"), std::string::npos);
 
-    const auto &cfg = harness_->config_provider().get();
-    EXPECT_TRUE(cfg.auto_allow_after_update_script_hash);
-    ASSERT_EQ(cfg.trusted_after_update_script_hashes.size(), 1u);
+  const auto &cfg = harness_->config_provider().get();
+  EXPECT_TRUE(cfg.auto_allow_after_update_script_hash);
+  ASSERT_EQ(cfg.trusted_after_update_script_hashes.size(), 1u);
 
-    const auto local_path = config_dir / "application.local.json";
-    ASSERT_TRUE(std::filesystem::exists(local_path));
-    auto local_json = boost::json::parse(read_file(local_path));
-    ASSERT_TRUE(local_json.is_object());
-    auto &local_obj = local_json.as_object();
-    ASSERT_TRUE(local_obj.if_contains("trusted_after_update_script_hashes"));
-    ASSERT_TRUE(
-      local_obj.at("trusted_after_update_script_hashes").is_array());
+  const auto local_path = config_dir / "application.local.json";
+  ASSERT_TRUE(std::filesystem::exists(local_path));
+  auto local_json = boost::json::parse(read_file(local_path));
+  ASSERT_TRUE(local_json.is_object());
+  auto &local_obj = local_json.as_object();
+  ASSERT_TRUE(local_obj.if_contains("trusted_after_update_script_hashes"));
+  ASSERT_TRUE(local_obj.at("trusted_after_update_script_hashes").is_array());
 
-    const auto override_path = config_dir / "application.override.json";
-    if (std::filesystem::exists(override_path)) {
-      auto override_json = boost::json::parse(read_file(override_path));
-      ASSERT_TRUE(override_json.is_object());
-      auto &override_obj = override_json.as_object();
-      EXPECT_FALSE(override_obj.if_contains("trusted_after_update_script_hashes"));
-    }
+  const auto override_path = config_dir / "application.override.json";
+  if (std::filesystem::exists(override_path)) {
+    auto override_json = boost::json::parse(read_file(override_path));
+    ASSERT_TRUE(override_json.is_object());
+    auto &override_obj = override_json.as_object();
+    EXPECT_FALSE(
+        override_obj.if_contains("trusted_after_update_script_hashes"));
   }
+}
 
-  TEST_F(InstallConfigManagerFixture,
+TEST_F(InstallConfigManagerFixture,
        SkipsUnknownAfterUpdateScriptHashWhenAutoAllowDisabled) {
-    misc::ThreadNotifier notifier(3000);
-    auto config_dir = make_temp_runtime_dir();
-    auto runtime_dir = make_temp_runtime_dir();
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
-    dto::DeviceInstallConfigDto config{};
-    config.id = 8;
-    config.user_device_id = 88;
-    config.version = 32;
-    config.after_update_script = fmt::format(
+  dto::DeviceInstallConfigDto config{};
+  config.id = 8;
+  config.user_device_id = 88;
+  config.version = 32;
+  config.after_update_script = fmt::format(
       "@@@BEGIN posix.sh\nprintf '%s\\n' \"$1\" >> '{}'\n@@@END\n",
       (runtime_dir / "state" / "after_update_script_events.txt").string());
 
-    createHarness(config_dir, runtime_dir,
-          std::make_unique<MockInstallConfigFetcher>(config),
-          std::make_unique<MockerResourceFetcher>(""),
-          std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
-    harness_->config_provider().get().auto_allow_after_update_script_hash =
-      false;
-    auto save_r = harness_->config_provider().save(
+  harness_->config_provider().get().auto_allow_after_update_script_hash = false;
+  auto save_r = harness_->config_provider().save(
       {{"auto_allow_after_update_script_hash", false}});
-    ASSERT_TRUE(save_r.is_ok()) << save_r.error();
+  ASSERT_TRUE(save_r.is_ok()) << save_r.error();
 
-    std::optional<
+  std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-    harness_->install_manager()
+  harness_->install_manager()
       .ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
-      op_r = std::move(result);
-      notifier.notify();
+        op_r = std::move(result);
+        notifier.notify();
       });
-    notifier.waitForNotification();
-    ASSERT_TRUE(op_r.has_value());
-    ASSERT_TRUE(op_r->is_ok()) << op_r->error();
+  notifier.waitForNotification();
+  ASSERT_TRUE(op_r.has_value());
+  ASSERT_TRUE(op_r->is_ok()) << op_r->error();
 
-    auto signal = make_cert_updated_signal(42);
-    std::optional<monad::MyVoidResult> script_r;
-    harness_->install_manager()
+  auto signal = make_cert_updated_signal(42);
+  std::optional<monad::MyVoidResult> script_r;
+  harness_->install_manager()
       .maybe_run_after_update_script_for_signal(signal)
       .run([&](auto result) {
-      script_r = std::move(result);
-      notifier.notify();
+        script_r = std::move(result);
+        notifier.notify();
       });
-    notifier.waitForNotification();
+  notifier.waitForNotification();
 
-    ASSERT_TRUE(script_r.has_value());
-    ASSERT_TRUE(script_r->is_ok()) << script_r->error();
+  ASSERT_TRUE(script_r.has_value());
+  ASSERT_TRUE(script_r->is_ok()) << script_r->error();
 
-    EXPECT_FALSE(std::filesystem::exists(
-      runtime_dir / "state" / "after_update_script_events.txt"));
-    EXPECT_TRUE(harness_->config_provider()
-            .get()
-            .trusted_after_update_script_hashes.empty());
-  }
+  EXPECT_FALSE(std::filesystem::exists(runtime_dir / "state" /
+                                       "after_update_script_events.txt"));
+  EXPECT_TRUE(harness_->config_provider()
+                  .get()
+                  .trusted_after_update_script_hashes.empty());
+}
 
-  TEST_F(InstallConfigManagerFixture,
+TEST_F(InstallConfigManagerFixture,
        ManualApplyApprovesAfterUpdateScriptHashWhenAutoAllowDisabled) {
-    misc::ThreadNotifier notifier(3000);
-    auto config_dir = make_temp_runtime_dir();
-    auto runtime_dir = make_temp_runtime_dir();
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
-    dto::DeviceInstallConfigDto config{};
-    config.id = 9;
-    config.user_device_id = 99;
-    config.version = 33;
-    config.after_update_script = fmt::format(
+  dto::DeviceInstallConfigDto config{};
+  config.id = 9;
+  config.user_device_id = 99;
+  config.version = 33;
+  config.after_update_script = fmt::format(
       "@@@BEGIN posix.sh\nprintf '%s\\n' \"$1\" >> '{}'\n@@@END\n",
       (runtime_dir / "state" / "after_update_script_events.txt").string());
 
-    createHarness(config_dir, runtime_dir,
-          std::make_unique<MockInstallConfigFetcher>(config),
-          std::make_unique<MockerResourceFetcher>(""),
-          std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
-    harness_->config_provider().get().auto_allow_after_update_script_hash =
-      false;
-    auto save_r = harness_->config_provider().save(
+  harness_->config_provider().get().auto_allow_after_update_script_hash = false;
+  auto save_r = harness_->config_provider().save(
       {{"auto_allow_after_update_script_hash", false}});
-    ASSERT_TRUE(save_r.is_ok()) << save_r.error();
+  ASSERT_TRUE(save_r.is_ok()) << save_r.error();
 
-    std::optional<
+  std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-    harness_->install_manager()
+  harness_->install_manager()
       .ensure_config_version(config.version, std::nullopt)
       .run([&](auto result) {
-      op_r = std::move(result);
-      notifier.notify();
+        op_r = std::move(result);
+        notifier.notify();
       });
-    notifier.waitForNotification();
-    ASSERT_TRUE(op_r.has_value());
-    ASSERT_TRUE(op_r->is_ok()) << op_r->error();
+  notifier.waitForNotification();
+  ASSERT_TRUE(op_r.has_value());
+  ASSERT_TRUE(op_r->is_ok()) << op_r->error();
 
-    std::optional<monad::MyVoidResult> approve_r;
-    harness_->install_manager()
+  std::optional<monad::MyVoidResult> approve_r;
+  harness_->install_manager()
       .approve_after_update_script_hash(*op_r->value())
       .run([&](auto result) {
-      approve_r = std::move(result);
-      notifier.notify();
+        approve_r = std::move(result);
+        notifier.notify();
       });
-    notifier.waitForNotification();
+  notifier.waitForNotification();
 
-    ASSERT_TRUE(approve_r.has_value());
-    ASSERT_TRUE(approve_r->is_ok()) << approve_r->error();
+  ASSERT_TRUE(approve_r.has_value());
+  ASSERT_TRUE(approve_r->is_ok()) << approve_r->error();
 
-    EXPECT_FALSE(std::filesystem::exists(
-      runtime_dir / "state" / "after_update_script_events.txt"));
+  EXPECT_FALSE(std::filesystem::exists(runtime_dir / "state" /
+                                       "after_update_script_events.txt"));
 
-    const auto &cfg = harness_->config_provider().get();
-    ASSERT_EQ(cfg.trusted_after_update_script_hashes.size(), 1u);
+  const auto &cfg = harness_->config_provider().get();
+  ASSERT_EQ(cfg.trusted_after_update_script_hashes.size(), 1u);
 
-    const auto local_path = config_dir / "application.local.json";
-    ASSERT_TRUE(std::filesystem::exists(local_path));
-    auto local_json = boost::json::parse(read_file(local_path));
-    ASSERT_TRUE(local_json.is_object());
-    auto &local_obj = local_json.as_object();
-    ASSERT_TRUE(local_obj.if_contains("trusted_after_update_script_hashes"));
-    ASSERT_TRUE(
-      local_obj.at("trusted_after_update_script_hashes").is_array());
-  }
+  const auto local_path = config_dir / "application.local.json";
+  ASSERT_TRUE(std::filesystem::exists(local_path));
+  auto local_json = boost::json::parse(read_file(local_path));
+  ASSERT_TRUE(local_json.is_object());
+  auto &local_obj = local_json.as_object();
+  ASSERT_TRUE(local_obj.if_contains("trusted_after_update_script_hashes"));
+  ASSERT_TRUE(local_obj.at("trusted_after_update_script_hashes").is_array());
+}
 
-  TEST_F(InstallConfigManagerFixture,
-       ExplicitConfigAfterUpdateScriptPathDoesNotRequireCachedInstallConfig) {
-    misc::ThreadNotifier notifier(3000);
-    auto config_dir = make_temp_runtime_dir();
-    auto runtime_dir = make_temp_runtime_dir();
+TEST_F(InstallConfigManagerFixture,
+       ManualApplyPersistsAfterUpdateScriptBeforeActionsWithoutExecuting) {
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
-    createHarness(config_dir, runtime_dir,
-          std::make_unique<MockInstallConfigFetcher>(dto::DeviceInstallConfigDto{}),
-          std::make_unique<MockerResourceFetcher>(""),
-          std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
-
-    dto::DeviceInstallConfigDto config{};
-    config.id = 10;
-    config.user_device_id = 100;
-    config.version = 34;
-    config.after_update_script = fmt::format(
+  dto::DeviceInstallConfigDto config{};
+  config.id = 11;
+  config.user_device_id = 101;
+  config.version = 35;
+  config.after_update_script = fmt::format(
       "@@@BEGIN posix.sh\nprintf '%s\\n' \"$1\" >> '{}'\n@@@END\n",
       (runtime_dir / "state" / "after_update_script_events.txt").string());
 
-    harness_->config_provider().get().auto_allow_after_update_script_hash =
-      false;
-    auto save_r = harness_->config_provider().save(
+  createHarness(config_dir, runtime_dir,
+                std::make_unique<MockInstallConfigFetcher>(config),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+
+  harness_->config_provider().get().auto_allow_after_update_script_hash = false;
+  auto save_r = harness_->config_provider().save(
       {{"auto_allow_after_update_script_hash", false}});
-    ASSERT_TRUE(save_r.is_ok()) << save_r.error();
+  ASSERT_TRUE(save_r.is_ok()) << save_r.error();
 
-    std::optional<monad::MyVoidResult> approve_r;
-    harness_->install_manager()
-      .approve_after_update_script_hash(config)
+  std::optional<monad::MyVoidResult> persist_r;
+  harness_->install_manager()
+      .approve_and_persist_after_update_script(config)
       .run([&](auto result) {
-      approve_r = std::move(result);
-      notifier.notify();
+        persist_r = std::move(result);
+        notifier.notify();
       });
-    notifier.waitForNotification();
+  notifier.waitForNotification();
 
-    ASSERT_TRUE(approve_r.has_value());
-    ASSERT_TRUE(approve_r->is_ok()) << approve_r->error();
+  ASSERT_TRUE(persist_r.has_value());
+  ASSERT_TRUE(persist_r->is_ok()) << persist_r->error();
 
-    const auto staged_config_path = runtime_dir / "state" / "install_config.json";
-    EXPECT_FALSE(std::filesystem::exists(staged_config_path));
+  const auto persisted_script =
+      runtime_dir / "state" / "after_update_script.sh";
+  ASSERT_TRUE(std::filesystem::exists(persisted_script));
+  EXPECT_NE(read_file(persisted_script).find("printf '%s\\n'"),
+            std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(runtime_dir / "state" /
+                                       "after_update_script_events.txt"));
 
-    auto signal = make_install_updated_signal();
-    std::optional<monad::MyVoidResult> script_r;
-    harness_->install_manager()
+  const auto &cfg = harness_->config_provider().get();
+  ASSERT_EQ(cfg.trusted_after_update_script_hashes.size(), 1u);
+}
+
+TEST_F(InstallConfigManagerFixture,
+       ExplicitConfigAfterUpdateScriptPathDoesNotRequireCachedInstallConfig) {
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
+
+  createHarness(
+      config_dir, runtime_dir,
+      std::make_unique<MockInstallConfigFetcher>(dto::DeviceInstallConfigDto{}),
+      std::make_unique<MockerResourceFetcher>(""),
+      std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+
+  dto::DeviceInstallConfigDto config{};
+  config.id = 10;
+  config.user_device_id = 100;
+  config.version = 34;
+  config.after_update_script = fmt::format(
+      "@@@BEGIN posix.sh\nprintf '%s\\n' \"$1\" >> '{}'\n@@@END\n",
+      (runtime_dir / "state" / "after_update_script_events.txt").string());
+
+  harness_->config_provider().get().auto_allow_after_update_script_hash = false;
+  auto save_r = harness_->config_provider().save(
+      {{"auto_allow_after_update_script_hash", false}});
+  ASSERT_TRUE(save_r.is_ok()) << save_r.error();
+
+  std::optional<monad::MyVoidResult> approve_r;
+  harness_->install_manager().approve_after_update_script_hash(config).run(
+      [&](auto result) {
+        approve_r = std::move(result);
+        notifier.notify();
+      });
+  notifier.waitForNotification();
+
+  ASSERT_TRUE(approve_r.has_value());
+  ASSERT_TRUE(approve_r->is_ok()) << approve_r->error();
+
+  const auto staged_config_path = runtime_dir / "state" / "install_config.json";
+  EXPECT_FALSE(std::filesystem::exists(staged_config_path));
+
+  auto signal = make_install_updated_signal();
+  std::optional<monad::MyVoidResult> script_r;
+  harness_->install_manager()
       .maybe_run_after_update_script_for_signal(
-        config, signal, /*bypass_auto_apply_config_gate=*/true)
+          config, signal, /*bypass_auto_apply_config_gate=*/true)
       .run([&](auto result) {
-      script_r = std::move(result);
-      notifier.notify();
+        script_r = std::move(result);
+        notifier.notify();
       });
-    notifier.waitForNotification();
+  notifier.waitForNotification();
 
-    ASSERT_TRUE(script_r.has_value());
-    ASSERT_TRUE(script_r->is_ok()) << script_r->error();
+  ASSERT_TRUE(script_r.has_value());
+  ASSERT_TRUE(script_r->is_ok()) << script_r->error();
 
-    const auto marker_path =
+  const auto marker_path =
       runtime_dir / "state" / "after_update_script_events.txt";
-    ASSERT_TRUE(std::filesystem::exists(marker_path));
-    EXPECT_NE(read_file(marker_path).find("install.updated"), std::string::npos);
+  ASSERT_TRUE(std::filesystem::exists(marker_path));
+  EXPECT_NE(read_file(marker_path).find("install.updated"), std::string::npos);
 
-    const auto persisted_script = runtime_dir / "state" / "after_update_script.sh";
-    ASSERT_TRUE(std::filesystem::exists(persisted_script));
-  }
+  const auto persisted_script =
+      runtime_dir / "state" / "after_update_script.sh";
+  ASSERT_TRUE(std::filesystem::exists(persisted_script));
+}
 
-  TEST_F(InstallConfigManagerFixture,
+TEST_F(InstallConfigManagerFixture,
        GraceWindowExpiryDisablesLocalAutomationFlags) {
-    auto config_dir = make_temp_runtime_dir();
-    auto runtime_dir = make_temp_runtime_dir();
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
-    createHarness(config_dir, runtime_dir,
-          std::make_unique<MockInstallConfigFetcher>(dto::DeviceInstallConfigDto{}),
-          std::make_unique<MockerResourceFetcher>(""),
-          std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  createHarness(
+      config_dir, runtime_dir,
+      std::make_unique<MockInstallConfigFetcher>(dto::DeviceInstallConfigDto{}),
+      std::make_unique<MockerResourceFetcher>(""),
+      std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
-    auto &provider = harness_->config_provider();
-    const auto expired_at = static_cast<std::int64_t>(std::time(nullptr)) - 1;
-    provider.get().auto_apply_config = true;
-    provider.get().auto_allow_after_update_script_hash = true;
-    provider.get().install_update_grace_expires_at_epoch_seconds = expired_at;
-    auto save_r = provider.save({
-        {"auto_apply_config", true},
-        {"auto_allow_after_update_script_hash", true},
+  auto &provider = harness_->config_provider();
+  const auto expired_at = static_cast<std::int64_t>(std::time(nullptr)) - 1;
+  provider.get().auto_apply_config = true;
+  provider.get().auto_allow_after_update_script_hash = true;
+  provider.get().install_update_grace_expires_at_epoch_seconds = expired_at;
+  auto save_r = provider.save({
+      {"auto_apply_config", true},
+      {"auto_allow_after_update_script_hash", true},
       {"install_update_grace_expires_at_epoch_seconds", expired_at},
-    });
-    ASSERT_TRUE(save_r.is_ok()) << save_r.error();
+  });
+  ASSERT_TRUE(save_r.is_ok()) << save_r.error();
 
-    const auto &cfg = provider.get();
-    EXPECT_FALSE(cfg.auto_apply_config);
-    EXPECT_FALSE(cfg.auto_allow_after_update_script_hash);
-    EXPECT_EQ(cfg.install_update_grace_expires_at_epoch_seconds, 0);
+  const auto &cfg = provider.get();
+  EXPECT_FALSE(cfg.auto_apply_config);
+  EXPECT_FALSE(cfg.auto_allow_after_update_script_hash);
+  EXPECT_EQ(cfg.install_update_grace_expires_at_epoch_seconds, 0);
 
-    const auto local_path = config_dir / "application.local.json";
-    ASSERT_TRUE(std::filesystem::exists(local_path));
-    auto local_json = boost::json::parse(read_file(local_path));
-    ASSERT_TRUE(local_json.is_object());
-    auto &local_obj = local_json.as_object();
-    ASSERT_TRUE(local_obj.if_contains("auto_apply_config"));
-    EXPECT_FALSE(local_obj.at("auto_apply_config").as_bool());
-    ASSERT_TRUE(local_obj.if_contains("auto_allow_after_update_script_hash"));
-    EXPECT_FALSE(local_obj.at("auto_allow_after_update_script_hash").as_bool());
-  }
+  const auto local_path = config_dir / "application.local.json";
+  ASSERT_TRUE(std::filesystem::exists(local_path));
+  auto local_json = boost::json::parse(read_file(local_path));
+  ASSERT_TRUE(local_json.is_object());
+  auto &local_obj = local_json.as_object();
+  ASSERT_TRUE(local_obj.if_contains("auto_apply_config"));
+  EXPECT_FALSE(local_obj.at("auto_apply_config").as_bool());
+  ASSERT_TRUE(local_obj.if_contains("auto_allow_after_update_script_hash"));
+  EXPECT_FALSE(local_obj.at("auto_allow_after_update_script_hash").as_bool());
+}
 
-  TEST_F(InstallConfigManagerFixture,
+TEST_F(InstallConfigManagerFixture,
        ManualRearmRestoresGraceWindowAndLocalFlags) {
-    misc::ThreadNotifier notifier(3000);
-    auto config_dir = make_temp_runtime_dir();
-    auto runtime_dir = make_temp_runtime_dir();
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
-    createHarness(config_dir, runtime_dir,
-          std::make_unique<MockInstallConfigFetcher>(dto::DeviceInstallConfigDto{}),
-          std::make_unique<MockerResourceFetcher>(""),
-          std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  createHarness(
+      config_dir, runtime_dir,
+      std::make_unique<MockInstallConfigFetcher>(dto::DeviceInstallConfigDto{}),
+      std::make_unique<MockerResourceFetcher>(""),
+      std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
-    auto &provider = harness_->config_provider();
-    provider.get().auto_apply_config = false;
-    provider.get().auto_allow_after_update_script_hash = false;
-    provider.get().install_update_grace_expires_at_epoch_seconds = 0;
-    auto save_r = provider.save({
-        {"auto_apply_config", false},
-        {"auto_allow_after_update_script_hash", false},
-        {"install_update_grace_expires_at_epoch_seconds", 0},
-    });
-    ASSERT_TRUE(save_r.is_ok()) << save_r.error();
+  auto &provider = harness_->config_provider();
+  provider.get().auto_apply_config = false;
+  provider.get().auto_allow_after_update_script_hash = false;
+  provider.get().install_update_grace_expires_at_epoch_seconds = 0;
+  auto save_r = provider.save({
+      {"auto_apply_config", false},
+      {"auto_allow_after_update_script_hash", false},
+      {"install_update_grace_expires_at_epoch_seconds", 0},
+  });
+  ASSERT_TRUE(save_r.is_ok()) << save_r.error();
 
-    std::optional<monad::MyVoidResult> rearm_r;
-    harness_->install_manager()
-      .rearm_local_install_update_window()
-      .run([&](auto result) {
-      rearm_r = std::move(result);
-      notifier.notify();
+  std::optional<monad::MyVoidResult> rearm_r;
+  harness_->install_manager().rearm_local_install_update_window().run(
+      [&](auto result) {
+        rearm_r = std::move(result);
+        notifier.notify();
       });
-    notifier.waitForNotification();
+  notifier.waitForNotification();
 
-    ASSERT_TRUE(rearm_r.has_value());
-    ASSERT_TRUE(rearm_r->is_ok()) << rearm_r->error();
+  ASSERT_TRUE(rearm_r.has_value());
+  ASSERT_TRUE(rearm_r->is_ok()) << rearm_r->error();
 
-    const auto &cfg = provider.get();
-    EXPECT_TRUE(cfg.auto_apply_config);
-    EXPECT_TRUE(cfg.auto_allow_after_update_script_hash);
-    EXPECT_GT(cfg.install_update_grace_expires_at_epoch_seconds,
-              static_cast<std::int64_t>(std::time(nullptr)));
-  }
+  const auto &cfg = provider.get();
+  EXPECT_TRUE(cfg.auto_apply_config);
+  EXPECT_TRUE(cfg.auto_allow_after_update_script_hash);
+  EXPECT_GT(cfg.install_update_grace_expires_at_epoch_seconds,
+            static_cast<std::int64_t>(std::time(nullptr)));
+}
 
-  TEST_F(InstallConfigManagerFixture,
+TEST_F(InstallConfigManagerFixture,
        FullResyncFromServerClearsDerivedCachesAndRefreshesSnapshot) {
-    misc::ThreadNotifier notifier(3000);
-    auto config_dir = make_temp_runtime_dir();
-    auto runtime_dir = make_temp_runtime_dir();
+  misc::ThreadNotifier notifier(3000);
+  auto config_dir = make_temp_runtime_dir();
+  auto runtime_dir = make_temp_runtime_dir();
 
-    int fetch_calls = 0;
-    auto fetcher = std::make_unique<LambdaInstallConfigFetcher>(
-        [&fetch_calls](std::optional<std::string>, std::optional<std::int64_t>,
-                       const std::optional<std::string> &)
-            -> monad::IO<dto::DeviceInstallConfigDto> {
-          ++fetch_calls;
-          dto::DeviceInstallConfigDto cfg{};
-          cfg.version = 42;
-          return monad::IO<dto::DeviceInstallConfigDto>::pure(cfg);
-        });
+  int fetch_calls = 0;
+  auto fetcher = std::make_unique<LambdaInstallConfigFetcher>(
+      [&fetch_calls](std::optional<std::string>, std::optional<std::int64_t>,
+                     const std::optional<std::string> &)
+          -> monad::IO<dto::DeviceInstallConfigDto> {
+        ++fetch_calls;
+        dto::DeviceInstallConfigDto cfg{};
+        cfg.version = 42;
+        return monad::IO<dto::DeviceInstallConfigDto>::pure(cfg);
+      });
 
-    createHarness(config_dir, runtime_dir, std::move(fetcher),
-                  std::make_unique<MockerResourceFetcher>(""),
-                  std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
+  createHarness(config_dir, runtime_dir, std::move(fetcher),
+                std::make_unique<MockerResourceFetcher>(""),
+                std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
-    std::filesystem::create_directories(runtime_dir / "state");
-    std::filesystem::create_directories(runtime_dir / "resources" / "certs" /
-                                        "123" / "current");
-    std::ofstream(runtime_dir / "state" / "install_config.json")
-        << R"({"stale":true})";
-    std::ofstream(runtime_dir / "state" / "install_version.txt") << "7\n";
-    std::ofstream(runtime_dir / "resources" / "certs" / "123" / "current" /
-                  "stale.pem")
-        << "stale";
+  std::filesystem::create_directories(runtime_dir / "state");
+  std::filesystem::create_directories(runtime_dir / "resources" / "certs" /
+                                      "123" / "current");
+  std::ofstream(runtime_dir / "state" / "install_config.json")
+      << R"({"stale":true})";
+  std::ofstream(runtime_dir / "state" / "install_version.txt") << "7\n";
+  std::ofstream(runtime_dir / "resources" / "certs" / "123" / "current" /
+                "stale.pem")
+      << "stale";
 
-    std::optional<monad::MyVoidResult> resync_r;
-    harness_->install_manager().full_resync_from_server().run([&](auto result) {
-      resync_r = std::move(result);
-      notifier.notify();
-    });
-    notifier.waitForNotification();
+  std::optional<monad::MyVoidResult> resync_r;
+  harness_->install_manager().full_resync_from_server().run([&](auto result) {
+    resync_r = std::move(result);
+    notifier.notify();
+  });
+  notifier.waitForNotification();
 
-    ASSERT_TRUE(resync_r.has_value());
-    ASSERT_TRUE(resync_r->is_ok()) << resync_r->error();
-    EXPECT_EQ(fetch_calls, 1);
-    EXPECT_EQ(harness_->install_manager().local_version(),
-              std::optional<std::int64_t>(42));
-    EXPECT_TRUE(std::filesystem::exists(runtime_dir / "state" / "install_config.json"));
-    EXPECT_TRUE(std::filesystem::exists(runtime_dir / "state" / "install_version.txt"));
-    EXPECT_FALSE(std::filesystem::exists(runtime_dir / "resources" / "certs" /
-                                         "123" / "current" / "stale.pem"));
-  }
+  ASSERT_TRUE(resync_r.has_value());
+  ASSERT_TRUE(resync_r->is_ok()) << resync_r->error();
+  EXPECT_EQ(fetch_calls, 1);
+  EXPECT_EQ(harness_->install_manager().local_version(),
+            std::optional<std::int64_t>(42));
+  EXPECT_TRUE(
+      std::filesystem::exists(runtime_dir / "state" / "install_config.json"));
+  EXPECT_TRUE(
+      std::filesystem::exists(runtime_dir / "state" / "install_version.txt"));
+  EXPECT_FALSE(std::filesystem::exists(runtime_dir / "resources" / "certs" /
+                                       "123" / "current" / "stale.pem"));
+}

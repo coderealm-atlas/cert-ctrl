@@ -46,8 +46,8 @@ public:
           exec_env_resolver_factory,
       install_actions::IDeviceInstallConfigFetcher &config_fetcher,
       install_actions::IAccessTokenLoader &access_token_loader,
-    install_actions::IMaterializePasswordManager &password_manager,
-    std::shared_ptr<ISessionRefresher> session_refresher);
+      install_actions::IMaterializePasswordManager &password_manager,
+      std::shared_ptr<ISessionRefresher> session_refresher);
 
   ~InstallConfigManager();
 
@@ -63,13 +63,14 @@ public:
   ensure_cached_config();
 
   // Full refresh from remote followed by apply of copy and CA import actions.
-  // This is the programmatic equivalent of `cert-ctrl install-config pull`.
+  // Background/programmatic path: does not approve or materialize new
+  // after_update_script content.
   monad::IO<void> pull_and_apply_full();
 
-    // Strong convergence path used when the server reports a replay gap.
-    // Clears derived local caches, refetches the latest install config, and
-    // rebuilds certificate/CA materials from current server state.
-    monad::IO<void> full_resync_from_server();
+  // Strong convergence path used when the server reports a replay gap.
+  // Clears derived local caches, refetches the latest install config, and
+  // rebuilds certificate/CA materials from current server state.
+  monad::IO<void> full_resync_from_server();
 
   monad::IO<void>
   apply_copy_actions(const dto::DeviceInstallConfigDto &config,
@@ -101,13 +102,18 @@ public:
 
   // Manual approval path: pin the staged after_update_script hash locally so
   // a reviewed script becomes trusted before manual apply proceeds.
-  monad::IO<void> approve_after_update_script_hash(
+  monad::IO<void>
+  approve_after_update_script_hash(const dto::DeviceInstallConfigDto &config);
+
+  // Manual CLI path: approve and write the staged after_update_script before
+  // copy/import actions run, so apply-time commands see the new script file.
+  monad::IO<void> approve_and_persist_after_update_script(
       const dto::DeviceInstallConfigDto &config);
 
-  monad::IO<void> handle_ca_assignment(
-      std::int64_t ca_id, std::optional<std::string> ca_name);
-  monad::IO<void> handle_ca_unassignment(
-      std::int64_t ca_id, std::optional<std::string> ca_name);
+  monad::IO<void> handle_ca_assignment(std::int64_t ca_id,
+                                       std::optional<std::string> ca_name);
+  monad::IO<void> handle_ca_unassignment(std::int64_t ca_id,
+                                         std::optional<std::string> ca_name);
 
   std::shared_ptr<dto::DeviceInstallConfigDto> cached_config_snapshot();
 
@@ -137,8 +143,8 @@ private:
   std::filesystem::path version_file_path() const;
   std::filesystem::path resource_current_dir(const std::string &ob_type,
                                              std::int64_t ob_id) const;
-    void remove_cached_resource_scope(const std::filesystem::path &root);
-    void remove_file_quiet(const std::filesystem::path &file_path);
+  void remove_cached_resource_scope(const std::filesystem::path &root);
+  void remove_file_quiet(const std::filesystem::path &file_path);
 
   std::optional<std::unordered_map<std::string, std::string>>
   resolve_exec_env_for_item(const dto::InstallItem &item);
@@ -164,7 +170,7 @@ private:
   boost::asio::io_context &io_context_;
   install_actions::IAccessTokenLoader &access_token_loader_;
   install_actions::IMaterializePasswordManager &password_manager_;
-    std::shared_ptr<ISessionRefresher> session_refresher_;
+  std::shared_ptr<ISessionRefresher> session_refresher_;
 };
 
 } // namespace certctrl

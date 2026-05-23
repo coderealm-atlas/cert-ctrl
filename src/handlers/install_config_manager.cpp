@@ -11,9 +11,9 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
-#include <charconv>
 #include <cctype>
+#include <charconv>
+#include <chrono>
 #include <cstring>
 #include <fmt/format.h>
 #include <fstream>
@@ -28,9 +28,9 @@
 
 #include <sodium.h>
 #ifdef _WIN32
-#include <windows.h>
 #include <codecvt>
 #include <locale>
+#include <windows.h>
 #endif
 #ifndef _WIN32
 #include <fcntl.h>
@@ -74,7 +74,8 @@ constexpr const char kDisableAutoAllowScriptHashesCommand[] =
     "cert-ctrl conf set auto_allow_after_update_script_hash false";
 
 std::string fmt_script_output(std::string_view s) {
-  if (s.empty()) return {};
+  if (s.empty())
+    return {};
   std::string out{s};
   while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) {
     out.pop_back();
@@ -86,14 +87,13 @@ std::string fmt_script_output(std::string_view s) {
 }
 
 std::string normalize_hash_copy(std::string value) {
-  value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char ch) {
-                return std::isspace(ch) != 0;
-              }),
-              value.end());
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char ch) {
-                   return static_cast<char>(std::tolower(ch));
-                 });
+  value.erase(
+      std::remove_if(value.begin(), value.end(),
+                     [](unsigned char ch) { return std::isspace(ch) != 0; }),
+      value.end());
+  std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   return value;
 }
 
@@ -126,8 +126,8 @@ bool strip_cert_scoped_exec_fields(dto::DeviceInstallConfigDto &config,
 
     if (output != nullptr) {
       output->logger().warning()
-          << "Stripped cmd/cmd_argv from cert-scoped install item '"
-          << item.id << "'; cert resources no longer accept remote exec "
+          << "Stripped cmd/cmd_argv from cert-scoped install item '" << item.id
+          << "'; cert resources no longer accept remote exec "
              "commands."
           << std::endl;
     }
@@ -135,8 +135,8 @@ bool strip_cert_scoped_exec_fields(dto::DeviceInstallConfigDto &config,
   return changed;
 }
 
-boost::json::array hash_array_from_vector(
-    const std::vector<std::string> &hashes) {
+boost::json::array
+hash_array_from_vector(const std::vector<std::string> &hashes) {
   boost::json::array result;
   result.reserve(hashes.size());
   for (const auto &hash : hashes) {
@@ -145,22 +145,22 @@ boost::json::array hash_array_from_vector(
   return result;
 }
 
-std::string compute_after_update_script_hash(const std::string &variant_name,
-                                             const std::string &script_content) {
+std::string
+compute_after_update_script_hash(const std::string &variant_name,
+                                 const std::string &script_content) {
   return normalize_hash_copy(
       cjj365::opensslutil::sha256_hex(variant_name + "\n" + script_content));
 }
 
-static std::vector<std::string> normalize_trusted_hashes(
-    std::vector<std::string> trusted_hashes) {
+static std::vector<std::string>
+normalize_trusted_hashes(std::vector<std::string> trusted_hashes) {
   trusted_hashes.erase(
       std::remove_if(trusted_hashes.begin(), trusted_hashes.end(),
                      [](const std::string &value) { return value.empty(); }),
       trusted_hashes.end());
-  std::transform(trusted_hashes.begin(), trusted_hashes.end(),
-                 trusted_hashes.begin(), [](std::string value) {
-                   return normalize_hash_copy(std::move(value));
-                 });
+  std::transform(
+      trusted_hashes.begin(), trusted_hashes.end(), trusted_hashes.begin(),
+      [](std::string value) { return normalize_hash_copy(std::move(value)); });
   std::sort(trusted_hashes.begin(), trusted_hashes.end());
   trusted_hashes.erase(
       std::unique(trusted_hashes.begin(), trusted_hashes.end()),
@@ -192,7 +192,8 @@ resolve_after_update_script_env(
           const auto s = v->as_string();
           std::string_view sv{s.data(), s.size()};
           std::int64_t out{};
-          auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), out);
+          auto [ptr, ec] =
+              std::from_chars(sv.data(), sv.data() + sv.size(), out);
           if (ec == std::errc{} && ptr == sv.data() + sv.size()) {
             return out;
           }
@@ -403,8 +404,8 @@ select_platform_script(const std::string &bundle_content) {
 
 static std::optional<std::string>
 persist_after_update_script_atomic(const std::filesystem::path &state_dir,
-                                  const std::string &variant_name,
-                                  const std::string &content) {
+                                   const std::string &variant_name,
+                                   const std::string &content) {
   try {
     std::error_code ec;
     std::filesystem::create_directories(state_dir, ec);
@@ -442,10 +443,9 @@ persist_after_update_script_atomic(const std::filesystem::path &state_dir,
 #ifndef _WIN32
     std::filesystem::permissions(target,
                                  std::filesystem::perms::owner_read |
-                   std::filesystem::perms::owner_write |
-                   std::filesystem::perms::owner_exec,
-                                 std::filesystem::perm_options::replace,
-                                 ec);
+                                     std::filesystem::perms::owner_write |
+                                     std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace, ec);
 #endif
 
     return std::nullopt;
@@ -454,23 +454,24 @@ persist_after_update_script_atomic(const std::filesystem::path &state_dir,
   }
 }
 
-static std::optional<std::string>
-run_script_file_best_effort(const std::filesystem::path &script_path,
-                            const std::string &variant_name,
-                            const std::string &event_name,
-                            const std::optional<std::unordered_map<std::string, std::string>> &extra_env,
-                            std::string *stdout_text = nullptr,
-                            std::string *stderr_text = nullptr,
-                            std::optional<int> *exit_code = nullptr,
-                            std::optional<int> *term_signal = nullptr) {
+static std::optional<std::string> run_script_file_best_effort(
+    const std::filesystem::path &script_path, const std::string &variant_name,
+    const std::string &event_name,
+    const std::optional<std::unordered_map<std::string, std::string>>
+        &extra_env,
+    std::string *stdout_text = nullptr, std::string *stderr_text = nullptr,
+    std::optional<int> *exit_code = nullptr,
+    std::optional<int> *term_signal = nullptr) {
 #ifdef _WIN32
   (void)extra_env;
   // On Windows, use a best-effort approach. We construct argv in a way that
   // avoids relying on shebang/executable bits.
   auto append_limited = [](std::string &dst, const char *data, std::size_t n) {
     static constexpr std::size_t kMax = 64 * 1024;
-    if (n == 0) return;
-    if (dst.size() >= kMax) return;
+    if (n == 0)
+      return;
+    if (dst.size() >= kMax)
+      return;
     const std::size_t room = kMax - dst.size();
     dst.append(data, data + std::min(room, n));
   };
@@ -481,12 +482,12 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
     argv = {"cmd.exe", "/C",
             fmt::format("\"{}\" \"{}\"", script_path.string(), event_name)};
   } else if (variant_name == "windows.powershell") {
-    argv = {"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-            script_path.string(), event_name};
+    argv = {"powershell", "-NoProfile",         "-ExecutionPolicy", "Bypass",
+            "-File",      script_path.string(), event_name};
   } else {
     // windows.pwsh (default)
-    argv = {"pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-            script_path.string(), event_name};
+    argv = {"pwsh",  "-NoProfile",         "-ExecutionPolicy", "Bypass",
+            "-File", script_path.string(), event_name};
   }
 
   // Use CreateProcessW similarly to ExecActionHandler (simplified; no env).
@@ -524,10 +525,9 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
       std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
       warg = conv.from_bytes(argv[i]);
     }
-    const bool needs_quote =
-        (warg.find(L' ') != std::wstring::npos ||
-         warg.find(L'\t') != std::wstring::npos ||
-         warg.find(L'\"') != std::wstring::npos);
+    const bool needs_quote = (warg.find(L' ') != std::wstring::npos ||
+                              warg.find(L'\t') != std::wstring::npos ||
+                              warg.find(L'\"') != std::wstring::npos);
     if (!needs_quote) {
       cmd_line += warg;
       continue;
@@ -600,7 +600,8 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
         break;
       }
       char buf[4096];
-      DWORD to_read = (avail < sizeof(buf)) ? avail : static_cast<DWORD>(sizeof(buf));
+      DWORD to_read =
+          (avail < sizeof(buf)) ? avail : static_cast<DWORD>(sizeof(buf));
       DWORD read_n = 0;
       if (!ReadFile(h, buf, to_read, &read_n, nullptr) || read_n == 0) {
         break;
@@ -668,13 +669,13 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   const auto err_for_log = fmt_script_output(err_text);
   if (!out_for_log.empty()) {
     BOOST_LOG_TRIVIAL(info)
-        << "after_update_script stdout (event=" << event_name
-        << "):\n" << out_for_log;
+        << "after_update_script stdout (event=" << event_name << "):\n"
+        << out_for_log;
   }
   if (!err_for_log.empty()) {
     BOOST_LOG_TRIVIAL(info)
-        << "after_update_script stderr (event=" << event_name
-        << "):\n" << err_for_log;
+        << "after_update_script stderr (event=" << event_name << "):\n"
+        << err_for_log;
   }
 
   if (exit_code != 0) {
@@ -693,15 +694,18 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
 
   auto append_limited = [](std::string &dst, const char *data, std::size_t n) {
     static constexpr std::size_t kMax = 64 * 1024;
-    if (n == 0) return;
-    if (dst.size() >= kMax) return;
+    if (n == 0)
+      return;
+    if (dst.size() >= kMax)
+      return;
     const std::size_t room = kMax - dst.size();
     dst.append(data, data + std::min(room, n));
   };
 
   auto set_nonblocking = [](int fd) -> bool {
     int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0) return false;
+    if (flags < 0)
+      return false;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
   };
 
@@ -791,23 +795,23 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
       }
     }
 
-            // Prefer executing the script directly so the kernel honors its shebang
-            // (supports bash, dash, busybox, python, etc). Fall back to shells for
-            // cases like missing exec bit, CRLF shebang issues, or older persisted
-            // scripts.
-            execl(script_path.c_str(), script_path.c_str(), event_name.c_str(),
-              (char *)nullptr);
+    // Prefer executing the script directly so the kernel honors its shebang
+    // (supports bash, dash, busybox, python, etc). Fall back to shells for
+    // cases like missing exec bit, CRLF shebang issues, or older persisted
+    // scripts.
+    execl(script_path.c_str(), script_path.c_str(), event_name.c_str(),
+          (char *)nullptr);
 
-            // If direct exec fails, try bash for bash-shebang scripts; otherwise sh.
-            // Note: if the interpreter referenced by the shebang is missing, direct
-            // exec will fail; falling back to sh may still work for POSIX scripts.
-            if (use_bash) {
-          execlp("bash", "bash", script_path.c_str(), event_name.c_str(),
+    // If direct exec fails, try bash for bash-shebang scripts; otherwise sh.
+    // Note: if the interpreter referenced by the shebang is missing, direct
+    // exec will fail; falling back to sh may still work for POSIX scripts.
+    if (use_bash) {
+      execlp("bash", "bash", script_path.c_str(), event_name.c_str(),
              (char *)nullptr);
-            }
-            execlp("sh", "sh", script_path.c_str(), event_name.c_str(),
-              (char *)nullptr);
-        _exit(127);
+    }
+    execlp("sh", "sh", script_path.c_str(), event_name.c_str(),
+           (char *)nullptr);
+    _exit(127);
   }
 
   // Parent.
@@ -882,13 +886,13 @@ run_script_file_best_effort(const std::filesystem::path &script_path,
   const auto err_for_log = fmt_script_output(run_result.stderr_text);
   if (!out_for_log.empty()) {
     BOOST_LOG_TRIVIAL(info)
-        << "after_update_script stdout (event=" << event_name
-        << "):\n" << out_for_log;
+        << "after_update_script stdout (event=" << event_name << "):\n"
+        << out_for_log;
   }
   if (!err_for_log.empty()) {
     BOOST_LOG_TRIVIAL(info)
-        << "after_update_script stderr (event=" << event_name
-        << "):\n" << err_for_log;
+        << "after_update_script stderr (event=" << event_name << "):\n"
+        << err_for_log;
   }
 
   if (WIFEXITED(status)) {
@@ -1431,13 +1435,15 @@ void InstallConfigManager::remove_cached_resource_scope(
   std::error_code ec;
   auto removed = std::filesystem::remove_all(root, ec);
   if (ec) {
-    BOOST_LOG_SEV(lg, trivial::error) << "Failed to remove cached resource scope '"
-                               << root << "': " << ec.message();
+    BOOST_LOG_SEV(lg, trivial::error)
+        << "Failed to remove cached resource scope '" << root
+        << "': " << ec.message();
     return;
   }
   if (removed > 0) {
-    BOOST_LOG_SEV(lg, trivial::info) << "Removed cached resource scope '" << root
-                            << "' (" << removed << " entries).";
+    BOOST_LOG_SEV(lg, trivial::info)
+        << "Removed cached resource scope '" << root << "' (" << removed
+        << " entries).";
   }
 }
 
@@ -1449,8 +1455,8 @@ void InstallConfigManager::remove_file_quiet(
   std::error_code ec;
   std::filesystem::remove(file_path, ec);
   if (ec && ec != std::errc::no_such_file_or_directory) {
-    BOOST_LOG_SEV(lg, trivial::error) << "Failed to remove cached file '" << file_path
-                               << "': " << ec.message();
+    BOOST_LOG_SEV(lg, trivial::error) << "Failed to remove cached file '"
+                                      << file_path << "': " << ec.message();
   }
 }
 
@@ -1826,7 +1832,8 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
     using ReturnIO = monad::IO<void>;
     if (!config_provider_.get().auto_apply_config) {
       BOOST_LOG_SEV(lg, trivial::info)
-          << "auto_apply_config disabled; install.updated ignored. Run 'cert-ctrl"
+          << "auto_apply_config disabled; install.updated ignored. Run "
+             "'cert-ctrl"
           << " install-config pull/apply' to stage changes manually.";
       return ReturnIO::pure();
     }
@@ -1834,9 +1841,9 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
     if (auto refresh_r =
             config_provider_.refresh_install_update_grace_window(false);
         refresh_r.is_err()) {
-      BOOST_LOG_SEV(lg, trivial::warning)
-          << "Failed to refresh install-update grace window on install.updated: "
-          << refresh_r.error().what;
+      BOOST_LOG_SEV(lg, trivial::warning) << "Failed to refresh install-update "
+                                             "grace window on install.updated: "
+                                          << refresh_r.error().what;
     }
 
     auto typed = ::data::get_install_updated(signal);
@@ -1940,7 +1947,7 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
 
     // auto_apply_config gating, bypassed for cert/CA material events.
     if (!bypass_auto_apply_config_gate && !cfg.auto_apply_config &&
-      !is_bypass_auto_apply_event(signal.type)) {
+        !is_bypass_auto_apply_event(signal.type)) {
       BOOST_LOG_SEV(lg, trivial::debug)
           << "auto_apply_config disabled; after_update_script skipped for type="
           << signal.type;
@@ -1964,47 +1971,47 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
     const auto &variant_name = selected->first;
     const auto &script_content = selected->second;
     const auto script_hash =
-      compute_after_update_script_hash(variant_name, script_content);
+        compute_after_update_script_hash(variant_name, script_content);
 
     auto &runtime_cfg = config_provider_.get();
     auto trusted_hashes = normalize_trusted_hashes(
         runtime_cfg.trusted_after_update_script_hashes);
 
-    const bool trusted =
-      std::find(trusted_hashes.begin(), trusted_hashes.end(), script_hash) !=
-      trusted_hashes.end();
+    const bool trusted = std::find(trusted_hashes.begin(), trusted_hashes.end(),
+                                   script_hash) != trusted_hashes.end();
     if (!trusted) {
       if (!runtime_cfg.auto_allow_after_update_script_hash) {
-      BOOST_LOG_SEV(lg, trivial::warning)
-        << "after_update_script skipped for type=" << signal.type
-        << " variant=" << variant_name << " hash=" << script_hash
-        << " because it is not pinned locally. Once the script is stable, "
-           "keep trust-on-first-use disabled; command: "
-        << kDisableAutoAllowScriptHashesCommand;
-      return ReturnIO::pure();
+        BOOST_LOG_SEV(lg, trivial::warning)
+            << "after_update_script skipped for type=" << signal.type
+            << " variant=" << variant_name << " hash=" << script_hash
+            << " because it is not pinned locally. Once the script is stable, "
+               "keep trust-on-first-use disabled; command: "
+            << kDisableAutoAllowScriptHashesCommand;
+        return ReturnIO::pure();
       }
 
       trusted_hashes.push_back(script_hash);
       std::sort(trusted_hashes.begin(), trusted_hashes.end());
       trusted_hashes.erase(
-        std::unique(trusted_hashes.begin(), trusted_hashes.end()),
-        trusted_hashes.end());
+          std::unique(trusted_hashes.begin(), trusted_hashes.end()),
+          trusted_hashes.end());
       runtime_cfg.trusted_after_update_script_hashes = trusted_hashes;
 
       auto save_r = config_provider_.save({{
-        "trusted_after_update_script_hashes",
-        hash_array_from_vector(trusted_hashes),
+          "trusted_after_update_script_hashes",
+          hash_array_from_vector(trusted_hashes),
       }});
       if (save_r.is_err()) {
-      BOOST_LOG_SEV(lg, trivial::warning)
-        << "after_update_script auto-allow hash=" << script_hash
-        << " but failed to persist trust pin: " << save_r.error();
+        BOOST_LOG_SEV(lg, trivial::warning)
+            << "after_update_script auto-allow hash=" << script_hash
+            << " but failed to persist trust pin: " << save_r.error();
       } else {
-      BOOST_LOG_SEV(lg, trivial::warning)
-        << "Auto-allowed new after_update_script hash=" << script_hash
-        << " for variant=" << variant_name << ". Once the script is stable, "
-           "disable trust-on-first-use with '"
-        << kDisableAutoAllowScriptHashesCommand << "'.";
+        BOOST_LOG_SEV(lg, trivial::warning)
+            << "Auto-allowed new after_update_script hash=" << script_hash
+            << " for variant=" << variant_name
+            << ". Once the script is stable, "
+               "disable trust-on-first-use with '"
+            << kDisableAutoAllowScriptHashesCommand << "'.";
       }
     }
 
@@ -2025,16 +2032,14 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
     }
 
     const auto script_env =
-      resolve_after_update_script_env(password_manager_, signal);
+        resolve_after_update_script_env(password_manager_, signal);
     std::string script_stdout;
     std::string script_stderr;
     std::optional<int> script_exit_code;
     std::optional<int> script_term_signal;
-    auto err = run_script_file_best_effort(script_path, variant_name,
-                                           signal.type, script_env,
-                                           &script_stdout, &script_stderr,
-                                           &script_exit_code,
-                                           &script_term_signal);
+    auto err = run_script_file_best_effort(
+        script_path, variant_name, signal.type, script_env, &script_stdout,
+        &script_stderr, &script_exit_code, &script_term_signal);
     const auto script_name = script_path.filename().string();
     const auto out_for_console = fmt_script_output(script_stdout);
     const auto err_for_console = fmt_script_output(script_stderr);
@@ -2060,8 +2065,7 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
     if (err) {
       output_.logger().warning()
           << script_name << " execution failed for type=" << signal.type
-          << " variant=" << variant_name << " error=" << *err
-          << std::endl;
+          << " variant=" << variant_name << " error=" << *err << std::endl;
       BOOST_LOG_SEV(lg, trivial::warning)
           << "after_update_script execution failed for type=" << signal.type
           << " variant=" << variant_name << " error=" << *err;
@@ -2070,7 +2074,7 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
 
     BOOST_LOG_SEV(lg, trivial::info)
         << "after_update_script executed for type=" << signal.type
-    << " variant=" << variant_name << " hash=" << script_hash;
+        << " variant=" << variant_name << " hash=" << script_hash;
     return ReturnIO::pure();
   } catch (const std::exception &ex) {
     BOOST_LOG_SEV(lg, trivial::warning)
@@ -2100,9 +2104,8 @@ monad::IO<void> InstallConfigManager::approve_after_update_script_hash(
   auto &runtime_cfg = config_provider_.get();
   auto trusted_hashes =
       normalize_trusted_hashes(runtime_cfg.trusted_after_update_script_hashes);
-  const bool trusted =
-      std::find(trusted_hashes.begin(), trusted_hashes.end(), script_hash) !=
-      trusted_hashes.end();
+  const bool trusted = std::find(trusted_hashes.begin(), trusted_hashes.end(),
+                                 script_hash) != trusted_hashes.end();
   if (trusted) {
     BOOST_LOG_SEV(lg, trivial::info)
         << "after_update_script hash already trusted for manual apply: "
@@ -2127,6 +2130,40 @@ monad::IO<void> InstallConfigManager::approve_after_update_script_hash(
       << " for variant=" << variant_name
       << " during manual install-config apply";
   return ReturnIO::pure();
+}
+
+monad::IO<void> InstallConfigManager::approve_and_persist_after_update_script(
+    const dto::DeviceInstallConfigDto &config) {
+  using ReturnIO = monad::IO<void>;
+
+  if (!config.after_update_script || config.after_update_script->empty()) {
+    return ReturnIO::pure();
+  }
+
+  auto selected = select_platform_script(*config.after_update_script);
+  if (!selected || selected->second.empty()) {
+    return ReturnIO::pure();
+  }
+
+  auto variant_name = selected->first;
+  auto script_content = selected->second;
+
+  return approve_after_update_script_hash(config).then(
+      [this, variant_name = std::move(variant_name),
+       script_content = std::move(script_content)]() -> ReturnIO {
+        if (auto err = persist_after_update_script_atomic(
+                state_dir(), variant_name, script_content)) {
+          return ReturnIO::fail(monad::make_error(
+              my_errors::GENERAL::FILE_READ_WRITE,
+              "failed to persist after_update_script before manual apply: " +
+                  *err));
+        }
+
+        BOOST_LOG_SEV(lg, trivial::info)
+            << "Persisted staged after_update_script before manual apply"
+            << " variant=" << variant_name;
+        return ReturnIO::pure();
+      });
 }
 
 monad::IO<void> InstallConfigManager::rearm_local_install_update_window() {
@@ -2227,7 +2264,8 @@ InstallConfigManager::resolve_exec_env_for_item(const dto::InstallItem &item) {
 
   std::unordered_map<std::string, std::string> env;
   // Expose the generated PKCS#12/PFX password to legacy exec actions. Commands
-  // can consume it using `env:CERTCTRL_PFX_PASSWORD` (OpenSSL) or `$CERTCTRL_PFX_PASSWORD`.
+  // can consume it using `env:CERTCTRL_PFX_PASSWORD` (OpenSSL) or
+  // `$CERTCTRL_PFX_PASSWORD`.
   env.emplace(kPfxPasswordEnvVar, *password);
   return env;
 }

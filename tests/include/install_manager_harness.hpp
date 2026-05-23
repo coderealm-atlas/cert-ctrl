@@ -84,9 +84,10 @@ struct InstallManagerDiHarness {
         inj.create<std::unique_ptr<client_async::HttpClientManager>>();
     http_client_manager_ = http_client_manager_owner_.get();
 
-    session_refresher_ =
-      inj.create<std::shared_ptr<certctrl::ISessionRefresher>>();
     state_store_ = &inj.create<certctrl::IDeviceStateStore &>();
+    session_refresher_ = std::make_shared<certctrl::SessionRefresher>(
+        *io_context_manager_, *config_provider_, *cli_ctx_storage_, *output_,
+        *http_client_manager_, *state_store_);
 
     if (token_loader_override) {
       token_loader_ = token_loader_override;
