@@ -64,6 +64,7 @@ skip_preflight="false"      # Skip preflight checks (only for publishing)
 preflight_docker_pull="false"  # Whether preflight should docker pull base images
 parallel_builds="false"     # Whether to run per-platform builds concurrently
 linux_docker_variant=""     # ubuntu|alpine|both (optional; linux-docker only)
+skip_build="false"          # Reuse existing build artifacts; do collect/prepare/publish only
 
 derive_release_version_from_controller() {
   local repo_root
@@ -137,18 +138,22 @@ preflight_publish() {
     echo "warning: curl not found; skipping GitHub connectivity check." >&2
   fi
 
-  echo "[preflight] Checking Docker availability..." >&2
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "error: docker not found; required for linux-docker builds." >&2
-    return 1
-  fi
-  if ! docker info >/dev/null 2>&1; then
-    echo "error: docker daemon not reachable (is it running? permissions?)." >&2
-    return 1
+  if [[ "${skip_build}" == "true" ]]; then
+    echo "[preflight] Skipping Docker checks because --skip-build was requested." >&2
+  else
+    echo "[preflight] Checking Docker availability..." >&2
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "error: docker not found; required for linux-docker builds." >&2
+      return 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+      echo "error: docker daemon not reachable (is it running? permissions?)." >&2
+      return 1
+    fi
   fi
 
   # Pulling images can hang behind some proxy setups; keep this optional.
-  if [[ "${preflight_docker_pull}" == "true" ]]; then
+  if [[ "${skip_build}" != "true" && "${preflight_docker_pull}" == "true" ]]; then
     # These pulls catch common auth/rate-limit/proxy issues early.
     echo "[preflight] Pulling required Docker images (timeout 30s each)..." >&2
     if ! run_with_timeout 30 docker pull alpine:3.20 >/dev/null; then
@@ -169,7 +174,7 @@ preflight_publish() {
         return 1
       fi
     fi
-  else
+  elif [[ "${skip_build}" != "true" ]]; then
     echo "[preflight] Skipping Docker image pulls (use --preflight-docker-pull to enable)." >&2
   fi
 
@@ -208,6 +213,9 @@ Options
            Create GitHub release after successful build
   --skip-github-release
            Skip GitHub release creation
+  --skip-build
+           Skip build playbook; reuse existing remote packaged artifacts, then collect/prepare.
+           Useful when a build already succeeded but you forgot --publish-github-release.
   --force-build
            Force rebuild even if artifacts already exist
   --reconfig-cmake
@@ -240,6 +248,9 @@ Examples:
 
   # Quick deployment with GitHub release
   ./deploy.sh --action quick --release-version v1.2.3
+
+  # Reuse the build you just ran and publish the GitHub release
+  ./deploy.sh --skip-build --publish-github-release
 
   # Build all platforms in parallel (faster when you have VMs)
   ./deploy.sh --action pipeline --parallel-builds
@@ -334,6 +345,10 @@ while [[ $# -gt 0 ]]; do
     --skip-github-release)
       run_github_release="false"
       github_release_override="true"
+      shift
+      ;;
+    --skip-build)
+      skip_build="true"
       shift
       ;;
     --force-build)
@@ -604,7 +619,18 @@ run_parallel_builds() {
   return "$rc"
 }
 
-if [[ "$parallel_builds" == "true" && ("$action" == "build" || "$action" == "pipeline" || "$action" == "quick") ]]; then
+if [[ "$skip_build" == "true" && ("$action" == "pipeline" || "$action" == "quick") ]]; then
+  echo "[skip-build] Skipping build phase; collecting and preparing existing artifacts." >&2
+  if [[ -n "$limit" ]]; then
+    run_ansible_playbook "${ANSIBLE_DIR}/playbooks/collect_assets.yml" --limit "$limit"
+    run_ansible_playbook "${ANSIBLE_DIR}/playbooks/prepare_assets.yml" --limit "$limit"
+  else
+    run_ansible_playbook "${ANSIBLE_DIR}/playbooks/collect_assets.yml"
+    run_ansible_playbook "${ANSIBLE_DIR}/playbooks/prepare_assets.yml"
+  fi
+elif [[ "$skip_build" == "true" && "$action" == "build" ]]; then
+  echo "[skip-build] Build phase skipped; no build playbook was run." >&2
+elif [[ "$parallel_builds" == "true" && ("$action" == "build" || "$action" == "pipeline" || "$action" == "quick") ]]; then
   run_parallel_builds
   build_rc=$?
   if [[ $build_rc -ne 0 ]]; then
