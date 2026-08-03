@@ -50,6 +50,20 @@ function Get-GitStatus {
   }
 }
 
+function Set-GitProxyOverride {
+  $proxy = $env:HTTPS_PROXY
+  if (-not $proxy) { $proxy = $env:HTTP_PROXY }
+  if (-not $proxy) { return }
+
+  # Git config has precedence over HTTP_PROXY. Export command-scope config so
+  # nested Git processes started by vcpkg cannot inherit a stale global proxy.
+  $env:GIT_CONFIG_COUNT = "2"
+  $env:GIT_CONFIG_KEY_0 = "http.proxy"
+  $env:GIT_CONFIG_VALUE_0 = $proxy
+  $env:GIT_CONFIG_KEY_1 = "https.proxy"
+  $env:GIT_CONFIG_VALUE_1 = $proxy
+}
+
 function Sync-GitSubmodules {
   git submodule sync --recursive | ForEach-Object { Write-Host $_ }
   if ($LASTEXITCODE -ne 0) {
@@ -138,6 +152,7 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
   throw "MSVC toolchain not available (cl.exe not found)."
 }
 
+Set-GitProxyOverride
 $gitStatus = Sync-GitSubmodules
 $binaryName = $BuildTarget
 if (-not $binaryName.ToLower().EndsWith(".exe")) {
