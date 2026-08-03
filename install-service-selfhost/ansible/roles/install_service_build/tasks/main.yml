@@ -550,8 +550,11 @@
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
     '$status = git -C "{{ install_service_repo_path }}" submodule status;
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE };
-    if (($status | Where-Object { $_ -match "^[-+U]" }).Count -gt 0) {
-      Write-Error ("Submodules remain out of sync: " + ($status -join "; "));
+    $misaligned = @($status | Where-Object {
+      $_.Length -gt 0 -and ([int][char]$_[0] -in @(43, 45, 85))
+    });
+    if ($misaligned.Count -gt 0) {
+      $misaligned | Write-Output;
       exit 1
     }'
   changed_when: false
