@@ -50,6 +50,32 @@ function Get-GitStatus {
   }
 }
 
+function Sync-GitSubmodules {
+  git submodule sync --recursive | ForEach-Object { Write-Host $_ }
+  if ($LASTEXITCODE -ne 0) {
+    throw "git submodule sync failed with exit code $LASTEXITCODE"
+  }
+
+  $proxy = $env:HTTPS_PROXY
+  if (-not $proxy) { $proxy = $env:HTTP_PROXY }
+  $gitProxyArgs = @()
+  if ($proxy) {
+    $gitProxyArgs = @("-c", "http.proxy=$proxy", "-c", "https.proxy=$proxy")
+  }
+
+  & git @gitProxyArgs submodule update --init --recursive --checkout --depth 1 |
+    ForEach-Object { Write-Host $_ }
+  if ($LASTEXITCODE -ne 0) {
+    throw "git submodule update failed with exit code $LASTEXITCODE"
+  }
+
+  $status = Get-GitStatus
+  if ($status.SubmoduleDirty) {
+    throw "git submodules remain out of sync with the parent repository: $($status.Submodules)"
+  }
+  return $status
+}
+
 function Write-BuildInfo {
   param(
     [string]$InstallPrefix,
@@ -112,7 +138,7 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
   throw "MSVC toolchain not available (cl.exe not found)."
 }
 
-$gitStatus = Get-GitStatus
+$gitStatus = Sync-GitSubmodules
 $binaryName = $BuildTarget
 if (-not $binaryName.ToLower().EndsWith(".exe")) {
   $binaryName = "${binaryName}.exe"
@@ -130,9 +156,6 @@ if (-not $forceBuild -and -not $gitStatus.Dirty -and -not $gitStatus.SubmoduleDi
     }
   }
 }
-
-git submodule sync --recursive
-git submodule update --init --recursive
 
 if (-not (Test-Path "external\vcpkg\scripts\buildsystems\vcpkg.cmake")) {
   throw "vcpkg_missing"

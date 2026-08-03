@@ -489,6 +489,73 @@
       until: install_service_git_fetch_win.rc == 0
       changed_when: false
 
+- name: Check submodule status (Windows)
+  when: install_service_is_windows and install_service_update_submodules | bool
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    'Set-Location "{{ install_service_repo_path }}"; git submodule status; exit $LASTEXITCODE'
+  register: install_service_submodule_status_win
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether to update submodules (Windows)
+  when: install_service_is_windows and install_service_update_submodules | bool
+  set_fact:
+    install_service_submodule_needs_update_win: >-
+      {{
+        install_service_force_submodule_update | bool
+        or (install_service_submodule_status_win.rc | default(1) != 0)
+        or (install_service_submodule_status_win.stdout | default('') is search('(?m)^[-+U]'))
+      }}
+
+- name: Update submodules (Windows)
+  when: install_service_is_windows and install_service_update_submodules | bool and install_service_submodule_needs_update_win | bool
+  block:
+    - name: Update submodules (Windows, proxy)
+      raw: >-
+        & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+        '{{ install_service_ps_preamble }}Set-Location "{{ install_service_repo_path }}";
+        git submodule sync --recursive;
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE };
+        git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args }} submodule update --init --recursive --checkout --depth 1;
+        exit $LASTEXITCODE'
+      register: install_service_git_submodule_win
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_submodule_win.rc == 0
+      changed_when: false
+  rescue:
+    - name: Fail submodule update without proxy disabled (Windows)
+      when: not install_service_git_try_without_proxy | bool
+      fail:
+        msg: "git submodule update failed with proxy; set install_service_git_try_without_proxy=true to retry without proxy."
+    - name: Update submodules (Windows, no proxy)
+      when: install_service_git_try_without_proxy | bool
+      raw: >-
+        & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+        '{{ install_service_ps_preamble_no_proxy }}Set-Location "{{ install_service_repo_path }}";
+        git submodule sync --recursive;
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE };
+        git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args_no_proxy }} submodule update --init --recursive --checkout --depth 1;
+        exit $LASTEXITCODE'
+      register: install_service_git_submodule_win
+      retries: "{{ install_service_git_retry_count }}"
+      delay: "{{ install_service_git_retry_delay }}"
+      until: install_service_git_submodule_win.rc == 0
+      changed_when: false
+
+- name: Verify submodules are aligned (Windows)
+  when: install_service_is_windows and install_service_update_submodules | bool
+  raw: >-
+    & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+    '$status = git -C "{{ install_service_repo_path }}" submodule status;
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE };
+    if (($status | Where-Object { $_ -match "^[-+U]" }).Count -gt 0) {
+      Write-Error ("Submodules remain out of sync: " + ($status -join "; "));
+      exit 1
+    }'
+  changed_when: false
+
 - name: Check submodule status (POSIX)
   when: not install_service_is_windows and install_service_update_submodules | bool
   shell: git -C "{{ install_service_repo_path }}" submodule status
