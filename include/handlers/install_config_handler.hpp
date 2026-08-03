@@ -48,44 +48,42 @@ private:
 
   PullOptions parse_pull_options(const std::string &action) const;
 
-  monad::IO<void> handle_pull();
-  monad::IO<void> handle_apply();
-  monad::IO<void> handle_show();
-  monad::IO<void> handle_clear_cache();
+  boost::asio::awaitable<monad::MyResult<void>> handle_pull_awaitable();
+  boost::asio::awaitable<monad::MyResult<void>> handle_apply_awaitable();
+  monad::MyResult<void> handle_show();
+  monad::MyResult<void> handle_clear_cache();
 
   static std::optional<std::int64_t>
   get_optional_id(const boost::program_options::variables_map &vm,
                   const char *name);
 
-  monad::IO<void> apply_copy_and_import(
+  boost::asio::awaitable<monad::MyResult<void>> apply_copy_and_import_awaitable(
       std::shared_ptr<const dto::DeviceInstallConfigDto> config,
       const PullOptions &options);
 
-  monad::IO<void> run_copy_stage();
-  monad::IO<void> run_import_stage();
-  void clear_active_context();
+  boost::asio::awaitable<monad::MyResult<void>>
+  run_copy_stage_awaitable(const dto::DeviceInstallConfigDto &config,
+                           const PullOptions &options);
+  boost::asio::awaitable<monad::MyResult<void>>
+  run_import_stage_awaitable(const dto::DeviceInstallConfigDto &config,
+                             const PullOptions &options);
 
-  monad::IO<void> show_usage(const std::string &error) const;
-  monad::IO<void> show_usage() const;
-
-  std::shared_ptr<const dto::DeviceInstallConfigDto> active_config_;
-  std::optional<PullOptions> active_options_;
+  monad::MyResult<void> show_usage(const std::string &error) const;
+  monad::MyResult<void> show_usage() const;
 
 public:
   InstallConfigHandler(
-      cjj365::ConfigSources &config_sources,  //
-      certctrl::CliCtx &cli_ctx, //
-      customio::ConsoleOutput &output, //
-      client_async::HttpClientManager &http_client, //
-      std::unique_ptr<InstallConfigManager> install_config_manager,//
+      cjj365::ConfigSources &config_sources,                        //
+      certctrl::CliCtx &cli_ctx,                                    //
+      customio::ConsoleOutput &output,                              //
+      client_async::HttpClientManager &http_client,                 //
+      std::unique_ptr<InstallConfigManager> install_config_manager, //
       certctrl::ICertctrlConfigProvider &config_provider);
 
-  ~InstallConfigHandler() {
-    DEBUG_PRINT("InstallConfigHandler destroyed");
-  }
+  ~InstallConfigHandler() { DEBUG_PRINT("InstallConfigHandler destroyed"); }
 
   std::string command() const override;
-  monad::IO<void> start() override;
+  boost::asio::awaitable<monad::MyResult<void>> start_awaitable() override;
 };
 
 } // namespace certctrl

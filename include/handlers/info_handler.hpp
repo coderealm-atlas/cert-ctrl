@@ -7,7 +7,6 @@
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "handlers/i_handler.hpp"
-#include "io_monad.hpp"
 #include "simple_data.hpp"
 #include "state/device_state_store.hpp"
 
@@ -23,13 +22,12 @@ class InfoHandler : public IHandler {
 public:
   InfoHandler(cjj365::ConfigSources &config_sources,
               certctrl::ICertctrlConfigProvider &config_provider,
-              customio::ConsoleOutput &output_hub,
-              CliCtx &cli_ctx,
+              customio::ConsoleOutput &output_hub, CliCtx &cli_ctx,
               certctrl::IDeviceStateStore &state_store);
 
   std::string command() const override { return "info"; }
 
-  monad::IO<void> start() override;
+  boost::asio::awaitable<monad::MyResult<void>> start_awaitable() override;
 };
 
 } // namespace certctrl

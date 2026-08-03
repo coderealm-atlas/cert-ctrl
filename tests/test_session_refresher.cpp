@@ -2,25 +2,30 @@
 
 #include <array>
 #include <atomic>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <future>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "backoff_utils.hpp"
+#include "certctrl_common.hpp"
 #include "client_ssl_ctx.hpp"
 #include "conf/certctrl_config.hpp"
-#include "certctrl_common.hpp"
 #include "customio/console_output.hpp"
 #include "handlers/session_refresher.hpp"
 #include "http_client_config_provider.hpp"
 #include "http_client_manager.hpp"
-#include "ioc_manager_config_provider.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "io_context_manager.hpp"
+#include "ioc_manager_config_provider.hpp"
 #include "log_stream.hpp"
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
@@ -30,7 +35,7 @@
 namespace fs = std::filesystem;
 
 class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
- public:
+public:
   std::optional<std::string> get_access_token() const override {
     return access_token_;
   }
@@ -39,10 +44,10 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
     return refresh_token_;
   }
 
-  std::optional<std::string> save_tokens(
-      const std::optional<std::string> &access_token,
-      const std::optional<std::string> &refresh_token,
-      std::optional<int> expires_in = std::nullopt) override {
+  std::optional<std::string>
+  save_tokens(const std::optional<std::string> &access_token,
+              const std::optional<std::string> &refresh_token,
+              std::optional<int> expires_in = std::nullopt) override {
     access_token_ = access_token;
     refresh_token_ = refresh_token;
     expires_in_ = expires_in;
@@ -86,9 +91,9 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
     return install_config_version_;
   }
 
-  std::optional<std::string> save_install_config(
-      const std::optional<std::string> &serialized_json,
-      std::optional<std::int64_t> version) override {
+  std::optional<std::string>
+  save_install_config(const std::optional<std::string> &serialized_json,
+                      std::optional<std::int64_t> version) override {
     install_config_json_ = serialized_json;
     install_config_version_ = version;
     return std::nullopt;
@@ -104,8 +109,8 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
     return updates_cursor_;
   }
 
-  std::optional<std::string> save_updates_cursor(
-      const std::optional<std::string> &cursor) override {
+  std::optional<std::string>
+  save_updates_cursor(const std::optional<std::string> &cursor) override {
     updates_cursor_ = cursor;
     return std::nullopt;
   }
@@ -130,8 +135,8 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
     return std::nullopt;
   }
 
-  std::optional<std::string> get_imported_ca_name(
-      std::int64_t ca_id) const override {
+  std::optional<std::string>
+  get_imported_ca_name(std::int64_t ca_id) const override {
     if (auto it = imported_ca_names_.find(ca_id);
         it != imported_ca_names_.end()) {
       return it->second;
@@ -146,8 +151,8 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
     return std::nullopt;
   }
 
-  std::optional<std::string> clear_imported_ca_name(
-      std::int64_t ca_id) override {
+  std::optional<std::string>
+  clear_imported_ca_name(std::int64_t ca_id) override {
     imported_ca_names_.erase(ca_id);
     return std::nullopt;
   }
@@ -173,7 +178,7 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
 
   bool available() const override { return true; }
 
- private:
+private:
   std::optional<std::string> access_token_;
   std::optional<std::string> refresh_token_;
   std::optional<int> expires_in_;
@@ -190,7 +195,7 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
 };
 
 class SessionRefresherTest : public ::testing::Test {
- protected:
+protected:
   void SetUp() override {
     config_dir_ = testinfra::make_temp_dir("session-refresher-config");
     runtime_dir_ = testinfra::make_temp_dir("session-refresher-runtime");
@@ -202,20 +207,19 @@ class SessionRefresherTest : public ::testing::Test {
     opts.ioc_threads = 1;
     testinfra::write_basic_config_files(config_dir_, opts);
 
-    config_sources_holder_ =
-        testinfra::make_config_sources({config_dir_}, {});
-    app_properties_ = std::make_unique<cjj365::AppProperties>(
-        *config_sources_holder_);
+    config_sources_holder_ = testinfra::make_config_sources({config_dir_}, {});
+    app_properties_ =
+        std::make_unique<cjj365::AppProperties>(*config_sources_holder_);
 
     output_backend_ = std::make_unique<customio::ConsoleOutputWithColor>(5);
     console_output_ =
         std::make_unique<customio::ConsoleOutput>(*output_backend_);
 
-    http_config_provider_ = std::make_unique<cjj365::HttpclientConfigProviderFile>(
+    http_config_provider_ =
+        std::make_unique<cjj365::HttpclientConfigProviderFile>(
+            *app_properties_, *config_sources_holder_);
+    ioc_config_provider_ = std::make_unique<cjj365::IocConfigProviderFile>(
         *app_properties_, *config_sources_holder_);
-    ioc_config_provider_ =
-        std::make_unique<cjj365::IocConfigProviderFile>(*app_properties_,
-                                                        *config_sources_holder_);
     cert_config_provider_ =
         std::make_unique<certctrl::CertctrlConfigProviderFile>(
             *app_properties_, *config_sources_holder_, *output_backend_);
@@ -224,13 +228,12 @@ class SessionRefresherTest : public ::testing::Test {
         std::make_unique<cjj365::ClientSSLContext>(*http_config_provider_);
     io_context_manager_ = std::make_unique<cjj365::IoContextManager>(
         *ioc_config_provider_, *output_backend_);
-    http_client_manager_ =
-        std::make_unique<client_async::HttpClientManager>(
-            *ssl_context_, *http_config_provider_);
+    http_client_manager_ = std::make_unique<client_async::HttpClientManager>(
+        *ssl_context_, *http_config_provider_);
 
     state_store_ = std::make_unique<InMemoryDeviceStateStore>();
     state_store_->save_tokens(std::optional<std::string>{"initial-access"},
-                  std::optional<std::string>{"initial-refresh"});
+                              std::optional<std::string>{"initial-refresh"});
   }
 
   void TearDown() override {
@@ -265,23 +268,18 @@ class SessionRefresherTest : public ::testing::Test {
       certctrl::SessionRefresher::DelayObserver delay_observer = {}) {
     certctrl::CliParams cli_params;
     cli_params.keep_running = false;
-    certctrl::CliCtx cli_ctx(po::variables_map{}, {}, {}, std::move(cli_params));
+    certctrl::CliCtx cli_ctx(po::variables_map{}, {}, {},
+                             std::move(cli_params));
     return std::make_shared<certctrl::SessionRefresher>(
-      *io_context_manager_, *cert_config_provider_, cli_ctx, *console_output_,
+        *io_context_manager_, *cert_config_provider_, cli_ctx, *console_output_,
         *http_client_manager_, *state_store_, std::move(options),
         std::move(request_override), std::move(delay_observer));
   }
 
-  monad::Result<void, monad::Error> RunRefresh(
-      certctrl::SessionRefresher &refresher, const std::string &reason) {
-    std::promise<monad::Result<void, monad::Error>> promise;
-    auto future = promise.get_future();
-    refresher.refresh(reason).run([
-      &promise
-    ](monad::Result<void, monad::Error> result) mutable {
-      promise.set_value(std::move(result));
-    });
-    return future.get();
+  monad::Result<void, monad::Error>
+  RunRefresh(certctrl::SessionRefresher &refresher, const std::string &reason) {
+    return testinfra::run_result_awaitable<void>(
+        io_context_manager_->ioc(), refresher.refresh_awaitable(reason));
   }
 
   fs::path config_dir_;
@@ -307,15 +305,16 @@ TEST_F(SessionRefresherTest, RetriesWithExponentialBackoff) {
 
   std::vector<std::chrono::milliseconds> observed_delays;
   int call_count = 0;
-  auto request_override = [&call_count](const std::string &, int) mutable {
+  auto request_override = [&call_count](const std::string &, int) mutable
+      -> boost::asio::awaitable<monad::MyResult<void>> {
     ++call_count;
     if (call_count < 3) {
       auto err = monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                                    "transient failure");
       err.response_status = 503;
-      return monad::IO<void>::fail(std::move(err));
+      co_return monad::MyResult<void>::Err(std::move(err));
     }
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   };
   auto delay_observer = [&observed_delays](std::chrono::milliseconds wait,
                                            int) {
@@ -342,17 +341,19 @@ TEST_F(SessionRefresherTest, BackoffResetsBetweenRefreshes) {
   std::array<int, 2> attempts{{0, 0}};
   std::atomic<int> phase{0};
 
-  auto request_override = [&failures, &attempts, &phase](const std::string &,
-                                                        int) mutable {
+  auto request_override =
+      [&failures, &attempts,
+       &phase](const std::string &,
+               int) mutable -> boost::asio::awaitable<monad::MyResult<void>> {
     int idx = phase.load();
     ++attempts[idx];
     if (attempts[idx] <= failures[idx]) {
       auto err = monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                                    "transient failure");
       err.response_status = 503;
-      return monad::IO<void>::fail(std::move(err));
+      co_return monad::MyResult<void>::Err(std::move(err));
     }
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   };
 
   auto delay_observer = [&observed_delays](std::chrono::milliseconds wait,
@@ -377,18 +378,21 @@ TEST_F(SessionRefresherTest, BackoffResetsBetweenRefreshes) {
 
 TEST_F(SessionRefresherTest, StopsRetryingOnRotationError) {
   std::vector<std::chrono::milliseconds> observed_delays;
-  auto request_override = [](const std::string &, int) {
+  auto request_override =
+      [](const std::string &,
+         int) -> boost::asio::awaitable<monad::MyResult<void>> {
     auto err = monad::make_error(my_errors::GENERAL::UNAUTHORIZED,
                                  "refresh token rotated");
     err.key = "refresh_token_rotated";
-    return monad::IO<void>::fail(std::move(err));
+    co_return monad::MyResult<void>::Err(std::move(err));
   };
   auto delay_observer = [&observed_delays](std::chrono::milliseconds wait,
                                            int) {
     observed_delays.push_back(wait);
   };
 
-  auto refresher = MakeRefresher(std::nullopt, request_override, delay_observer);
+  auto refresher =
+      MakeRefresher(std::nullopt, request_override, delay_observer);
   auto result = RunRefresh(*refresher, "rotation");
 
   ASSERT_TRUE(result.is_err());
@@ -396,8 +400,11 @@ TEST_F(SessionRefresherTest, StopsRetryingOnRotationError) {
   EXPECT_TRUE(observed_delays.empty());
 }
 
-TEST_F(SessionRefresherTest, AdoptsNewerTokenFromSharedStateAfterRotationError) {
-  auto request_override = [this](const std::string &refresh_token, int) {
+TEST_F(SessionRefresherTest,
+       AdoptsNewerTokenFromSharedStateAfterRotationError) {
+  auto request_override =
+      [this](const std::string &refresh_token,
+             int) -> boost::asio::awaitable<monad::MyResult<void>> {
     EXPECT_EQ(refresh_token, "initial-refresh");
     state_store_->save_tokens(std::optional<std::string>{"rotated-access"},
                               std::optional<std::string>{"rotated-refresh"},
@@ -405,7 +412,7 @@ TEST_F(SessionRefresherTest, AdoptsNewerTokenFromSharedStateAfterRotationError) 
     auto err = monad::make_error(my_errors::GENERAL::UNAUTHORIZED,
                                  "refresh token rotated");
     err.key = "refresh_token_rotated";
-    return monad::IO<void>::fail(std::move(err));
+    co_return monad::MyResult<void>::Err(std::move(err));
   };
 
   auto refresher = MakeRefresher(std::nullopt, request_override);
@@ -414,4 +421,30 @@ TEST_F(SessionRefresherTest, AdoptsNewerTokenFromSharedStateAfterRotationError) 
   ASSERT_TRUE(result.is_ok());
   EXPECT_EQ(state_store_->get_refresh_token(),
             std::optional<std::string>{"rotated-refresh"});
+}
+
+TEST_F(SessionRefresherTest, ConcurrentCallersJoinSingleInflightRefresh) {
+  std::atomic<int> request_count{0};
+  auto request_override =
+      [&request_count](const std::string &,
+                       int) -> boost::asio::awaitable<monad::MyResult<void>> {
+    ++request_count;
+    boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor);
+    timer.expires_after(std::chrono::milliseconds(50));
+    co_await timer.async_wait(boost::asio::use_awaitable);
+    co_return monad::MyResult<void>::Ok();
+  };
+
+  auto refresher = MakeRefresher(std::nullopt, request_override);
+  auto first = std::async(std::launch::async, [this, refresher] {
+    return RunRefresh(*refresher, "first concurrent caller");
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  auto second = std::async(std::launch::async, [this, refresher] {
+    return RunRefresh(*refresher, "second concurrent caller");
+  });
+
+  EXPECT_TRUE(first.get().is_ok());
+  EXPECT_TRUE(second.get().is_ok());
+  EXPECT_EQ(request_count.load(), 1);
 }

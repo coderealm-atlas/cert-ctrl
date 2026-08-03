@@ -1,6 +1,6 @@
 #include "handlers/device_automation_handler.hpp"
 
-#include "http_client_monad.hpp"
+#include "http_client_awaitable.hpp"
 #include "my_error_codes.hpp"
 #include "util/device_fingerprint.hpp"
 #include "version.h"
@@ -101,37 +101,38 @@ DeviceAutomationHandler::DeviceAutomationHandler(
     : cli_ctx_(cli_ctx), output_(output), config_provider_(config_provider),
       http_client_(http_client), state_store_(state_store) {}
 
-monad::IO<void> DeviceAutomationHandler::start() {
+boost::asio::awaitable<monad::MyResult<void>>
+DeviceAutomationHandler::start_awaitable() {
   if (cli_ctx_.positionals.size() < 2) {
-    return show_usage("Missing device action.");
+    co_return show_usage("Missing device action.");
   }
 
   const std::string action = cli_ctx_.positionals[1];
   auto options = parse_action_options(action);
 
   if (options.requested_help) {
-    return show_usage();
+    co_return show_usage();
   }
 
   if (!options.api_key || options.api_key->empty()) {
-    return show_usage("--apikey is required for device automation actions.");
+    co_return show_usage("--apikey is required for device automation actions.");
   }
 
-  return dispatch_action(action, options);
+  co_return co_await dispatch_action_awaitable(action, options);
 }
 
-monad::IO<void>
-DeviceAutomationHandler::dispatch_action(const std::string &action,
-                                         const ActionOptions &options) {
+boost::asio::awaitable<monad::MyResult<void>>
+DeviceAutomationHandler::dispatch_action_awaitable(
+    const std::string &action, const ActionOptions &options) {
   if (action == "assign-cert") {
-    return handle_assign_certificate(*options.api_key);
+    co_return co_await handle_assign_certificate_awaitable(*options.api_key);
   }
 
   if (action == "install-config-update") {
-    return handle_install_config_update(options);
+    co_return co_await handle_install_config_update_awaitable(options);
   }
 
-  return show_usage(fmt::format("Unknown device action '{}'.", action));
+  co_return show_usage(fmt::format("Unknown device action '{}'.", action));
 }
 
 DeviceAutomationHandler::ActionOptions
@@ -142,14 +143,13 @@ DeviceAutomationHandler::parse_action_options(const std::string &action) const {
   std::string payload_file_value;
 
   po::options_description desc("device options");
-  desc.add_options()
-      ("apikey", po::value<std::string>(&api_key_value),
-       "API key that carries automation context")
-      ("payload", po::value<std::string>(&payload_inline_value),
-       "Inline JSON payload for install-config-update")
-      ("payload-file", po::value<std::string>(&payload_file_value),
-       "Path to JSON payload file for install-config-update")
-      ("help,h", "Show this help message");
+  desc.add_options()("apikey", po::value<std::string>(&api_key_value),
+                     "API key that carries automation context")(
+      "payload", po::value<std::string>(&payload_inline_value),
+      "Inline JSON payload for install-config-update")(
+      "payload-file", po::value<std::string>(&payload_file_value),
+      "Path to JSON payload file for install-config-update")(
+      "help,h", "Show this help message");
 
   auto args = filter_tokens(cli_ctx_.unrecognized,
                             std::vector<std::string>{command(), action});
@@ -178,23 +178,22 @@ DeviceAutomationHandler::parse_action_options(const std::string &action) const {
       options.payload_file = payload_file_value;
     }
   } catch (const std::exception &ex) {
-    output_.logger().error() << "Failed to parse device options: " << ex.what()
-                             << std::endl;
+    output_.logger().error()
+        << "Failed to parse device options: " << ex.what() << std::endl;
   }
 
   return options;
 }
 
-monad::IO<void>
-DeviceAutomationHandler::handle_assign_certificate(const std::string &api_key) {
-  using namespace monad;
-
+boost::asio::awaitable<monad::MyResult<void>>
+DeviceAutomationHandler::handle_assign_certificate_awaitable(
+    const std::string &api_key) {
   auto device_public_id = resolve_device_public_id(output_, state_store_);
   if (!device_public_id) {
-    return IO<void>::fail(
-        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                          "Unable to resolve device_id; run 'cert-ctrl login' "
-                          "to register this device."));
+    co_return monad::MyResult<void>::Err(monad::make_error(
+        my_errors::GENERAL::INVALID_ARGUMENT,
+        "Unable to resolve device_id; run 'cert-ctrl login' to register this "
+        "device."));
   }
 
   const auto &base_url = config_provider_.get().base_url;
@@ -203,65 +202,70 @@ DeviceAutomationHandler::handle_assign_certificate(const std::string &api_key) {
   json::object payload;
   payload["device_public_id"] = *device_public_id;
 
-  return http_io<PostJsonTag>(url)
-      .map([payload = std::move(payload), api_key](auto ex) mutable {
-        ex->setRequestJsonBody(std::move(payload));
-        ex->request.set(http::field::authorization,
+  auto exchange_result =
+      async_support::make_http_exchange<monad::PostJsonTag>(url);
+  if (exchange_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(exchange_result).error());
+  }
+  auto exchange = std::move(exchange_result).value();
+  exchange->setRequestJsonBody(std::move(payload));
+  exchange->request.set(http::field::authorization,
                         std::string("Bearer ") + api_key);
-        return ex;
-      })
-      .then(http_request_io<PostJsonTag>(http_client_))
-      .then([this](auto ex) -> monad::IO<void> {
-        if (!ex->is_2xx()) {
-          std::string error_msg = "Certificate assignment failed";
-          if (ex->response) {
-            error_msg += fmt::format(" (HTTP {})", ex->response->result_int());
-            if (!ex->response->body().empty()) {
-              error_msg += ": " + std::string(ex->response->body());
-            }
-          }
-          return monad::IO<void>::fail(monad::make_error(
-              static_cast<int>(ex->response ? ex->response->result_int() : 500),
-              std::move(error_msg)));
-        }
 
-        std::string status_message =
-            "Certificate assignment request completed.";
-        auto parsed = ex->template parseJsonDataResponse<json::object>();
-        if (!parsed.is_err()) {
-          const json::object &root = parsed.value();
-          auto extract_message =
-              [](const json::object &obj) -> std::optional<std::string> {
-            if (auto *msg = obj.if_contains("message");
-                msg && msg->is_string()) {
-              return std::string(msg->as_string().c_str());
-            }
-            if (auto *status = obj.if_contains("status");
-                status && status->is_string()) {
-              return std::string(status->as_string().c_str());
-            }
-            return std::nullopt;
-          };
+  auto request_result =
+      co_await async_support::http_exchange_awaitable<monad::PostJsonTag>(
+          http_client_, std::move(exchange));
+  if (request_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(request_result).error());
+  }
+  auto response = std::move(request_result).value();
+  if (!response->is_2xx()) {
+    std::string error_msg = "Certificate assignment failed";
+    if (response->response) {
+      error_msg += fmt::format(" (HTTP {})", response->response->result_int());
+      if (!response->response->body().empty()) {
+        error_msg += ": " + std::string(response->response->body());
+      }
+    }
+    co_return monad::MyResult<void>::Err(monad::make_error(
+        static_cast<int>(response->response ? response->response->result_int()
+                                            : 500),
+        std::move(error_msg)));
+  }
 
-          if (auto msg = extract_message(root)) {
-            status_message = *msg;
-          } else if (auto *data = root.if_contains("data");
-                     data && data->is_object()) {
-            if (auto msg = extract_message(data->as_object())) {
-              status_message = *msg;
-            }
-          }
-        }
+  std::string status_message = "Certificate assignment request completed.";
+  auto parsed = response->template parseJsonDataResponse<json::object>();
+  if (!parsed.is_err()) {
+    const json::object &root = parsed.value();
+    auto extract_message =
+        [](const json::object &obj) -> std::optional<std::string> {
+      if (auto *msg = obj.if_contains("message"); msg && msg->is_string()) {
+        return std::string(msg->as_string().c_str());
+      }
+      if (auto *status = obj.if_contains("status");
+          status && status->is_string()) {
+        return std::string(status->as_string().c_str());
+      }
+      return std::nullopt;
+    };
 
-        output_.printer().green() << status_message << std::endl;
-        return monad::IO<void>::pure();
-      });
+    if (auto msg = extract_message(root)) {
+      status_message = *msg;
+    } else if (auto *data = root.if_contains("data");
+               data && data->is_object()) {
+      if (auto msg = extract_message(data->as_object())) {
+        status_message = *msg;
+      }
+    }
+  }
+
+  output_.printer().green() << status_message << std::endl;
+  co_return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
+boost::asio::awaitable<monad::MyResult<void>>
+DeviceAutomationHandler::handle_install_config_update_awaitable(
     const ActionOptions &options) {
-  using namespace monad;
-
   // NOTE: Server-side semantics (bbserver): the request body is a JSON array of
   // "patch" objects. Each patch is matched against an existing install step by
   // (ob_type, ob_id) (and optionally "id"), then merged into the stored
@@ -271,21 +275,21 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
   // basic JSON types here.
 
   if (!options.api_key || options.api_key->empty()) {
-    return show_usage("--apikey is required for install-config-update.");
+    co_return show_usage("--apikey is required for install-config-update.");
   }
 
   if (options.payload_inline && options.payload_file) {
-    return show_usage(
+    co_return show_usage(
         "Provide only one of --payload or --payload-file for install-config-"
         "update.");
   }
 
   auto resolved_id = resolve_device_public_id(output_, state_store_);
   if (!resolved_id) {
-    return IO<void>::fail(
-        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                          "Unable to resolve device_id; run 'cert-ctrl login' "
-                          "to register this device."));
+    co_return monad::MyResult<void>::Err(monad::make_error(
+        my_errors::GENERAL::INVALID_ARGUMENT,
+        "Unable to resolve device_id; run 'cert-ctrl login' to register this "
+        "device."));
   }
   const std::string device_public_id = *resolved_id;
 
@@ -295,15 +299,15 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
   } else if (options.payload_file) {
     payload_source = read_payload_file(*options.payload_file);
     if (!payload_source) {
-      return IO<void>::fail(monad::make_error(
-          my_errors::GENERAL::INVALID_ARGUMENT,
-          fmt::format("Unable to read payload file '{}'.",
-                      *options.payload_file)));
+      co_return monad::MyResult<void>::Err(
+          monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                            fmt::format("Unable to read payload file '{}'.",
+                                        *options.payload_file)));
     }
   }
 
   if (!payload_source || payload_source->empty()) {
-    return show_usage(
+    co_return show_usage(
         "install-config-update requires --payload or --payload-file.");
   }
 
@@ -311,7 +315,7 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
   try {
     payload = json::parse(*payload_source);
   } catch (const std::exception &ex) {
-    return IO<void>::fail(monad::make_error(
+    co_return monad::MyResult<void>::Err(monad::make_error(
         my_errors::GENERAL::INVALID_ARGUMENT,
         fmt::format("Payload is not valid JSON: {}", ex.what())));
   }
@@ -320,64 +324,66 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
   // 1) Legacy: JSON array of patch objects
   // 2) New: JSON object {"patches": [...], "after_update_script": "..."|null}
   //
-  // Additionally, for older client payloads that send per-entry {"changes":{...}},
-  // we flatten those keys into the top-level patch object so the server can apply
-  // them (the server ignores unknown keys).
-  json::array* patches = nullptr;
+  // Additionally, for older client payloads that send per-entry
+  // {"changes":{...}}, we flatten those keys into the top-level patch object so
+  // the server can apply them (the server ignores unknown keys).
+  json::array *patches = nullptr;
   bool after_update_script_present = false;
   if (payload.is_array()) {
     patches = &payload.as_array();
   } else if (payload.is_object()) {
-    auto& obj = payload.as_object();
-    if (auto* patches_val = obj.if_contains("patches")) {
+    auto &obj = payload.as_object();
+    if (auto *patches_val = obj.if_contains("patches")) {
       if (!patches_val->is_array()) {
-        return IO<void>::fail(monad::make_error(
-            my_errors::GENERAL::INVALID_ARGUMENT,
-            "patches must be a JSON array"));
+        co_return monad::MyResult<void>::Err(
+            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                              "patches must be a JSON array"));
       }
       patches = &patches_val->as_array();
     }
-    if (auto* script_val = obj.if_contains("after_update_script")) {
+    if (auto *script_val = obj.if_contains("after_update_script")) {
       after_update_script_present = true;
       if (!(script_val->is_null() || script_val->is_string())) {
-        return IO<void>::fail(monad::make_error(
-            my_errors::GENERAL::INVALID_ARGUMENT,
-            "after_update_script must be a string or null"));
+        co_return monad::MyResult<void>::Err(
+            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                              "after_update_script must be a string or null"));
       }
     }
 
     if (!patches && !after_update_script_present) {
-      return IO<void>::fail(monad::make_error(
-          my_errors::GENERAL::INVALID_ARGUMENT,
-          "Payload object must contain 'patches' and/or 'after_update_script'"));
+      co_return monad::MyResult<void>::Err(
+          monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                            "Payload object must contain 'patches' and/or "
+                            "'after_update_script'"));
     }
   } else {
-    return IO<void>::fail(monad::make_error(
-        my_errors::GENERAL::INVALID_ARGUMENT,
-        "Payload must be a JSON array or object"));
+    co_return monad::MyResult<void>::Err(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "Payload must be a JSON array or object"));
   }
 
   if (patches) {
     for (std::size_t idx = 0; idx < patches->size(); ++idx) {
-      auto& entry = (*patches)[idx];
+      auto &entry = (*patches)[idx];
       if (!entry.is_object()) {
-        return IO<void>::fail(monad::make_error(
+        co_return monad::MyResult<void>::Err(monad::make_error(
             my_errors::GENERAL::INVALID_ARGUMENT,
             fmt::format("Payload entry {} must be a JSON object.", idx)));
       }
 
-      auto& patch_obj = entry.as_object();
-      auto* ob_type = patch_obj.if_contains("ob_type");
+      auto &patch_obj = entry.as_object();
+      auto *ob_type = patch_obj.if_contains("ob_type");
       if (!ob_type || !ob_type->is_string() || ob_type->as_string().empty()) {
-        return IO<void>::fail(monad::make_error(
+        co_return monad::MyResult<void>::Err(monad::make_error(
             my_errors::GENERAL::INVALID_ARGUMENT,
             fmt::format("Payload entry {} missing non-empty ob_type.", idx)));
       }
-      const std::string ob_type_value = std::string(ob_type->as_string().c_str());
+      const std::string ob_type_value =
+          std::string(ob_type->as_string().c_str());
 
-      auto* ob_id = patch_obj.if_contains("ob_id");
+      auto *ob_id = patch_obj.if_contains("ob_id");
       if (!ob_id || !(ob_id->is_int64() || ob_id->is_uint64())) {
-        return IO<void>::fail(monad::make_error(
+        co_return monad::MyResult<void>::Err(monad::make_error(
             my_errors::GENERAL::INVALID_ARGUMENT,
             fmt::format("Payload entry {} missing numeric ob_id.", idx)));
       }
@@ -389,20 +395,22 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
         ob_id_value = static_cast<std::int64_t>(ob_id->as_uint64());
       }
       if (ob_id_value <= 0) {
-        return IO<void>::fail(monad::make_error(
+        co_return monad::MyResult<void>::Err(monad::make_error(
             my_errors::GENERAL::INVALID_ARGUMENT,
-            fmt::format("Payload entry {} has invalid ob_id (must be > 0).", idx)));
+            fmt::format("Payload entry {} has invalid ob_id (must be > 0).",
+                        idx)));
       }
 
-      // Auto-flatten legacy per-entry {"changes":{...}} into top-level patch fields.
-      if (auto* changes_val = patch_obj.if_contains("changes")) {
+      // Auto-flatten legacy per-entry {"changes":{...}} into top-level patch
+      // fields.
+      if (auto *changes_val = patch_obj.if_contains("changes")) {
         if (!changes_val->is_object()) {
-          return IO<void>::fail(monad::make_error(
+          co_return monad::MyResult<void>::Err(monad::make_error(
               my_errors::GENERAL::INVALID_ARGUMENT,
               fmt::format("Payload entry {} has non-object changes.", idx)));
         }
-        auto& changes_obj = changes_val->as_object();
-        for (auto& kv : changes_obj) {
+        auto &changes_obj = changes_val->as_object();
+        for (auto &kv : changes_obj) {
           if (!patch_obj.if_contains(kv.key())) {
             patch_obj[kv.key()] = kv.value();
           }
@@ -411,16 +419,16 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
       }
 
       // "details" is legacy-only metadata and is not used by the server.
-      if (auto* details_val = patch_obj.if_contains("details")) {
+      if (auto *details_val = patch_obj.if_contains("details")) {
         if (!details_val->is_object()) {
-          return IO<void>::fail(monad::make_error(
+          co_return monad::MyResult<void>::Err(monad::make_error(
               my_errors::GENERAL::INVALID_ARGUMENT,
               fmt::format("Payload entry {} has non-object details.", idx)));
         }
         patch_obj.erase("details");
       }
 
-      auto has_exec_payload = [](const json::value* value) {
+      auto has_exec_payload = [](const json::value *value) {
         if (value == nullptr) {
           return false;
         }
@@ -436,11 +444,11 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
       if (ob_type_value == "cert" &&
           (has_exec_payload(patch_obj.if_contains("cmd")) ||
            has_exec_payload(patch_obj.if_contains("cmd_argv")))) {
-        return IO<void>::fail(monad::make_error(
-            my_errors::GENERAL::INVALID_ARGUMENT,
-            fmt::format(
-                "Payload entry {} must not set cmd/cmd_argv for cert resources.",
-                idx)));
+        co_return monad::MyResult<void>::Err(
+            monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                              fmt::format("Payload entry {} must not set "
+                                          "cmd/cmd_argv for cert resources.",
+                                          idx)));
       }
     }
   }
@@ -449,45 +457,51 @@ monad::IO<void> DeviceAutomationHandler::handle_install_config_update(
   const auto url = fmt::format("{}/apiv1/me/install-config-update/{}", base_url,
                                device_public_id);
 
-  return http_io<PostJsonTag>(url)
-      .map([payload = std::move(payload), api_key = *options.api_key](auto ex) mutable {
-        ex->setRequestJsonBody(std::move(payload));
-        ex->request.set(http::field::authorization,
-                        std::string("Bearer ") + api_key);
-        return ex;
-      })
-      .then(http_request_io<PostJsonTag>(http_client_))
-      .then([this](auto ex) -> monad::IO<void> {
-        if (!ex->is_2xx()) {
-          std::string error_msg = "Install config update failed";
-          if (ex->response) {
-            error_msg += fmt::format(" (HTTP {})", ex->response->result_int());
-            if (!ex->response->body().empty()) {
-              error_msg += ": " + std::string(ex->response->body());
-            }
-          }
-          return monad::IO<void>::fail(monad::make_error(
-              static_cast<int>(ex->response ? ex->response->result_int() : 500),
-              std::move(error_msg)));
-        }
+  auto exchange_result =
+      async_support::make_http_exchange<monad::PostJsonTag>(url);
+  if (exchange_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(exchange_result).error());
+  }
+  auto exchange = std::move(exchange_result).value();
+  exchange->setRequestJsonBody(std::move(payload));
+  exchange->request.set(http::field::authorization,
+                        std::string("Bearer ") + *options.api_key);
 
-        std::string status_message =
-            "Install config update request completed.";
-        auto parsed = ex->template parseJsonDataResponse<json::object>();
-        if (!parsed.is_err()) {
-          const json::object &root = parsed.value();
-          if (auto *msg = root.if_contains("message");
-              msg && msg->is_string()) {
-            status_message = std::string(msg->as_string().c_str());
-          }
-        }
+  auto request_result =
+      co_await async_support::http_exchange_awaitable<monad::PostJsonTag>(
+          http_client_, std::move(exchange));
+  if (request_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(request_result).error());
+  }
+  auto response = std::move(request_result).value();
+  if (!response->is_2xx()) {
+    std::string error_msg = "Install config update failed";
+    if (response->response) {
+      error_msg += fmt::format(" (HTTP {})", response->response->result_int());
+      if (!response->response->body().empty()) {
+        error_msg += ": " + std::string(response->response->body());
+      }
+    }
+    co_return monad::MyResult<void>::Err(monad::make_error(
+        static_cast<int>(response->response ? response->response->result_int()
+                                            : 500),
+        std::move(error_msg)));
+  }
 
-        output_.printer().green() << status_message << std::endl;
-        return monad::IO<void>::pure();
-      });
+  std::string status_message = "Install config update request completed.";
+  auto parsed = response->template parseJsonDataResponse<json::object>();
+  if (!parsed.is_err()) {
+    const json::object &root = parsed.value();
+    if (auto *msg = root.if_contains("message"); msg && msg->is_string()) {
+      status_message = std::string(msg->as_string().c_str());
+    }
+  }
+
+  output_.printer().green() << status_message << std::endl;
+  co_return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void>
+monad::MyResult<void>
 DeviceAutomationHandler::show_usage(const std::string &error) const {
   if (!error.empty()) {
     output_.logger().error() << error << std::endl;
@@ -495,20 +509,21 @@ DeviceAutomationHandler::show_usage(const std::string &error) const {
 
   output_.printer().yellow()
       << "Usage: cert-ctrl device <action> --apikey <token>" << std::endl;
-  output_.printer().white() << "Available actions:" << std::endl
-                            << "  assign-cert    Request certificate "
-                               "assignment via /apiv1/me/certificate-assign"
-                << std::endl
-                << "  install-config-update  Send install step "
-                   "overrides via /apiv1/me/install-config-update/:device_public_id"
-                << std::endl;
-    output_.printer().white()
+  output_.printer().white()
+      << "Available actions:" << std::endl
+      << "  assign-cert    Request certificate "
+         "assignment via /apiv1/me/certificate-assign"
+      << std::endl
+      << "  install-config-update  Send install step "
+         "overrides via /apiv1/me/install-config-update/:device_public_id"
+      << std::endl;
+  output_.printer().white()
       << "Example: cert-ctrl device assign-cert --apikey $TOKEN" << std::endl
       << "Example: cert-ctrl device install-config-update --apikey $TOKEN "
-       "--payload-file steps.json"
+         "--payload-file steps.json"
       << std::endl;
 
-  return monad::IO<void>::fail(monad::make_error(
+  return monad::MyResult<void>::Err(monad::make_error(
       my_errors::GENERAL::SHOW_OPT_DESC, "cert-ctrl device usage"));
 }
 

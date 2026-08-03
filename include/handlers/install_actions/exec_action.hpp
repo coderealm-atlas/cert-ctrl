@@ -7,12 +7,14 @@
 #include <string>
 #include <vector>
 
+#include <boost/asio/awaitable.hpp>
+
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "data/install_config_dto.hpp"
 #include "handlers/install_actions/exec_environment_resolver.hpp"
 #include "handlers/install_actions/resource_materializer.hpp"
-#include "io_monad.hpp"
+#include "result_monad.hpp"
 
 namespace certctrl::install_actions {
 
@@ -30,7 +32,7 @@ public:
       IResourceMaterializer::Factory resource_materializer_factory,
       IExecEnvironmentResolver::Factory exec_env_resolver_factory);
 
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   apply(const dto::DeviceInstallConfigDto &config,
         std::optional<std::vector<std::string>> allowed_types = std::nullopt);
 
@@ -44,7 +46,8 @@ private:
   IExecEnvironmentResolver::Ptr exec_env_resolver_;
   std::vector<std::string> failure_messages_;
 
-  monad::IO<void> process_one_item(const dto::InstallItem &item);
+  boost::asio::awaitable<monad::MyResult<void>>
+  process_one_item(const dto::InstallItem &item);
 };
 
 } // namespace certctrl::install_actions

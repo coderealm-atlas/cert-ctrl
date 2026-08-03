@@ -3,21 +3,24 @@
 #include "websocket/websocket_messages.hpp"
 
 #include "data/data_shape.hpp"
-#include "simple_data.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "handlers/signal_dispatcher.hpp"
-#include "handlers/signal_handlers/ca_assigned_handler.hpp"
-#include "handlers/signal_handlers/ca_unassigned_handler.hpp"
-#include "handlers/signal_handlers/cert_updated_handler.hpp"
-#include "handlers/signal_handlers/cert_unassigned_handler.hpp"
-#include "handlers/signal_handlers/config_updated_handler.hpp"
-#include "handlers/signal_handlers/state_resync_required_handler.hpp"
-#include "handlers/signal_handlers/install_updated_handler.hpp"
 #include "handlers/signal_handlers/acme_http01_challenge_handler.hpp"
 #include "handlers/signal_handlers/acme_http01_stop_handler.hpp"
 #include "handlers/signal_handlers/acme_tlsalpn01_challenge_handler.hpp"
 #include "handlers/signal_handlers/acme_tlsalpn01_stop_handler.hpp"
+#include "handlers/signal_handlers/ca_assigned_handler.hpp"
+#include "handlers/signal_handlers/ca_unassigned_handler.hpp"
+#include "handlers/signal_handlers/cert_unassigned_handler.hpp"
+#include "handlers/signal_handlers/cert_updated_handler.hpp"
+#include "handlers/signal_handlers/config_updated_handler.hpp"
+#include "handlers/signal_handlers/install_updated_handler.hpp"
+#include "handlers/signal_handlers/state_resync_required_handler.hpp"
+#include "my_error_codes.hpp"
+#include "simple_data.hpp"
 
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
@@ -37,13 +40,13 @@
 #include <cctype>
 #include <chrono>
 #include <deque>
-#include <fstream>
 #include <filesystem>
 #include <fmt/format.h>
+#include <fstream>
 #include <openssl/err.h>
 #include <random>
-#include <string_view>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -119,11 +122,11 @@ bool IsJwtExpiringSoon(const std::string &token, std::chrono::seconds skew) {
 bool QueryHasKey(std::string_view query, std::string_view key) {
   while (!query.empty()) {
     const auto amp = query.find('&');
-    std::string_view part = (amp == std::string_view::npos)
-                                ? query
-                                : query.substr(0, amp);
+    std::string_view part =
+        (amp == std::string_view::npos) ? query : query.substr(0, amp);
     const auto eq = part.find('=');
-    std::string_view k = (eq == std::string_view::npos) ? part : part.substr(0, eq);
+    std::string_view k =
+        (eq == std::string_view::npos) ? part : part.substr(0, eq);
     if (k == key) {
       return true;
     }
@@ -157,8 +160,8 @@ std::string EnsureQueryParam(std::string target, std::string_view key,
 
 std::string EnsureDeviceIdPath(std::string target, std::string_view device_id) {
   const auto qm = target.find('?');
-  const std::string query = (qm == std::string::npos) ? std::string{}
-                                                      : target.substr(qm);
+  const std::string query =
+      (qm == std::string::npos) ? std::string{} : target.substr(qm);
   std::string path = (qm == std::string::npos) ? target : target.substr(0, qm);
   if (path.empty()) {
     path = "/";
@@ -179,9 +182,9 @@ std::string EnsureDeviceIdPath(std::string target, std::string_view device_id) {
 std::string ParseIngressPath(const std::string &webhook_base_url) {
   auto parsed = urls::parse_uri(webhook_base_url);
   if (!parsed) {
-    throw std::runtime_error(
-        fmt::format("invalid webhook_base_url '{}': {}", webhook_base_url,
-                    parsed.error().message()));
+    throw std::runtime_error(fmt::format("invalid webhook_base_url '{}': {}",
+                                         webhook_base_url,
+                                         parsed.error().message()));
   }
   const auto &url = parsed.value();
   std::string path = std::string(url.encoded_path());
@@ -331,14 +334,16 @@ std::uint64_t NowMillis() {
 class WebsocketClient::Session
     : public std::enable_shared_from_this<WebsocketClient::Session> {
 public:
-  Session(WebsocketClient &client, WebsocketConfig config, EndpointParts endpoint,
-          LocalEndpointParts local_endpoint, std::string auth_token)
+  Session(WebsocketClient &client, WebsocketConfig config,
+          EndpointParts endpoint, LocalEndpointParts local_endpoint,
+          std::string auth_token)
       : client_(client), config_(std::move(config)),
         endpoint_(std::move(endpoint)),
         local_endpoint_(std::move(local_endpoint)),
-      webhook_ingress_path_(ParseIngressPath(config_.webhook_base_url)),
-      compiled_routes_(CompileRoutes(config_.tunnel, local_endpoint_)),
-      header_allowlist_(BuildHeaderAllowlist(config_.tunnel.header_allowlist)),
+        webhook_ingress_path_(ParseIngressPath(config_.webhook_base_url)),
+        compiled_routes_(CompileRoutes(config_.tunnel, local_endpoint_)),
+        header_allowlist_(
+            BuildHeaderAllowlist(config_.tunnel.header_allowlist)),
         auth_token_(std::move(auth_token)),
         max_payload_bytes_(
             static_cast<std::size_t>(std::max(0, config_.max_payload_bytes))),
@@ -444,15 +449,16 @@ private:
       if (!route.has_rewrite) {
         effective_path.assign(path_only);
       } else {
-        std::string_view remainder = path_only.substr(route.match_prefix.size());
+        std::string_view remainder =
+            path_only.substr(route.match_prefix.size());
         if (remainder.empty()) {
           remainder = "/";
         }
         if (route.rewrite_prefix.empty()) {
           effective_path.assign(remainder);
         } else {
-          effective_path = JoinLocalPath(route.rewrite_prefix,
-                                         std::string(remainder));
+          effective_path =
+              JoinLocalPath(route.rewrite_prefix, std::string(remainder));
         }
       }
 
@@ -465,7 +471,8 @@ private:
       return ResolvedLocalTarget{route.endpoint, std::move(target)};
     }
 
-    std::string target = JoinLocalPath(local_endpoint_.base_path, original_path_only);
+    std::string target =
+        JoinLocalPath(local_endpoint_.base_path, original_path_only);
     if (!parts.query.empty()) {
       target += std::string(parts.query);
     }
@@ -699,16 +706,19 @@ private:
 
           if (!loaded_any_ca) {
             BOOST_LOG_SEV(client_.lg, trivial::warning)
-                << "Websocket TLS verification enabled but no CA bundle was loaded. "
-                   "On Windows/OpenSSL this commonly causes certificate verify failed. "
-                   "Fix by setting websocket_config.verify_paths or installing cacert.pem in the config/runtime dir.";
+                << "Websocket TLS verification enabled but no CA bundle was "
+                   "loaded. "
+                   "On Windows/OpenSSL this commonly causes certificate verify "
+                   "failed. "
+                   "Fix by setting websocket_config.verify_paths or installing "
+                   "cacert.pem in the config/runtime dir.";
           }
         }
       } catch (const std::exception &ex) {
-        tls_setup_error_ = std::string("TLS verification setup failed: ") +
-                           ex.what();
-        BOOST_LOG_SEV(client_.lg, trivial::error) << "Websocket "
-                                                   << *tls_setup_error_;
+        tls_setup_error_ =
+            std::string("TLS verification setup failed: ") + ex.what();
+        BOOST_LOG_SEV(client_.lg, trivial::error)
+            << "Websocket " << *tls_setup_error_;
       }
     } else {
       ws_.next_layer().set_verify_mode(ssl::verify_none);
@@ -717,7 +727,7 @@ private:
 
   void Resolve() {
     BOOST_LOG_SEV(client_.lg, trivial::info)
-      << "Websocket resolving " << endpoint_.host << ':' << endpoint_.port;
+        << "Websocket resolving " << endpoint_.host << ':' << endpoint_.port;
     resolver_.async_resolve(
         endpoint_.host, endpoint_.port,
         beast::bind_front_handler(&Session::OnResolve, shared_from_this()));
@@ -768,9 +778,11 @@ private:
     // websocket stream's timeout system is the only one in effect.
     beast::get_lowest_layer(ws_).expires_never();
 
-    // Websocket idle timeout behavior is configurable via websocket_config.json:
+    // Websocket idle timeout behavior is configurable via
+    // websocket_config.json:
     //   -1: disable websocket timeouts ("never expire")
-    //    0: use Boost.Beast suggested client timeouts (default / previous behavior)
+    //    0: use Boost.Beast suggested client timeouts (default / previous
+    //    behavior)
     //   >0: set websocket idle timeout to this many seconds
     if (config_.ws_idle_timeout_seconds < 0) {
       // This Boost.Beast version doesn't provide timeout::none(); instead, use
@@ -784,7 +796,8 @@ private:
       ws_.set_option(
           websocket::stream_base::timeout::suggested(beast::role_type::client));
     } else {
-      auto t = websocket::stream_base::timeout::suggested(beast::role_type::client);
+      auto t =
+          websocket::stream_base::timeout::suggested(beast::role_type::client);
       t.idle_timeout = std::chrono::seconds(config_.ws_idle_timeout_seconds);
       ws_.set_option(t);
     }
@@ -908,7 +921,8 @@ private:
   void HandleUpdatesSignal(const certctrl::WebsocketEventEnvelope &env) {
     if (!client_.signal_dispatcher_) {
       BOOST_LOG_SEV(client_.lg, trivial::warning)
-          << "Websocket received updates.signal but signal dispatcher is not initialized";
+          << "Websocket received updates.signal but signal dispatcher is not "
+             "initialized";
       return;
     }
 
@@ -947,29 +961,29 @@ private:
     }
 
     auto self = shared_from_this();
-    client_.signal_dispatcher_->dispatch(signal).run(
-      [self, type = signal.type, ack_id, resume_token](auto r) {
-          if (r.is_err()) {
+    auto dispatch = [self, signal = std::move(signal), ack_id,
+                     resume_token]() mutable -> net::awaitable<void> {
+      auto result =
+          co_await self->client_.signal_dispatcher_->dispatch_awaitable(signal);
+      if (result.is_err()) {
         BOOST_LOG_SEV(self->client_.lg, trivial::warning)
-          << "updates.signal dispatch failed for type=" << type
-          << " error=" << r.error().what;
-            return;
-          }
+            << "updates.signal dispatch failed for type=" << signal.type
+            << " error=" << result.error().what;
+        co_return;
+      }
 
-          net::post(self->ws_.get_executor(), [self, ack_id, resume_token]() {
-            if (resume_token && !resume_token->empty()) {
-              if (auto err =
-                      self->client_.state_store_.save_websocket_resume_token(
-                          resume_token)) {
-                BOOST_LOG_SEV(self->client_.lg, trivial::warning)
-                    << "Failed to persist websocket resume token: " << *err;
-              }
-            }
-            if (ack_id && !ack_id->empty()) {
-              self->SendUpdatesAck(*ack_id, resume_token);
-            }
-          });
-        });
+      if (resume_token && !resume_token->empty()) {
+        if (auto err = self->client_.state_store_.save_websocket_resume_token(
+                resume_token)) {
+          BOOST_LOG_SEV(self->client_.lg, trivial::warning)
+              << "Failed to persist websocket resume token: " << *err;
+        }
+      }
+      if (ack_id && !ack_id->empty()) {
+        self->SendUpdatesAck(*ack_id, resume_token);
+      }
+    };
+    net::co_spawn(ws_.get_executor(), dispatch(), net::detached);
   }
 
   void SendUpdatesAck(const std::string &ack_id,
@@ -1195,7 +1209,7 @@ private:
       return;
     }
     BOOST_LOG_SEV(client_.lg, trivial::error)
-      << "Websocket " << context << " error: " << ec.message();
+        << "Websocket " << context << " error: " << ec.message();
 
     if (std::string_view(context) == "ws_handshake") {
       const std::string msg = ec.message();
@@ -1206,10 +1220,14 @@ private:
 
       if (looks_like_rejection) {
         BOOST_LOG_SEV(client_.lg, trivial::warning)
-          << "Websocket handshake failed. This is often caused by authorization "
-            "failure (token expired / device not registered) or a server/proxy "
-            "rejecting the WebSocket upgrade. If this device should be online, "
-            "re-run the device onboarding/registration flow to obtain a fresh token.";
+            << "Websocket handshake failed. This is often caused by "
+               "authorization "
+               "failure (token expired / device not registered) or a "
+               "server/proxy "
+               "rejecting the WebSocket upgrade. If this device should be "
+               "online, "
+               "re-run the device onboarding/registration flow to obtain a "
+               "fresh token.";
       }
     }
 
@@ -1218,7 +1236,7 @@ private:
 
   void Fail(const char *context, const std::string &message) {
     BOOST_LOG_SEV(client_.lg, trivial::error)
-      << "Websocket " << context << " error: " << message;
+        << "Websocket " << context << " error: " << message;
     NotifyClosed(true);
   }
 
@@ -1257,40 +1275,38 @@ private:
   std::string auth_token_;
 };
 
-WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
-                                 IWebsocketConfigProvider &config_provider,
-                                 certctrl::ICertctrlConfigProvider &certctrl_config_provider,
-                                 customio::ConsoleOutput &output,
-                                 cjj365::ConfigSources &config_sources,
-                                 certctrl::IDeviceStateStore &state_store,
-                                 std::shared_ptr<certctrl::InstallConfigManager> install_config_manager,
-                                 std::shared_ptr<certctrl::ISessionRefresher> session_refresher)
+WebsocketClient::WebsocketClient(
+    cjj365::IoContextManager &io_context_manager,
+    IWebsocketConfigProvider &config_provider,
+    certctrl::ICertctrlConfigProvider &certctrl_config_provider,
+    customio::ConsoleOutput &output, cjj365::ConfigSources &config_sources,
+    certctrl::IDeviceStateStore &state_store,
+    std::shared_ptr<certctrl::InstallConfigManager> install_config_manager,
+    std::shared_ptr<certctrl::ISessionRefresher> session_refresher)
     : ioc_(io_context_manager.ioc()), config_provider_(config_provider),
-      certctrl_config_provider_(certctrl_config_provider),
-      output_(output), config_sources_(config_sources),
-      state_store_(state_store),
+      certctrl_config_provider_(certctrl_config_provider), output_(output),
+      config_sources_(config_sources), state_store_(state_store),
       install_config_manager_(std::move(install_config_manager)),
-      session_refresher_(std::move(session_refresher)),
-      reconnect_timer_(ioc_), rng_(std::random_device{}()) {
+      session_refresher_(std::move(session_refresher)), reconnect_timer_(ioc_),
+      rng_(std::random_device{}()) {
   if (config_sources_.paths_.empty()) {
-  BOOST_LOG_SEV(lg, trivial::warning)
-    << "Signal dispatcher not initialized: no config source directories";
-  return;
+    BOOST_LOG_SEV(lg, trivial::warning)
+        << "Signal dispatcher not initialized: no config source directories";
+    return;
   }
 
   const auto config_dir = config_sources_.paths_.back();
   instance_lock_path_ = config_dir / "state" / "websocket_instance.lock";
-  auto post_success_hook = [mgr = install_config_manager_](
-                               const ::data::DeviceUpdateSignal &signal)
-      -> monad::IO<void> {
+  auto post_success_hook =
+      [mgr = install_config_manager_](const ::data::DeviceUpdateSignal &signal)
+      -> net::awaitable<monad::MyResult<void>> {
     if (!mgr) {
-      return monad::IO<void>::pure();
+      co_return monad::MyResult<void>::Ok();
     }
-    return mgr->maybe_run_after_update_script_for_signal(signal);
+    co_return co_await mgr->maybe_run_after_update_script_for_signal(signal);
   };
-  signal_dispatcher_ =
-    std::make_unique<certctrl::SignalDispatcher>(
-        config_dir, &state_store_, std::move(post_success_hook));
+  signal_dispatcher_ = std::make_unique<certctrl::SignalDispatcher>(
+      config_dir, &state_store_, std::move(post_success_hook));
 
   auto on_ws_config_updated = [this]() {
     net::dispatch(ioc_, [this]() {
@@ -1310,7 +1326,8 @@ WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
 
   signal_dispatcher_->register_handler(
       std::make_shared<certctrl::signal_handlers::ConfigUpdatedHandler>(
-          certctrl_config_provider_, output_, &config_provider_, on_ws_config_updated));
+          certctrl_config_provider_, output_, &config_provider_,
+          on_ws_config_updated));
 
   if (install_config_manager_) {
     signal_dispatcher_->register_handler(
@@ -1318,47 +1335,49 @@ WebsocketClient::WebsocketClient(cjj365::IoContextManager &io_context_manager,
             install_config_manager_, state_store_, output_));
   }
 
-    auto acme_http01_mgr =
+  auto acme_http01_mgr =
       std::make_shared<certctrl::acme::AcmeHttp01Manager>(output_);
-    signal_dispatcher_->register_handler(
+  signal_dispatcher_->register_handler(
       std::make_shared<certctrl::signal_handlers::AcmeHttp01ChallengeHandler>(
-        acme_http01_mgr));
-    signal_dispatcher_->register_handler(
+          acme_http01_mgr));
+  signal_dispatcher_->register_handler(
       std::make_shared<certctrl::signal_handlers::AcmeHttp01StopHandler>(
-        acme_http01_mgr));
+          acme_http01_mgr));
 
-    auto acme_tlsalpn01_mgr =
+  auto acme_tlsalpn01_mgr =
       std::make_shared<certctrl::acme::AcmeTlsAlpn01Manager>(output_);
-    signal_dispatcher_->register_handler(
-      std::make_shared<certctrl::signal_handlers::AcmeTlsAlpn01ChallengeHandler>(
-        acme_tlsalpn01_mgr));
-    signal_dispatcher_->register_handler(
+  signal_dispatcher_->register_handler(
+      std::make_shared<
+          certctrl::signal_handlers::AcmeTlsAlpn01ChallengeHandler>(
+          acme_tlsalpn01_mgr));
+  signal_dispatcher_->register_handler(
       std::make_shared<certctrl::signal_handlers::AcmeTlsAlpn01StopHandler>(
-        acme_tlsalpn01_mgr));
+          acme_tlsalpn01_mgr));
 
   if (!install_config_manager_) {
-  BOOST_LOG_SEV(lg, trivial::warning)
-    << "InstallConfigManager dependency missing; updates.signal will be ignored";
+    BOOST_LOG_SEV(lg, trivial::warning)
+        << "InstallConfigManager dependency missing; updates.signal will be "
+           "ignored";
   } else {
-  signal_dispatcher_->register_handler(
-    std::make_shared<certctrl::signal_handlers::InstallUpdatedHandler>(
-      install_config_manager_, output_));
+    signal_dispatcher_->register_handler(
+        std::make_shared<certctrl::signal_handlers::InstallUpdatedHandler>(
+            install_config_manager_, output_));
 
-  signal_dispatcher_->register_handler(
-    std::make_shared<certctrl::signal_handlers::CertUpdatedHandler>(
-      install_config_manager_, output_));
+    signal_dispatcher_->register_handler(
+        std::make_shared<certctrl::signal_handlers::CertUpdatedHandler>(
+            install_config_manager_, output_));
 
-  signal_dispatcher_->register_handler(
-    std::make_shared<certctrl::signal_handlers::CertUnassignedHandler>(
-      install_config_manager_, output_));
+    signal_dispatcher_->register_handler(
+        std::make_shared<certctrl::signal_handlers::CertUnassignedHandler>(
+            install_config_manager_, output_));
 
-  signal_dispatcher_->register_handler(
-    std::make_shared<certctrl::signal_handlers::CaAssignedHandler>(
-      install_config_manager_, output_));
+    signal_dispatcher_->register_handler(
+        std::make_shared<certctrl::signal_handlers::CaAssignedHandler>(
+            install_config_manager_, output_));
 
-  signal_dispatcher_->register_handler(
-    std::make_shared<certctrl::signal_handlers::CaUnassignedHandler>(
-      install_config_manager_, output_));
+    signal_dispatcher_->register_handler(
+        std::make_shared<certctrl::signal_handlers::CaUnassignedHandler>(
+            install_config_manager_, output_));
   }
 
   BOOST_LOG_SEV(lg, trivial::info)
@@ -1382,9 +1401,7 @@ bool WebsocketClient::AcquireSingleInstanceLock() {
   try {
     std::error_code ec;
     std::filesystem::create_directories(instance_lock_path_.parent_path(), ec);
-    {
-      std::ofstream touch(instance_lock_path_, std::ios::app);
-    }
+    { std::ofstream touch(instance_lock_path_, std::ios::app); }
 
     auto lock = std::make_unique<boost::interprocess::file_lock>(
         instance_lock_path_.c_str());
@@ -1414,7 +1431,8 @@ void WebsocketClient::Start() {
 
   if (!AcquireSingleInstanceLock()) {
     BOOST_LOG_SEV(lg, trivial::info)
-        << "Websocket client start skipped: another agent instance already holds the websocket lock";
+        << "Websocket client start skipped: another agent instance already "
+           "holds the websocket lock";
     return;
   }
   if (running_) {
@@ -1427,9 +1445,9 @@ void WebsocketClient::Start() {
   BOOST_LOG_SEV(lg, trivial::debug)
       << "Starting websocket client toward " << config.remote_endpoint
       << " forwarding to " << config.tunnel.local_base_url;
-    BOOST_LOG_SEV(lg, trivial::info)
-      << "Websocket client enabling for " << config.remote_endpoint
-      << " -> " << config.tunnel.local_base_url;
+  BOOST_LOG_SEV(lg, trivial::info)
+      << "Websocket client enabling for " << config.remote_endpoint << " -> "
+      << config.tunnel.local_base_url;
 
   WebsocketConfig config_copy = config;
   net::dispatch(ioc_, [this, config_copy]() mutable {
@@ -1455,17 +1473,48 @@ void WebsocketClient::Stop() {
 }
 
 void WebsocketClient::LogConfiguration(const WebsocketConfig &config) {
-  BOOST_LOG_SEV(lg, trivial::debug)
-      << fmt::format("websocket cfg: ping={}s, timeout={}s, max_concurrent={}, max_payload={}B",
-                     config.ping_interval_seconds,
-                     config.request_timeout_seconds,
-                     config.max_concurrent_requests,
-                     config.max_payload_bytes);
+  BOOST_LOG_SEV(lg, trivial::debug) << fmt::format(
+      "websocket cfg: ping={}s, timeout={}s, max_concurrent={}, "
+      "max_payload={}B",
+      config.ping_interval_seconds, config.request_timeout_seconds,
+      config.max_concurrent_requests, config.max_payload_bytes);
   BOOST_LOG_SEV(lg, trivial::trace) << fmt::format(
-      "cfg ping={} timeout={} concurrent={} payload={}B verify_tls={} verify_paths={}",
+      "cfg ping={} timeout={} concurrent={} payload={}B verify_tls={} "
+      "verify_paths={}",
       config.ping_interval_seconds, config.request_timeout_seconds,
       config.max_concurrent_requests, config.max_payload_bytes,
       config.verify_tls, config.verify_paths.size());
+}
+
+net::awaitable<void>
+WebsocketClient::RefreshAndStartSession(std::shared_ptr<WebsocketClient> self,
+                                        WebsocketConfig config) {
+  try {
+    auto result = co_await self->session_refresher_->refresh_awaitable(
+        "websocket connect");
+    if (!self->running_) {
+      co_return;
+    }
+    if (result.is_err()) {
+      BOOST_LOG_SEV(self->lg, trivial::warning)
+          << "Websocket token refresh failed: " << result.error().what;
+      self->ScheduleReconnect();
+      co_return;
+    }
+    self->StartSession(std::move(config), false);
+  } catch (const std::exception &ex) {
+    BOOST_LOG_SEV(self->lg, trivial::warning)
+        << "Websocket token refresh failed: " << ex.what();
+    if (self->running_) {
+      self->ScheduleReconnect();
+    }
+  } catch (...) {
+    BOOST_LOG_SEV(self->lg, trivial::warning)
+        << "Websocket token refresh failed with an unknown exception";
+    if (self->running_) {
+      self->ScheduleReconnect();
+    }
+  }
 }
 
 void WebsocketClient::StartSession(WebsocketConfig config, bool allow_refresh) {
@@ -1503,58 +1552,47 @@ void WebsocketClient::StartSession(WebsocketConfig config, bool allow_refresh) {
 
   if (device_id.empty()) {
     BOOST_LOG_SEV(lg, trivial::warning)
-        << "Websocket start skipped: cached access token missing device_id claim; "
+        << "Websocket start skipped: cached access token missing device_id "
+           "claim; "
            "run 'cert-ctrl login' to obtain a fresh device token.";
     ScheduleReconnect();
     return;
   }
-    // Server expects route param: /api/websocket/<device_id> (or /api/tunnel/<device_id>)
-    remote_endpoint.target =
+  // Server expects route param: /api/websocket/<device_id> (or
+  // /api/tunnel/<device_id>)
+  remote_endpoint.target =
       EnsureDeviceIdPath(std::move(remote_endpoint.target), device_id);
 
   BOOST_LOG_SEV(lg, trivial::info)
       << "Websocket connecting to "
-      << fmt::format("wss://{}:{}{}", remote_endpoint.host, remote_endpoint.port,
-                     remote_endpoint.target);
+      << fmt::format("wss://{}:{}{}", remote_endpoint.host,
+                     remote_endpoint.port, remote_endpoint.target);
   // Ensure token is fresh enough; if not, refresh using the stored refresh
   // token and retry the connection.
   static constexpr std::chrono::seconds kSkew{60};
   if (allow_refresh && IsJwtExpiringSoon(auth_token, kSkew)) {
     if (!session_refresher_) {
       BOOST_LOG_SEV(lg, trivial::warning)
-          << "Websocket access token is expired/expiring, but SessionRefresher is unavailable; "
+          << "Websocket access token is expired/expiring, but SessionRefresher "
+             "is unavailable; "
              "run 'cert-ctrl login' or ensure refresh is configured.";
       ScheduleReconnect();
       return;
     }
 
     BOOST_LOG_SEV(lg, trivial::info)
-        << "Websocket access token expired/expiring; refreshing session tokens before connect.";
+        << "Websocket access token expired/expiring; refreshing session tokens "
+           "before connect.";
 
-    auto self = shared_from_this();
-    session_refresher_->refresh("websocket connect")
-        .run([self, cfg = std::move(config)](auto result) mutable {
-          net::dispatch(self->ioc_, [self, cfg = std::move(cfg),
-                                    result = std::move(result)]() mutable {
-            if (!self->running_) {
-              return;
-            }
-            if (result.is_err()) {
-              BOOST_LOG_SEV(self->lg, trivial::warning)
-                  << "Websocket token refresh failed: " << result.error().what;
-              self->ScheduleReconnect();
-              return;
-            }
-            self->StartSession(std::move(cfg), false);
-          });
-        });
+    net::co_spawn(ioc_,
+                  RefreshAndStartSession(shared_from_this(), std::move(config)),
+                  net::detached);
     return;
   }
 
-  session_ = std::make_shared<Session>(*this, std::move(config),
-                                       std::move(remote_endpoint),
-                                       std::move(local_endpoint),
-                                       std::move(auth_token));
+  session_ = std::make_shared<Session>(
+      *this, std::move(config), std::move(remote_endpoint),
+      std::move(local_endpoint), std::move(auth_token));
   session_->Start();
   BOOST_LOG_SEV(lg, trivial::trace) << "Websocket session dispatched";
 }

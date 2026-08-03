@@ -12,6 +12,7 @@
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "handlers/install_actions/import_ca_action.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "log_stream.hpp"
 #include "result_monad.hpp"
 
@@ -26,8 +27,7 @@ public:
     auto base = fs::temp_directory_path();
     std::mt19937_64 gen{std::random_device{}()};
     std::uniform_int_distribution<std::uint64_t> dist;
-    path_ = base /
-            ("certctrl-test-" + std::to_string(dist(gen)));
+    path_ = base / ("certctrl-test-" + std::to_string(dist(gen)));
     fs::create_directories(path_);
   }
 
@@ -44,8 +44,7 @@ private:
 
 class ScopedEnvVar {
 public:
-  ScopedEnvVar(std::string name, std::string value)
-      : name_(std::move(name)) {
+  ScopedEnvVar(std::string name, std::string value) : name_(std::move(name)) {
     const char *existing = std::getenv(name_.c_str());
     if (existing && *existing) {
       original_ = std::string(existing);
@@ -87,8 +86,8 @@ public:
   const certctrl::CertctrlConfig &get() const override { return config_; }
   certctrl::CertctrlConfig &get() override { return config_; }
 
-  monad::MyVoidResult refresh_install_update_grace_window(
-      bool enable_flags) override {
+  monad::MyVoidResult
+  refresh_install_update_grace_window(bool enable_flags) override {
     if (enable_flags) {
       config_.auto_apply_config = true;
       config_.auto_allow_after_update_script_hash = true;
@@ -178,31 +177,24 @@ TEST(ImportCaActionRemove, PurgesFilesAndRunsUpdateCommand) {
   script << "#!/bin/sh\n"
          << "echo invoked >> \"" << log_path.string() << "\"\n"
          << "exit 0\n";
-  auto update_script = write_executable(temp_root.path(), "update.sh",
-                                        script.str());
-  ScopedEnvVar cmd_env("CERTCTRL_CA_UPDATE_COMMAND",
-                       update_script.string());
+  auto update_script =
+      write_executable(temp_root.path(), "update.sh", script.str());
+  ScopedEnvVar cmd_env("CERTCTRL_CA_UPDATE_COMMAND", update_script.string());
 
   auto stub_path = temp_root.path() / "stub-bin";
   write_executable(stub_path, "certutil", "#!/bin/sh\nexit 0\n");
   ScopedEnvVar path_env("PATH", stub_path.string());
 
-  auto state_file = temp_root.path() / "state" / "import_ca" /
-                    "ca-42.name";
+  auto state_file = temp_root.path() / "state" / "import_ca" / "ca-42.name";
   std::string canonical = "certctrl-ca-42-existing";
   write_text_file(state_file, canonical);
 
   auto ca_path = trust_dir / (canonical + ".crt");
   write_text_file(ca_path, "dummy");
 
-  bool completed = false;
-  handler->remove_ca(42, std::string("Ignored"))
-      .run([&](auto result) {
-        ASSERT_TRUE(result.is_ok()) << result.error().what;
-        completed = true;
-      });
-
-  ASSERT_TRUE(completed);
+  auto result = testinfra::run_result_awaitable(
+      handler->remove_ca(42, std::string("Ignored")));
+  ASSERT_TRUE(result.is_ok()) << result.error().what;
   EXPECT_FALSE(fs::exists(ca_path));
   EXPECT_FALSE(fs::exists(state_file));
   EXPECT_TRUE(fs::exists(log_path));
@@ -230,18 +222,12 @@ TEST(ImportCaActionRemove, UsesSanitizedCanonicalNameWhenMissingState) {
   write_text_file(base_path, "preserve");
   write_text_file(sanitized_path, "remove");
 
-  bool completed = false;
-  handler->remove_ca(99, std::string("RootOne"))
-      .run([&](auto result) {
-        ASSERT_TRUE(result.is_ok()) << result.error().what;
-        completed = true;
-      });
-
-  ASSERT_TRUE(completed);
+  auto result = testinfra::run_result_awaitable(
+      handler->remove_ca(99, std::string("RootOne")));
+  ASSERT_TRUE(result.is_ok()) << result.error().what;
   EXPECT_TRUE(fs::exists(base_path));
   EXPECT_FALSE(fs::exists(sanitized_path));
-  auto state_file = temp_root.path() / "state" / "import_ca" /
-                    "ca-99.name";
+  auto state_file = temp_root.path() / "state" / "import_ca" / "ca-99.name";
   EXPECT_FALSE(fs::exists(state_file));
 }
 #else

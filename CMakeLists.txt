@@ -9,7 +9,7 @@ if(POLICY CMP0167)
 endif()
 cmake_policy(SET CMP0111 NEW)  # Handle imported targets missing location property
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -766,7 +766,6 @@ target_link_libraries(${CERT_CTRL_APP_NAME}
     PRIVATE Boost::url
     PRIVATE OpenSSL::SSL
     PRIVATE OpenSSL::Crypto
-    PRIVATE protobuf::libprotoc
     PRIVATE protobuf::libprotobuf
     PRIVATE unofficial::sqlite3::sqlite3
     PRIVATE Boost::program_options

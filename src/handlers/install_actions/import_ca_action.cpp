@@ -81,9 +81,9 @@ std::string sanitize_label(std::string_view raw_label,
 }
 
 std::string lowercase_ascii(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
-  });
+  std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   return value;
 }
 
@@ -210,14 +210,13 @@ std::string format_windows_error(DWORD error) {
   return message;
 }
 
-std::optional<std::vector<wchar_t>> utf8_to_wide_null_terminated(
-    const std::string &input) {
+std::optional<std::vector<wchar_t>>
+utf8_to_wide_null_terminated(const std::string &input) {
   if (input.empty()) {
     return std::vector<wchar_t>{L'\0'};
   }
 
-  int required =
-      MultiByteToWideChar(CP_UTF8, 0, input.c_str(), -1, nullptr, 0);
+  int required = MultiByteToWideChar(CP_UTF8, 0, input.c_str(), -1, nullptr, 0);
   if (required <= 0) {
     return std::nullopt;
   }
@@ -274,19 +273,17 @@ load_first_certificate_der_windows(const std::filesystem::path &pem_path,
   }
 
   DWORD der_size = 0;
-  if (!CryptStringToBinaryA(base64_payload.c_str(),
-                            static_cast<DWORD>(base64_payload.size()),
-                            CRYPT_STRING_BASE64, nullptr, &der_size, nullptr,
-                            nullptr)) {
+  if (!CryptStringToBinaryA(
+          base64_payload.c_str(), static_cast<DWORD>(base64_payload.size()),
+          CRYPT_STRING_BASE64, nullptr, &der_size, nullptr, nullptr)) {
     return fmt::format("failed to decode certificate '{}' (size query): {}",
                        pem_path.string(), format_windows_error(GetLastError()));
   }
 
   std::vector<BYTE> der(der_size);
-  if (!CryptStringToBinaryA(base64_payload.c_str(),
-                            static_cast<DWORD>(base64_payload.size()),
-                            CRYPT_STRING_BASE64, der.data(), &der_size, nullptr,
-                            nullptr)) {
+  if (!CryptStringToBinaryA(
+          base64_payload.c_str(), static_cast<DWORD>(base64_payload.size()),
+          CRYPT_STRING_BASE64, der.data(), &der_size, nullptr, nullptr)) {
     return fmt::format("failed to decode certificate '{}': {}",
                        pem_path.string(), format_windows_error(GetLastError()));
   }
@@ -296,11 +293,11 @@ load_first_certificate_der_windows(const std::filesystem::path &pem_path,
   return std::nullopt;
 }
 
-std::optional<std::string> import_certificate_to_windows_store(
-    const std::filesystem::path &pem_path, const std::string &friendly_name) {
+std::optional<std::string>
+import_certificate_to_windows_store(const std::filesystem::path &pem_path,
+                                    const std::string &friendly_name) {
   std::vector<BYTE> der_data;
-  if (auto err =
-          load_first_certificate_der_windows(pem_path, der_data)) {
+  if (auto err = load_first_certificate_der_windows(pem_path, der_data)) {
     return err;
   }
 
@@ -308,30 +305,27 @@ std::optional<std::string> import_certificate_to_windows_store(
       X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, der_data.data(),
       static_cast<DWORD>(der_data.size()));
   if (!context) {
-    return fmt::format(
-        "CertCreateCertificateContext failed for '{}': {}",
-        pem_path.string(), format_windows_error(GetLastError()));
+    return fmt::format("CertCreateCertificateContext failed for '{}': {}",
+                       pem_path.string(), format_windows_error(GetLastError()));
   }
 
   HCERTSTORE store = CertOpenStore(
-    CERT_STORE_PROV_SYSTEM, 0, static_cast<HCRYPTPROV_LEGACY>(0),
-      CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG,
-      L"ROOT");
+      CERT_STORE_PROV_SYSTEM, 0, static_cast<HCRYPTPROV_LEGACY>(0),
+      CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG, L"ROOT");
   if (!store) {
-    auto error_message = fmt::format(
-        "CertOpenStore(LocalMachine\\Root) failed: {}",
-        format_windows_error(GetLastError()));
+    auto error_message =
+        fmt::format("CertOpenStore(LocalMachine\\Root) failed: {}",
+                    format_windows_error(GetLastError()));
     CertFreeCertificateContext(context);
     return error_message;
   }
 
   PCCERT_CONTEXT added_context = nullptr;
-  if (!CertAddCertificateContextToStore(store, context,
-                                        CERT_STORE_ADD_REPLACE_EXISTING,
-                                        &added_context)) {
-    auto error_message = fmt::format(
-        "CertAddCertificateContextToStore failed: {}",
-        format_windows_error(GetLastError()));
+  if (!CertAddCertificateContextToStore(
+          store, context, CERT_STORE_ADD_REPLACE_EXISTING, &added_context)) {
+    auto error_message =
+        fmt::format("CertAddCertificateContextToStore failed: {}",
+                    format_windows_error(GetLastError()));
     CertCloseStore(store, 0);
     CertFreeCertificateContext(context);
     return error_message;
@@ -347,16 +341,14 @@ std::optional<std::string> import_certificate_to_windows_store(
           << friendly_name << "' to UTF-16";
     } else {
       CRYPT_DATA_BLOB name_blob;
-      name_blob.pbData =
-          reinterpret_cast<BYTE *>(wide_name_opt->data());
+      name_blob.pbData = reinterpret_cast<BYTE *>(wide_name_opt->data());
       name_blob.cbData =
           static_cast<DWORD>(wide_name_opt->size() * sizeof(wchar_t));
       if (!CertSetCertificateContextProperty(
               target_context, CERT_FRIENDLY_NAME_PROP_ID, 0, &name_blob)) {
         BOOST_LOG_SEV(app_logger(), trivial::warning)
             << "windows trust import: failed to set friendly name '"
-            << friendly_name
-            << "': " << format_windows_error(GetLastError());
+            << friendly_name << "': " << format_windows_error(GetLastError());
       }
     }
   }
@@ -378,16 +370,15 @@ std::string wide_to_utf8(const wchar_t *input, std::size_t length) {
   if (!input || length == 0) {
     return {};
   }
-  int required = WideCharToMultiByte(CP_UTF8, 0, input,
-                                     static_cast<int>(length), nullptr, 0,
-                                     nullptr, nullptr);
+  int required =
+      WideCharToMultiByte(CP_UTF8, 0, input, static_cast<int>(length), nullptr,
+                          0, nullptr, nullptr);
   if (required <= 0) {
     return {};
   }
   std::string output(static_cast<std::size_t>(required), '\0');
-  int written = WideCharToMultiByte(CP_UTF8, 0, input,
-                                    static_cast<int>(length), output.data(),
-                                    required, nullptr, nullptr);
+  int written = WideCharToMultiByte(CP_UTF8, 0, input, static_cast<int>(length),
+                                    output.data(), required, nullptr, nullptr);
   if (written <= 0) {
     return {};
   }
@@ -414,15 +405,14 @@ remove_certificate_from_windows_store(const std::string &friendly_name) {
 
   while ((context = CertEnumCertificatesInStore(store, context)) != nullptr) {
     DWORD size = 0;
-    if (!CertGetCertificateContextProperty(context,
-                                           CERT_FRIENDLY_NAME_PROP_ID, nullptr,
-                                           &size) || size == 0) {
+    if (!CertGetCertificateContextProperty(context, CERT_FRIENDLY_NAME_PROP_ID,
+                                           nullptr, &size) ||
+        size == 0) {
       continue;
     }
 
     std::vector<wchar_t> buffer(size / sizeof(wchar_t) + 1, L'\0');
-    if (!CertGetCertificateContextProperty(context,
-                                           CERT_FRIENDLY_NAME_PROP_ID,
+    if (!CertGetCertificateContextProperty(context, CERT_FRIENDLY_NAME_PROP_ID,
                                            buffer.data(), &size)) {
       continue;
     }
@@ -838,9 +828,9 @@ std::optional<TrustStoreTarget> detect_system_trust_store() {
       {"/etc/pki/ca-trust/source/anchors", "update-ca-trust extract",
        "RHEL/Fedora trust store"},
       {"/usr/share/pki/trust/anchors", "update-ca-certificates",
-      "SUSE trust store"},
-     {"/etc/ca-certificates/trust-source/anchors", "trust extract-compat",
-      "Arch Linux trust store"},
+       "SUSE trust store"},
+      {"/etc/ca-certificates/trust-source/anchors", "trust extract-compat",
+       "Arch Linux trust store"},
   };
 
   for (const auto &candidate : candidates) {
@@ -996,13 +986,21 @@ std::optional<MacTrustStoreProbe> detect_mac_trust_store_for_test() {
 } // namespace detail
 #endif
 
-monad::IO<void> ImportCaActionHandler::process_one_item(
+boost::asio::awaitable<monad::MyResult<void>>
+ImportCaActionHandler::process_one_item(
     const dto::InstallItem &item,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
-  using ReturnIO = monad::IO<void>;
+  auto finish_error = [this, &item](monad::Error err) {
+    if (item.continue_on_error) {
+      log_warning(output_, item, err.what);
+      return monad::MyResult<void>::Ok();
+    }
+    return monad::MyResult<void>::Err(std::move(err));
+  };
+
   if (item.type != "import_ca") {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   BOOST_LOG_SEV(app_logger(), trivial::trace)
@@ -1012,22 +1010,18 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
     BOOST_LOG_SEV(app_logger(), trivial::trace)
         << "import_ca item '" << item.id
         << "' disabled via configuration; skipping";
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   if (should_skip_item(item, target_ob_type, target_ob_id)) {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   if (!item.ob_type || *item.ob_type != "ca" || !item.ob_id) {
     auto err =
         monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                           "import_ca item requires ob_type 'ca' and ob_id");
-    if (item.continue_on_error) {
-      log_warning(output_, item, err.what);
-      return ReturnIO::pure();
-    }
-    return ReturnIO::fail(std::move(err));
+    co_return finish_error(std::move(err));
   }
 
   auto trust_store = detect_system_trust_store();
@@ -1036,11 +1030,7 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
         my_errors::GENERAL::NOT_IMPLEMENTED,
         "unable to locate a supported trust store directory; set "
         "CERTCTRL_CA_IMPORT_DIR to override");
-    if (item.continue_on_error) {
-      log_warning(output_, item, err.what);
-      return ReturnIO::pure();
-    }
-    return ReturnIO::fail(std::move(err));
+    co_return finish_error(std::move(err));
   }
 
   auto trust = *trust_store;
@@ -1049,282 +1039,220 @@ monad::IO<void> ImportCaActionHandler::process_one_item(
       << "import_ca item '" << item.id << "' resolved trust store target dir='"
       << trust.directory << "' update_cmd='" << trust.update_command << "'";
 
-  auto self = shared_from_this();
+  auto materialize_result =
+      co_await resource_materializer_->ensure_materialized(item);
+  if (materialize_result.is_err()) {
+    auto err = materialize_result.error();
+    BOOST_LOG_SEV(app_logger(), trivial::error)
+        << "import_ca item '" << item.id << "' caught error: " << err.what;
+    co_return finish_error(std::move(err));
+  }
 
-  return resource_materializer_->ensure_materialized(item)
-      .then([self, item, trust]() -> ReturnIO {
-        BOOST_LOG_SEV(app_logger(), trivial::trace)
-            << "import_ca item '" << item.id
-            << "' resource materialization complete";
-        auto resource_root = resource_root_for(self->runtime_dir_, item);
-        if (resource_root.empty()) {
-          auto err =
-              monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                                "unable to resolve resource root for CA");
-          if (item.continue_on_error) {
-            log_warning(self->output_, item, err.what);
-            return ReturnIO::pure();
-          }
-          return ReturnIO::fail(std::move(err));
-        }
+  BOOST_LOG_SEV(app_logger(), trivial::trace)
+      << "import_ca item '" << item.id << "' resource materialization complete";
+  auto resource_root = resource_root_for(runtime_dir_, item);
+  if (resource_root.empty()) {
+    co_return finish_error(
+        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                          "unable to resolve resource root for CA"));
+  }
 
-        auto ca_pem_path = resource_root / "ca.pem";
-        if (!std::filesystem::exists(ca_pem_path)) {
-          auto err = monad::make_error(
-              my_errors::GENERAL::FILE_NOT_FOUND,
-              fmt::format("expected CA PEM missing: {}", ca_pem_path.string()));
-          if (item.continue_on_error) {
-            log_warning(self->output_, item, err.what);
-            return ReturnIO::pure();
-          }
-          return ReturnIO::fail(std::move(err));
-        }
+  auto ca_pem_path = resource_root / "ca.pem";
+  if (!std::filesystem::exists(ca_pem_path)) {
+    co_return finish_error(monad::make_error(
+        my_errors::GENERAL::FILE_NOT_FOUND,
+        fmt::format("expected CA PEM missing: {}", ca_pem_path.string())));
+  }
 
-        auto label = item.ob_name.value_or(std::string{});
-        auto sanitized = sanitize_label(label, *item.ob_id);
-        auto canonical_name = fmt::format("certctrl-ca-{}", *item.ob_id);
-        if (!sanitized.empty() && sanitized != canonical_name) {
-          canonical_name = fmt::format("{}-{}", canonical_name, sanitized);
-        }
-        auto destination = trust.directory / (canonical_name + ".crt");
+  auto label = item.ob_name.value_or(std::string{});
+  auto sanitized = sanitize_label(label, *item.ob_id);
+  auto canonical_name = fmt::format("certctrl-ca-{}", *item.ob_id);
+  if (!sanitized.empty() && sanitized != canonical_name) {
+    canonical_name = fmt::format("{}-{}", canonical_name, sanitized);
+  }
+  auto destination = trust.directory / (canonical_name + ".crt");
 
-        auto state_dir = import_state_directory(self->runtime_dir_);
-        std::error_code state_dir_ec;
-        std::filesystem::create_directories(state_dir, state_dir_ec);
-        if (state_dir_ec) {
-          auto err = monad::make_error(
-              my_errors::GENERAL::FILE_READ_WRITE,
-              fmt::format("failed to prepare CA state directory '{}': {}",
-                          state_dir.string(), state_dir_ec.message()));
-          if (item.continue_on_error) {
-            log_warning(self->output_, item, err.what);
-            return ReturnIO::pure();
-          }
-          return ReturnIO::fail(std::move(err));
-        }
+  auto state_dir = import_state_directory(runtime_dir_);
+  std::error_code state_dir_ec;
+  std::filesystem::create_directories(state_dir, state_dir_ec);
+  if (state_dir_ec) {
+    co_return finish_error(monad::make_error(
+        my_errors::GENERAL::FILE_READ_WRITE,
+        fmt::format("failed to prepare CA state directory '{}': {}",
+                    state_dir.string(), state_dir_ec.message())));
+  }
 
-        auto state_file = state_dir / fmt::format("ca-{}.name", *item.ob_id);
-        auto previous_canonical = load_canonical_state(state_file);
+  auto state_file = state_dir / fmt::format("ca-{}.name", *item.ob_id);
+  auto previous_canonical = load_canonical_state(state_file);
 
-        BOOST_LOG_SEV(app_logger(), trivial::trace)
-            << "import_ca item '" << item.id << "' copying '" << ca_pem_path
-            << "' to '" << destination << "'";
+  BOOST_LOG_SEV(app_logger(), trivial::trace)
+      << "import_ca item '" << item.id << "' copying '" << ca_pem_path
+      << "' to '" << destination << "'";
 
-        if (auto err = copy_ca_material(ca_pem_path, destination)) {
-          auto error_obj =
-              monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, *err);
-          BOOST_LOG_SEV(app_logger(), trivial::error)
-              << "import_ca item '" << item.id
-              << "' copy_ca_material failed: " << *err;
-          if (item.continue_on_error) {
-            log_warning(self->output_, item, error_obj.what);
-            return ReturnIO::pure();
-          }
-          return ReturnIO::fail(std::move(error_obj));
-        }
+  if (auto err = copy_ca_material(ca_pem_path, destination)) {
+    auto error_obj =
+        monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, *err);
+    BOOST_LOG_SEV(app_logger(), trivial::error)
+        << "import_ca item '" << item.id
+        << "' copy_ca_material failed: " << *err;
+    co_return finish_error(std::move(error_obj));
+  }
 
 #if defined(__APPLE__)
-        if (trust.use_native_mac_import) {
-          BOOST_LOG_SEV(app_logger(), trivial::trace)
-              << "import_ca item '" << item.id
-              << "' performing native macOS keychain import using '"
-              << destination << "'";
+  if (trust.use_native_mac_import) {
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "import_ca item '" << item.id
+        << "' performing native macOS keychain import using '" << destination
+        << "'";
 
-          if (auto err = import_certificate_to_system_keychain(
-                  destination, canonical_name)) {
-            auto error_obj =
-                monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *err);
-            BOOST_LOG_SEV(app_logger(), trivial::error)
-                << "import_ca item '" << item.id
-                << "' macOS keychain import failed: " << *err;
-            if (item.continue_on_error) {
-              log_warning(self->output_, item, error_obj.what);
-              return ReturnIO::pure();
-            }
-            return ReturnIO::fail(std::move(error_obj));
-          }
+    if (auto err = import_certificate_to_system_keychain(destination,
+                                                         canonical_name)) {
+      auto error_obj =
+          monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *err);
+      BOOST_LOG_SEV(app_logger(), trivial::error)
+          << "import_ca item '" << item.id
+          << "' macOS keychain import failed: " << *err;
+      co_return finish_error(std::move(error_obj));
+    }
 
-          BOOST_LOG_SEV(app_logger(), trivial::trace)
-              << "import_ca item '" << item.id
-              << "' macOS keychain import succeeded";
-        }
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "import_ca item '" << item.id << "' macOS keychain import succeeded";
+  }
 #endif
 
 #if defined(_WIN32)
-        if (trust.use_native_windows_import) {
-          BOOST_LOG_SEV(app_logger(), trivial::trace)
-              << "import_ca item '" << item.id
-              << "' performing native Windows trust import using '"
-              << destination << "'";
+  if (trust.use_native_windows_import) {
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "import_ca item '" << item.id
+        << "' performing native Windows trust import using '" << destination
+        << "'";
 
-          if (auto err = import_certificate_to_windows_store(destination,
-                                                             canonical_name)) {
-            auto error_obj = monad::make_error(
-                my_errors::GENERAL::UNEXPECTED_RESULT, *err);
-            BOOST_LOG_SEV(app_logger(), trivial::error)
-                << "import_ca item '" << item.id
-                << "' Windows trust import failed: " << *err;
-            if (item.continue_on_error) {
-              log_warning(self->output_, item, error_obj.what);
-              return ReturnIO::pure();
-            }
-            return ReturnIO::fail(std::move(error_obj));
-          }
+    if (auto err =
+            import_certificate_to_windows_store(destination, canonical_name)) {
+      auto error_obj =
+          monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *err);
+      BOOST_LOG_SEV(app_logger(), trivial::error)
+          << "import_ca item '" << item.id
+          << "' Windows trust import failed: " << *err;
+      co_return finish_error(std::move(error_obj));
+    }
 
-          BOOST_LOG_SEV(app_logger(), trivial::trace)
-              << "import_ca item '" << item.id
-              << "' Windows trust import succeeded";
-        }
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "import_ca item '" << item.id << "' Windows trust import succeeded";
+  }
 #endif
 
-        if (previous_canonical && *previous_canonical != canonical_name) {
-          auto legacy_path = trust.directory / (*previous_canonical + ".crt");
-          std::error_code remove_ec;
-          if (std::filesystem::exists(legacy_path)) {
-            std::filesystem::remove(legacy_path, remove_ec);
-            if (remove_ec) {
-              auto err = monad::make_error(
-                  my_errors::GENERAL::FILE_READ_WRITE,
-                  fmt::format("failed to remove legacy CA '{}' at '{}': {}",
-                              *previous_canonical, legacy_path.string(),
-                              remove_ec.message()));
-              BOOST_LOG_SEV(app_logger(), trivial::error)
-                  << "import_ca item '" << item.id
-                  << "' legacy removal failed: " << err.what;
-              if (item.continue_on_error) {
-                log_warning(self->output_, item, err.what);
-                return ReturnIO::pure();
-              }
-              return ReturnIO::fail(std::move(err));
-            }
+  if (previous_canonical && *previous_canonical != canonical_name) {
+    auto legacy_path = trust.directory / (*previous_canonical + ".crt");
+    std::error_code remove_ec;
+    if (std::filesystem::exists(legacy_path)) {
+      std::filesystem::remove(legacy_path, remove_ec);
+      if (remove_ec) {
+        auto err = monad::make_error(
+            my_errors::GENERAL::FILE_READ_WRITE,
+            fmt::format("failed to remove legacy CA '{}' at '{}': {}",
+                        *previous_canonical, legacy_path.string(),
+                        remove_ec.message()));
+        BOOST_LOG_SEV(app_logger(), trivial::error)
+            << "import_ca item '" << item.id
+            << "' legacy removal failed: " << err.what;
+        co_return finish_error(std::move(err));
+      }
 
-            BOOST_LOG_SEV(app_logger(), trivial::trace)
-                << "import_ca item '" << item.id << "' removed legacy CA "
-                << *previous_canonical;
-          }
-        }
+      BOOST_LOG_SEV(app_logger(), trivial::trace)
+          << "import_ca item '" << item.id << "' removed legacy CA "
+          << *previous_canonical;
+    }
+  }
 
-        self->output_.logger().info()
-            << "Imported CA '" << canonical_name << "' into " << trust.directory
-            << std::endl;
+  output_.logger().info() << "Imported CA '" << canonical_name << "' into "
+                          << trust.directory << std::endl;
 
-        BOOST_LOG_SEV(app_logger(), trivial::trace)
-            << "import_ca item '" << item.id << "' completed filesystem copy";
+  BOOST_LOG_SEV(app_logger(), trivial::trace)
+      << "import_ca item '" << item.id << "' completed filesystem copy";
 
 #ifndef _WIN32
-        if (!trust.update_command.empty()) {
-          BOOST_LOG_SEV(app_logger(), trivial::trace)
-              << "import_ca item '" << item.id
-              << "' executing update command: " << trust.update_command;
-          int rc = std::system(trust.update_command.c_str());
-          if (rc != 0) {
-            auto err = monad::make_error(
-                my_errors::GENERAL::UNEXPECTED_RESULT,
-                fmt::format("command '{}' exited with status {}",
-                            trust.update_command, rc));
-            BOOST_LOG_SEV(app_logger(), trivial::error)
-                << "import_ca item '" << item.id
-                << "' update command failed rc=" << rc;
-            if (item.continue_on_error) {
-              log_warning(self->output_, item, err.what);
-              return ReturnIO::pure();
-            }
-            return ReturnIO::fail(std::move(err));
-          }
-          BOOST_LOG_SEV(app_logger(), trivial::trace)
-              << "import_ca item '" << item.id << "' update command succeeded";
-        }
+  if (!trust.update_command.empty()) {
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "import_ca item '" << item.id
+        << "' executing update command: " << trust.update_command;
+    int rc = std::system(trust.update_command.c_str());
+    if (rc != 0) {
+      auto err =
+          monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                            fmt::format("command '{}' exited with status {}",
+                                        trust.update_command, rc));
+      BOOST_LOG_SEV(app_logger(), trivial::error)
+          << "import_ca item '" << item.id
+          << "' update command failed rc=" << rc;
+      co_return finish_error(std::move(err));
+    }
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "import_ca item '" << item.id << "' update command succeeded";
+  }
 #endif
 
-        certctrl::util::BrowserTrustSync browser_sync(self->output_,
-                                                      self->runtime_dir_);
-        if (auto sync_err =
-                browser_sync.sync_ca(canonical_name, previous_canonical,
-                                      ca_pem_path)) {
-          auto error_obj = monad::make_error(
-              my_errors::GENERAL::UNEXPECTED_RESULT, *sync_err);
-          BOOST_LOG_SEV(app_logger(), trivial::error)
-              << "import_ca item '" << item.id
-              << "' browser trust sync failed: " << *sync_err;
-          if (item.continue_on_error) {
-            log_warning(self->output_, item, error_obj.what);
-            return ReturnIO::pure();
-          }
-          return ReturnIO::fail(std::move(error_obj));
-        }
+  certctrl::util::BrowserTrustSync browser_sync(output_, runtime_dir_);
+  if (auto sync_err = browser_sync.sync_ca(canonical_name, previous_canonical,
+                                           ca_pem_path)) {
+    auto error_obj =
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *sync_err);
+    BOOST_LOG_SEV(app_logger(), trivial::error)
+        << "import_ca item '" << item.id
+        << "' browser trust sync failed: " << *sync_err;
+    co_return finish_error(std::move(error_obj));
+  }
 
-        if (auto err = persist_canonical_state(state_file, canonical_name)) {
-          auto error_obj =
-              monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, *err);
-          BOOST_LOG_SEV(app_logger(), trivial::error)
-              << "import_ca item '" << item.id
-              << "' state persistence failed: " << *err;
-          if (item.continue_on_error) {
-            log_warning(self->output_, item, error_obj.what);
-            return ReturnIO::pure();
-          }
-          return ReturnIO::fail(std::move(error_obj));
-        }
+  if (auto err = persist_canonical_state(state_file, canonical_name)) {
+    auto error_obj =
+        monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, *err);
+    BOOST_LOG_SEV(app_logger(), trivial::error)
+        << "import_ca item '" << item.id
+        << "' state persistence failed: " << *err;
+    co_return finish_error(std::move(error_obj));
+  }
 
-        return ReturnIO::pure();
-      })
-      .catch_then([self, item](monad::Error err) -> ReturnIO {
-        BOOST_LOG_SEV(app_logger(), trivial::error)
-            << "import_ca item '" << item.id << "' caught error: " << err.what;
-        if (item.continue_on_error) {
-          log_warning(self->output_, item, err.what);
-          return ReturnIO::pure();
-        }
-        return ReturnIO::fail(std::move(err));
-      });
+  co_return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void>
+boost::asio::awaitable<monad::MyResult<void>>
 ImportCaActionHandler::apply(const dto::DeviceInstallConfigDto &config,
                              const std::optional<std::string> &target_ob_type,
                              std::optional<std::int64_t> target_ob_id) {
-  using ReturnIO = monad::IO<void>;
-  auto self = shared_from_this();
   resource_materializer_ = resource_materializer_factory_();
-
-  // try {
-  auto resource_materializer = resource_materializer_factory_();
-  if (!resource_materializer) {
-    return ReturnIO::fail(monad::make_error(
+  if (!resource_materializer_) {
+    co_return monad::MyResult<void>::Err(monad::make_error(
         my_errors::GENERAL::INVALID_ARGUMENT,
         "ImportCaActionHandler missing resource materializer"));
   }
 
-  ReturnIO pipeline = ReturnIO::pure();
   for (const auto &item : config.installs) {
-    auto item_copy = item;
-    pipeline = pipeline.then([self, item_copy, target_ob_type,
-                              target_ob_id]() mutable {
-      return self->process_one_item(item_copy, target_ob_type, target_ob_id);
-    });
+    auto result = co_await process_one_item(item, target_ob_type, target_ob_id);
+    if (result.is_err()) {
+      const auto &err = result.error();
+      BOOST_LOG_SEV(app_logger(), trivial::error)
+          << "import_ca actions pipeline failed code=" << err.code
+          << " status=" << err.response_status << " what=" << err.what
+          << " params=" << boost::json::serialize(err.params);
+      co_return result;
+    }
   }
 
-  return pipeline.catch_then([](monad::Error err) -> ReturnIO {
-    BOOST_LOG_SEV(app_logger(), trivial::error)
-        << "import_ca actions pipeline failed code=" << err.code
-        << " status=" << err.response_status << " what=" << err.what
-        << " params=" << boost::json::serialize(err.params);
-    return ReturnIO::fail(std::move(err));
-  });
+  co_return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void> ImportCaActionHandler::remove_ca(
-    std::int64_t ca_id, std::optional<std::string> ca_name) {
-  using ReturnIO = monad::IO<void>;
+boost::asio::awaitable<monad::MyResult<void>>
+ImportCaActionHandler::remove_ca(std::int64_t ca_id,
+                                 std::optional<std::string> ca_name) {
   if (ca_id <= 0) {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   auto trust_store = detect_system_trust_store();
   if (!trust_store) {
     output_.logger().warning()
         << "CA removal requested but no trust store detected" << std::endl;
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   auto state_dir = import_state_directory(runtime_dir_);
@@ -1348,18 +1276,18 @@ monad::IO<void> ImportCaActionHandler::remove_ca(
     std::error_code ec;
     std::filesystem::remove(destination, ec);
     if (ec) {
-      return ReturnIO::fail(monad::make_error(
-          my_errors::GENERAL::FILE_READ_WRITE,
-          fmt::format("failed to remove CA file '{}': {}",
-                      destination.string(), ec.message())));
+      co_return monad::MyResult<void>::Err(
+          monad::make_error(my_errors::GENERAL::FILE_READ_WRITE,
+                            fmt::format("failed to remove CA file '{}': {}",
+                                        destination.string(), ec.message())));
     }
   }
 
 #if defined(__APPLE__)
   if (trust_store->use_native_mac_import) {
     if (auto err = remove_certificate_from_system_keychain(canonical_name)) {
-      return ReturnIO::fail(monad::make_error(
-          my_errors::GENERAL::UNEXPECTED_RESULT, *err));
+      co_return monad::MyResult<void>::Err(
+          monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *err));
     }
   }
 #endif
@@ -1367,8 +1295,8 @@ monad::IO<void> ImportCaActionHandler::remove_ca(
 #if defined(_WIN32)
   if (trust_store->use_native_windows_import) {
     if (auto err = remove_certificate_from_windows_store(canonical_name)) {
-      return ReturnIO::fail(monad::make_error(
-          my_errors::GENERAL::UNEXPECTED_RESULT, *err));
+      co_return monad::MyResult<void>::Err(
+          monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *err));
     }
   }
 #endif
@@ -1377,32 +1305,32 @@ monad::IO<void> ImportCaActionHandler::remove_ca(
   if (!trust_store->update_command.empty()) {
     int rc = std::system(trust_store->update_command.c_str());
     if (rc != 0) {
-      return ReturnIO::fail(monad::make_error(
-          my_errors::GENERAL::UNEXPECTED_RESULT,
-          fmt::format("command '{}' exited with status {}",
-                      trust_store->update_command, rc)));
+      co_return monad::MyResult<void>::Err(
+          monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                            fmt::format("command '{}' exited with status {}",
+                                        trust_store->update_command, rc)));
     }
   }
 #endif
 
   certctrl::util::BrowserTrustSync browser_sync(output_, runtime_dir_);
   if (auto err = browser_sync.remove_ca_alias(canonical_name)) {
-    return ReturnIO::fail(monad::make_error(
-        my_errors::GENERAL::UNEXPECTED_RESULT, *err));
+    co_return monad::MyResult<void>::Err(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, *err));
   }
 
   std::error_code ec;
   std::filesystem::remove(state_file, ec);
   if (ec && ec != std::errc::no_such_file_or_directory) {
-    return ReturnIO::fail(monad::make_error(
-        my_errors::GENERAL::FILE_READ_WRITE,
-        fmt::format("failed to remove state file '{}': {}",
-                    state_file.string(), ec.message())));
+    co_return monad::MyResult<void>::Err(
+        monad::make_error(my_errors::GENERAL::FILE_READ_WRITE,
+                          fmt::format("failed to remove state file '{}': {}",
+                                      state_file.string(), ec.message())));
   }
 
-  output_.logger().info()
-      << "Removed CA '" << canonical_name << "' from trust store" << std::endl;
-  return ReturnIO::pure();
+  output_.logger().info() << "Removed CA '" << canonical_name
+                          << "' from trust store" << std::endl;
+  co_return monad::MyResult<void>::Ok();
 }
 
 } // namespace certctrl::install_actions

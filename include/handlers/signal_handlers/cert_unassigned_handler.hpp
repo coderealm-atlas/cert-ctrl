@@ -22,19 +22,18 @@ private:
 public:
   CertUnassignedHandler(std::shared_ptr<InstallConfigManager> config_manager,
                         customio::ConsoleOutput &output_hub)
-      : config_manager_(std::move(config_manager)),
-        output_hub_(output_hub) {}
+      : config_manager_(std::move(config_manager)), output_hub_(output_hub) {}
 
   std::string signal_type() const override { return "cert.unassigned"; }
 
-  monad::IO<void> handle(const ::data::DeviceUpdateSignal &signal) override {
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_awaitable(const ::data::DeviceUpdateSignal &signal) override {
     auto &lg = app_logger();
     auto ref = ::data::get_cert_unassigned(signal);
     if (!ref) {
-      BOOST_LOG_SEV(lg, trivial::warning)
-          << "cert.unassigned missing cert_id: "
-          << boost::json::serialize(signal.ref);
-      return monad::IO<void>::pure();
+      BOOST_LOG_SEV(lg, trivial::warning) << "cert.unassigned missing cert_id: "
+                                          << boost::json::serialize(signal.ref);
+      co_return monad::MyResult<void>::Ok();
     }
 
     auto cert_id = ref->cert_id;
@@ -47,7 +46,7 @@ public:
         << "; downstream destinations must be cleaned manually until removal"
         << " workflows land";
 
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 };
 

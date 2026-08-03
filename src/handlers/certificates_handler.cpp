@@ -85,8 +85,8 @@ std::vector<std::string> extract_sans(const X509 *cert) {
   if (!names) {
     return sans;
   }
-  std::unique_ptr<STACK_OF(GENERAL_NAME), decltype(&GENERAL_NAMES_free)>
-      guard(names, &GENERAL_NAMES_free);
+  std::unique_ptr<STACK_OF(GENERAL_NAME), decltype(&GENERAL_NAMES_free)> guard(
+      names, &GENERAL_NAMES_free);
   int name_count = sk_GENERAL_NAME_num(names);
   for (int i = 0; i < name_count; ++i) {
     const GENERAL_NAME *name = sk_GENERAL_NAME_value(names, i);
@@ -99,7 +99,8 @@ std::vector<std::string> extract_sans(const X509 *cert) {
         sans.emplace_back(reinterpret_cast<const char *>(data));
       }
     } else if (name->type == GEN_URI) {
-      const unsigned char *data = ASN1_STRING_get0_data(name->d.uniformResourceIdentifier);
+      const unsigned char *data =
+          ASN1_STRING_get0_data(name->d.uniformResourceIdentifier);
       if (data && ASN1_STRING_length(name->d.uniformResourceIdentifier) > 0) {
         sans.emplace_back(reinterpret_cast<const char *>(data));
       }
@@ -180,9 +181,9 @@ std::optional<std::string> read_text_file(const fs::path &path) {
   return oss.str();
 }
 
-std::vector<std::string> filter_tokens(
-    const std::vector<std::string> &source,
-    const std::vector<std::string> &excluded) {
+std::vector<std::string>
+filter_tokens(const std::vector<std::string> &source,
+              const std::vector<std::string> &excluded) {
   if (excluded.empty()) {
     return source;
   }
@@ -211,25 +212,25 @@ CertificatesHandler::CertificatesHandler(
     : config_sources_(config_sources), cli_ctx_(cli_ctx), output_(output),
       install_config_manager_(std::move(install_config_manager)) {}
 
-monad::IO<void> CertificatesHandler::start() {
+boost::asio::awaitable<monad::MyResult<void>>
+CertificatesHandler::start_awaitable() {
   if (cli_ctx_.positionals.size() < 2) {
     output_.logger().info()
         << "Usage: cert-ctrl certificates <list|show> [options]" << std::endl;
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   const std::string action = cli_ctx_.positionals[1];
   if (action == "list") {
-    return handle_list();
+    co_return co_await handle_list_awaitable();
   }
   if (action == "show") {
-    return handle_show();
+    co_return co_await handle_show_awaitable();
   }
 
-  output_.logger().error()
-      << "Unknown certificates action '" << action
-      << "'. Expected 'list' or 'show'." << std::endl;
-  return monad::IO<void>::pure();
+  output_.logger().error() << "Unknown certificates action '" << action
+                           << "'. Expected 'list' or 'show'." << std::endl;
+  co_return monad::MyResult<void>::Ok();
 }
 
 CertificatesHandler::ListOptions
@@ -238,18 +239,15 @@ CertificatesHandler::parse_list_options(const std::string &action) {
   namespace po = boost::program_options;
 
   po::options_description desc("certificates list options");
-  desc.add_options()("json", po::bool_switch(&opts.json),
-                     "Emit JSON output");
+  desc.add_options()("json", po::bool_switch(&opts.json), "Emit JSON output");
 
   try {
     auto args = filter_tokens(cli_ctx_.unrecognized,
                               std::vector<std::string>{command(), action});
     po::variables_map vm;
-    po::store(po::command_line_parser(args)
-                  .options(desc)
-                  .allow_unregistered()
-                  .run(),
-              vm);
+    po::store(
+        po::command_line_parser(args).options(desc).allow_unregistered().run(),
+        vm);
     po::notify(vm);
   } catch (const std::exception &ex) {
     output_.logger().warning()
@@ -266,21 +264,18 @@ CertificatesHandler::parse_show_options(const std::string &action) {
   namespace po = boost::program_options;
 
   po::options_description desc("certificates show options");
-  desc.add_options()("json", po::bool_switch(&opts.json),
-                     "Emit JSON output")
-      ("refresh", po::bool_switch(&opts.refresh),
-       "Refresh certificate materials before rendering")
-      ("id", po::value<std::int64_t>(), "Certificate identifier");
+  desc.add_options()("json", po::bool_switch(&opts.json), "Emit JSON output")(
+      "refresh", po::bool_switch(&opts.refresh),
+      "Refresh certificate materials before rendering")(
+      "id", po::value<std::int64_t>(), "Certificate identifier");
 
   try {
     auto args = filter_tokens(cli_ctx_.unrecognized,
                               std::vector<std::string>{command(), action});
     po::variables_map vm;
-    po::store(po::command_line_parser(args)
-                  .options(desc)
-                  .allow_unregistered()
-                  .run(),
-              vm);
+    po::store(
+        po::command_line_parser(args).options(desc).allow_unregistered().run(),
+        vm);
     po::notify(vm);
     if (vm.count("id")) {
       opts.id = vm["id"].as<std::int64_t>();
@@ -306,149 +301,139 @@ CertificatesHandler::parse_show_options(const std::string &action) {
   return opts;
 }
 
-monad::IO<void> CertificatesHandler::handle_list() {
-  using ReturnIO = monad::IO<void>;
-
+boost::asio::awaitable<monad::MyResult<void>>
+CertificatesHandler::handle_list_awaitable() {
   auto options = parse_list_options("list");
   auto self = shared_from_this();
 
-  return install_config_manager_
-      ->ensure_config_version(std::nullopt, std::nullopt)
-      .then([self, options](
-                std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr)
-                -> ReturnIO {
-        if (!config_ptr) {
-          self->output_.logger().warning()
-              << "No install-config cached yet; run 'cert-ctrl install-config "
-                 "pull' first."
-              << std::endl;
-          return ReturnIO::pure();
+  auto config_result = co_await install_config_manager_->ensure_config_version(
+      std::nullopt, std::nullopt);
+  if (config_result.is_err()) {
+    co_return monad::MyResult<void>::Err(config_result.error());
+  }
+  auto render =
+      [self,
+       options](std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr)
+      -> monad::MyResult<void> {
+    if (!config_ptr) {
+      self->output_.logger().warning()
+          << "No install-config cached yet; run 'cert-ctrl install-config "
+             "pull' first."
+          << std::endl;
+      return monad::MyResult<void>::Ok();
+    }
+
+    auto summaries = self->gather_certificates(*config_ptr);
+    if (summaries.empty()) {
+      self->output_.logger().info()
+          << "No certificate resources found in staged install-config."
+          << std::endl;
+      return monad::MyResult<void>::Ok();
+    }
+
+    if (options.json) {
+      boost::json::array arr;
+      arr.reserve(summaries.size());
+      auto now = std::chrono::system_clock::now();
+      for (const auto &summary : summaries) {
+        boost::json::object obj;
+        obj["id"] = summary.id;
+        if (!summary.name.empty()) {
+          obj["name"] = summary.name;
         }
-
-        auto summaries = self->gather_certificates(*config_ptr);
-        if (summaries.empty()) {
-          self->output_.logger().info()
-              << "No certificate resources found in staged install-config."
-              << std::endl;
-          return ReturnIO::pure();
+        std::string status = summary.artifacts.has_material ? "ok" : "missing";
+        if (summary.artifacts.has_material && summary.artifacts.not_after &&
+            *summary.artifacts.not_after < now) {
+          status = "expired";
         }
-
-        if (options.json) {
-          boost::json::array arr;
-          arr.reserve(summaries.size());
-          auto now = std::chrono::system_clock::now();
-          for (const auto &summary : summaries) {
-            boost::json::object obj;
-            obj["id"] = summary.id;
-            if (!summary.name.empty()) {
-              obj["name"] = summary.name;
-            }
-            std::string status = summary.artifacts.has_material
-                                     ? "ok"
-                                     : "missing";
-            if (summary.artifacts.has_material &&
-                summary.artifacts.not_after &&
-                *summary.artifacts.not_after < now) {
-              status = "expired";
-            }
-            obj["status"] = status;
-            obj["not_after"] = format_time(summary.artifacts.not_after);
-            obj["primary_san"] = summary.artifacts.sans.empty()
-                                      ? ""
-                                      : summary.artifacts.sans.front();
-            obj["subject"] = summary.artifacts.subject;
-            obj["issuer"] = summary.artifacts.issuer;
-            obj["fingerprint_sha256"] = summary.artifacts.fingerprint_sha256;
-            if (!summary.artifacts.error.empty()) {
-              obj["error"] = summary.artifacts.error;
-            }
-            arr.emplace_back(std::move(obj));
-          }
-          self->output_.printer().stream()
-              << boost::json::serialize(arr) << std::endl;
-          return ReturnIO::pure();
+        obj["status"] = status;
+        obj["not_after"] = format_time(summary.artifacts.not_after);
+        obj["primary_san"] = summary.artifacts.sans.empty()
+                                 ? ""
+                                 : summary.artifacts.sans.front();
+        obj["subject"] = summary.artifacts.subject;
+        obj["issuer"] = summary.artifacts.issuer;
+        obj["fingerprint_sha256"] = summary.artifacts.fingerprint_sha256;
+        if (!summary.artifacts.error.empty()) {
+          obj["error"] = summary.artifacts.error;
         }
+        arr.emplace_back(std::move(obj));
+      }
+      self->output_.printer().stream()
+          << boost::json::serialize(arr) << std::endl;
+      return monad::MyResult<void>::Ok();
+    }
 
-        auto header = fmt::format("{:>6}  {:<24}  {:<10}  {:<20}  {}", "ID",
-                                  "Name", "Status", "Not After",
-                                  "Primary SAN");
-        self->output_.printer().yellow() << header << std::endl;
+    auto header = fmt::format("{:>6}  {:<24}  {:<10}  {:<20}  {}", "ID", "Name",
+                              "Status", "Not After", "Primary SAN");
+    self->output_.printer().yellow() << header << std::endl;
 
-        auto now = std::chrono::system_clock::now();
-        for (const auto &summary : summaries) {
-          std::string status = summary.artifacts.has_material ? "ok"
-                                                              : "missing";
-          if (summary.artifacts.has_material &&
-              summary.artifacts.not_after &&
-              *summary.artifacts.not_after < now) {
-            status = "expired";
-          }
-          std::string name = summary.name.empty() ? "-" : summary.name;
-          if (name.size() > 24) {
-            name = name.substr(0, 21) + "...";
-          }
-          const std::string not_after =
-              format_time(summary.artifacts.not_after);
-          const std::string primary_san = summary.artifacts.sans.empty()
-                                              ? "-"
-                                              : summary.artifacts.sans.front();
+    auto now = std::chrono::system_clock::now();
+    for (const auto &summary : summaries) {
+      std::string status = summary.artifacts.has_material ? "ok" : "missing";
+      if (summary.artifacts.has_material && summary.artifacts.not_after &&
+          *summary.artifacts.not_after < now) {
+        status = "expired";
+      }
+      std::string name = summary.name.empty() ? "-" : summary.name;
+      if (name.size() > 24) {
+        name = name.substr(0, 21) + "...";
+      }
+      const std::string not_after = format_time(summary.artifacts.not_after);
+      const std::string primary_san =
+          summary.artifacts.sans.empty() ? "-" : summary.artifacts.sans.front();
 
-          self->output_.printer().stream()
-              << fmt::format("{:>6}  {:<24}  {:<10}  {:<20}  {}", summary.id,
-                             name, status, not_after, primary_san)
-              << std::endl;
-        }
+      self->output_.printer().stream()
+          << fmt::format("{:>6}  {:<24}  {:<10}  {:<20}  {}", summary.id, name,
+                         status, not_after, primary_san)
+          << std::endl;
+    }
 
-        return ReturnIO::pure();
-      });
+    return monad::MyResult<void>::Ok();
+  };
+  co_return render(std::move(config_result).value());
 }
 
-monad::IO<void> CertificatesHandler::handle_show() {
-  using ReturnIO = monad::IO<void>;
-
+boost::asio::awaitable<monad::MyResult<void>>
+CertificatesHandler::handle_show_awaitable() {
   auto options = parse_show_options("show");
   if (!options.id) {
     output_.logger().error()
         << "Provide a certificate identifier via '--id <value>' or"
         << " positional argument." << std::endl;
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
-  auto self = shared_from_this();
-  return install_config_manager_
-      ->ensure_config_version(std::nullopt, std::nullopt)
-      .then([self, options](
-                std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr)
-                -> ReturnIO {
-        if (!config_ptr) {
-          self->output_.logger().warning()
-              << "No install-config cached yet; pull one before running"
-              << " 'cert-ctrl certificates show'." << std::endl;
-          return ReturnIO::pure();
-        }
+  auto config_result = co_await install_config_manager_->ensure_config_version(
+      std::nullopt, std::nullopt);
+  if (config_result.is_err()) {
+    co_return monad::MyResult<void>::Err(config_result.error());
+  }
+  auto config = std::move(config_result).value();
+  if (!config) {
+    output_.logger().warning()
+        << "No install-config cached yet; pull one before running"
+        << " 'cert-ctrl certificates show'." << std::endl;
+    co_return monad::MyResult<void>::Ok();
+  }
 
-        auto perform_render = [self, config_ptr, options]() -> ReturnIO {
-          return self->render_show(*config_ptr, *options.id, options);
-        };
+  if (options.refresh) {
+    install_config_manager_->invalidate_resource_cache("cert", *options.id);
+    std::optional<std::string> target_type{"cert"};
+    auto refresh_result = co_await install_config_manager_->apply_copy_actions(
+        *config, target_type, options.id);
+    if (refresh_result.is_err()) {
+      co_return refresh_result;
+    }
+  }
 
-        if (options.refresh) {
-          self->install_config_manager_->invalidate_resource_cache(
-              "cert", *options.id);
-          std::optional<std::string> target_type{"cert"};
-          return self->install_config_manager_
-              ->apply_copy_actions(*config_ptr, target_type, options.id)
-              .then([perform_render]() { return perform_render(); });
-        }
-
-        return perform_render();
-      });
+  co_return render_show(*config, *options.id, options);
 }
 
-monad::IO<void> CertificatesHandler::render_show(
-    const dto::DeviceInstallConfigDto &config, std::int64_t cert_id,
-    const ShowOptions &options) {
-  using ReturnIO = monad::IO<void>;
-
+monad::MyResult<void>
+CertificatesHandler::render_show(const dto::DeviceInstallConfigDto &config,
+                                 std::int64_t cert_id,
+                                 const ShowOptions &options) {
   const dto::InstallItem *match = nullptr;
   for (const auto &item : config.installs) {
     if (item.ob_type && *item.ob_type == "cert" && item.ob_id &&
@@ -495,30 +480,27 @@ monad::IO<void> CertificatesHandler::render_show(
       obj["error"] = artifacts.error;
     }
     output_.printer().stream() << boost::json::serialize(obj) << std::endl;
-    return ReturnIO::pure();
+    return monad::MyResult<void>::Ok();
   }
 
   output_.printer().yellow()
       << fmt::format("Certificate {}{}", cert_id,
-                     name.empty() ? std::string{}
-                                  : fmt::format(" ({})", name))
+                     name.empty() ? std::string{} : fmt::format(" ({})", name))
       << std::endl;
 
   if (!artifacts.has_material) {
-    output_.printer().red()
-        << "  Local materials missing. Run 'cert-ctrl install-config pull --cert-id "
-        << cert_id << "' to stage them." << std::endl;
+    output_.printer().red() << "  Local materials missing. Run 'cert-ctrl "
+                               "install-config pull --cert-id "
+                            << cert_id << "' to stage them." << std::endl;
     if (!artifacts.error.empty()) {
       output_.printer().red() << "  Error: " << artifacts.error << std::endl;
     }
-    return ReturnIO::pure();
+    return monad::MyResult<void>::Ok();
   }
 
-  output_.printer().stream() << "  Subject: " << artifacts.subject
-                             << std::endl;
+  output_.printer().stream() << "  Subject: " << artifacts.subject << std::endl;
   if (!artifacts.issuer.empty()) {
-    output_.printer().stream() << "  Issuer: " << artifacts.issuer
-                               << std::endl;
+    output_.printer().stream() << "  Issuer: " << artifacts.issuer << std::endl;
   }
   output_.printer().stream()
       << "  Serial: "
@@ -537,8 +519,7 @@ monad::IO<void> CertificatesHandler::render_show(
 
   output_.printer().stream()
       << "  SANs (" << artifacts.sans.size() << "): "
-      << (artifacts.sans.empty() ? std::string{"-"}
-                                 : join_sans(artifacts.sans))
+      << (artifacts.sans.empty() ? std::string{"-"} : join_sans(artifacts.sans))
       << std::endl;
 
   if (!targets.empty()) {
@@ -546,20 +527,16 @@ monad::IO<void> CertificatesHandler::render_show(
         << "  Install targets: " << join_sans(targets) << std::endl;
   }
 
-  output_.printer().stream() << "  Paths:" << std::endl
-                             << "    certificate.pem: "
-                             << artifacts.certificate_path.string()
-                             << std::endl
-                             << "    bundle.pfx:      "
-                             << artifacts.bundle_path.string() << std::endl
-                             << "    private.key:     "
-                             << artifacts.private_key_path.string()
-                             << std::endl
-                             << "    detail JSON:     "
-                             << artifacts.detail_path.string()
-                             << std::endl;
+  output_.printer().stream()
+      << "  Paths:" << std::endl
+      << "    certificate.pem: " << artifacts.certificate_path.string()
+      << std::endl
+      << "    bundle.pfx:      " << artifacts.bundle_path.string() << std::endl
+      << "    private.key:     " << artifacts.private_key_path.string()
+      << std::endl
+      << "    detail JSON:     " << artifacts.detail_path.string() << std::endl;
 
-  return ReturnIO::pure();
+  return monad::MyResult<void>::Ok();
 }
 
 std::vector<CertificatesHandler::CertificateSummary>
@@ -600,8 +577,8 @@ CertificatesHandler::load_certificate_artifacts(std::int64_t cert_id) const {
     return info;
   }
 
-  std::filesystem::path root = runtime_dir / "resources" / "certs" /
-                               std::to_string(cert_id);
+  std::filesystem::path root =
+      runtime_dir / "resources" / "certs" / std::to_string(cert_id);
   std::filesystem::path current = root / "current";
 
   info.certificate_path = current / "certificate.pem";
@@ -639,7 +616,7 @@ std::string CertificatesHandler::format_time(
   }
 
   std::time_t t = std::chrono::system_clock::to_time_t(*tp);
-  std::tm tm {};
+  std::tm tm{};
 #if defined(_WIN32)
   gmtime_s(&tm, &t);
 #else
@@ -652,8 +629,8 @@ std::string CertificatesHandler::format_time(
   return std::string(buf);
 }
 
-std::string CertificatesHandler::join_sans(
-    const std::vector<std::string> &sans) {
+std::string
+CertificatesHandler::join_sans(const std::vector<std::string> &sans) {
   if (sans.empty()) {
     return "-";
   }

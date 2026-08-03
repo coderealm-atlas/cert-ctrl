@@ -1,176 +1,157 @@
 #pragma once
 
 #include <chrono>
-#include <memory>
+#include <cstdint>
 #include <optional>
 #include <string>
 
-#include <boost/asio/io_context.hpp>
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/http.hpp>
 #include <fmt/format.h>
 
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "data/install_config_dto.hpp"
+#include "http_client_awaitable.hpp"
 #include "http_client_manager.hpp"
-#include "http_client_monad.hpp"
 #include "io_context_manager.hpp"
-#include "io_monad.hpp"
 #include "my_error_codes.hpp"
-
-namespace asio = boost::asio;
+#include "result_monad.hpp"
 
 namespace certctrl::install_actions {
 
 class IDeviceInstallConfigFetcher {
 public:
   virtual ~IDeviceInstallConfigFetcher() = default;
-  virtual monad::IO<dto::DeviceInstallConfigDto>
+  virtual boost::asio::awaitable<monad::MyResult<dto::DeviceInstallConfigDto>>
   fetch_install_config(std::optional<std::string> access_token,
                        std::optional<std::int64_t> expected_version,
                        const std::optional<std::string> &expected_hash) = 0;
 };
 
-// default implementation that fetches from remote server
 class DeviceInstallConfigFetcher : public IDeviceInstallConfigFetcher {
 public:
-  DeviceInstallConfigFetcher(
-      cjj365::IoContextManager &io_context_manager,
-      certctrl::ICertctrlConfigProvider &config_provider,
-      customio::ConsoleOutput &output,
-      client_async::HttpClientManager &http_client)
+  DeviceInstallConfigFetcher(cjj365::IoContextManager &,
+                             certctrl::ICertctrlConfigProvider &config_provider,
+                             customio::ConsoleOutput &output,
+                             client_async::HttpClientManager &http_client)
       : config_provider_(config_provider), output_(output),
-        http_client_(http_client), io_context_(io_context_manager.ioc()) {}
+        http_client_(http_client) {}
 
-  monad::IO<dto::DeviceInstallConfigDto> fetch_install_config(
+  boost::asio::awaitable<monad::MyResult<dto::DeviceInstallConfigDto>>
+  fetch_install_config(
       std::optional<std::string> token_opt,
       std::optional<std::int64_t> expected_version,
       const std::optional<std::string> &expected_hash) override {
-  auto perform_fetch = [this, token_opt]()
-    -> monad::IO<dto::DeviceInstallConfigDto> {
-      if (!token_opt || token_opt->empty()) {
-    return monad::IO<dto::DeviceInstallConfigDto>::fail(
-      monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                 "Device access token unavailable"));
-      }
+    namespace asio = boost::asio;
+    namespace http = boost::beast::http;
+    using Result = monad::MyResult<dto::DeviceInstallConfigDto>;
 
-      const auto &cfg = config_provider_.get();
-      std::string url =
-          fmt::format("{}/apiv1/devices/self/install-config", cfg.base_url);
-
-      return monad::http_io<monad::GetStringTag>(url)
-          .map([token = *token_opt](auto ex) {
-            namespace http = boost::beast::http;
-            ex->request.set(http::field::authorization,
-                            std::string("Bearer ") + token);
-            return ex;
-          })
-          .then(monad::http_request_io<monad::GetStringTag>(http_client_))
-          .then([](auto ex) -> monad::IO<dto::DeviceInstallConfigDto> {
-            if (!ex->response.has_value()) {
-              return monad::IO<dto::DeviceInstallConfigDto>::fail(
-                  monad::make_error(my_errors::NETWORK::READ_ERROR,
-                                    "No response for install-config"));
-            }
-
-            const int status = ex->response->result_int();
-            if (status != 200) {
-              auto err = monad::make_error(
-                  my_errors::NETWORK::READ_ERROR,
-                  fmt::format("install-config fetch HTTP status {}", status));
-              err.response_status = status;
-              err.params["response_body_preview"] = ex->response->body();
-              return monad::IO<dto::DeviceInstallConfigDto>::fail(
-                  std::move(err));
-            }
-
-            return monad::IO<dto::DeviceInstallConfigDto>::from_result(
-                ex->template parseJsonDataResponse<
-                    dto::DeviceInstallConfigDto>());
-          });
-    };
+    if (!token_opt || token_opt->empty()) {
+      co_return Result::Err(
+          monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                            "Device access token unavailable"));
+    }
 
     constexpr int kMaxAttempts = 4;
-    constexpr std::chrono::milliseconds kBaseRetryDelay{200};
+    auto retry_delay = std::chrono::milliseconds{200};
+    const auto executor = co_await asio::this_coro::executor;
+    const auto url = fmt::format("{}/apiv1/devices/self/install-config",
+                                 config_provider_.get().base_url);
 
-    auto retry_count = std::make_shared<int>(0);
-    auto next_delay =
-        std::make_shared<std::chrono::milliseconds>(kBaseRetryDelay);
+    for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+      auto exchange_result =
+          certctrl::async_support::make_http_exchange<monad::GetStringTag>(url);
+      if (exchange_result.is_err()) {
+        co_return Result::Err(std::move(exchange_result).error());
+      }
 
-  auto validated_fetch = perform_fetch().then(
-    [this, expected_version,
-     expected_hash](dto::DeviceInstallConfigDto config)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
-          if (expected_version && config.version < *expected_version) {
-            output_.logger().warning()
-                << "Fetched install-config version " << config.version
-                << " is older than expected " << *expected_version << std::endl;
+      auto exchange = std::move(exchange_result).value();
+      exchange->request.set(http::field::authorization,
+                            std::string("Bearer ") + *token_opt);
+      auto request_result =
+          co_await certctrl::async_support::http_exchange_awaitable<
+              monad::GetStringTag>(http_client_, exchange);
+      if (request_result.is_err()) {
+        co_return Result::Err(std::move(request_result).error());
+      }
 
+      exchange = std::move(request_result).value();
+      if (!exchange->response) {
+        co_return Result::Err(monad::make_error(
+            my_errors::NETWORK::READ_ERROR, "No response for install-config"));
+      }
+
+      const int status = exchange->response->result_int();
+      if (status != 200) {
         auto err = monad::make_error(
-                my_errors::GENERAL::UNEXPECTED_RESULT,
-                fmt::format("install-config fetch returned stale version {} "
-                            "(expected >= {})",
-                            config.version, *expected_version));
-            err.params["expected_version"] = std::to_string(*expected_version);
-            err.params["observed_version"] = std::to_string(config.version);
-            err.params["retry_reason"] = "stale_version";
-        return monad::IO<dto::DeviceInstallConfigDto>::fail(
-          std::move(err));
-          }
-
-          if (expected_version && config.version > *expected_version) {
-            output_.logger().info()
-                << "Fetched install-config version " << config.version
-                << " (ahead of expected " << *expected_version << ")"
-                << std::endl;
-          }
-
-          if (expected_hash && !config.installs_hash.empty() &&
-              config.installs_hash != *expected_hash) {
-            output_.logger().warning()
-                << "Fetched install-config hash mismatch" << std::endl;
-          }
-
-      return monad::IO<dto::DeviceInstallConfigDto>::pure(
-        std::move(config));
-        });
-
-    auto should_retry = [this, retry_count, next_delay,
-                         kMaxAttempts](const monad::Error &err) -> bool {
-      auto *reason = err.params.if_contains("retry_reason");
-      if (!reason || !reason->is_string() ||
-          reason->as_string() != "stale_version") {
-        return false;
+            my_errors::NETWORK::READ_ERROR,
+            fmt::format("install-config fetch HTTP status {}", status));
+        err.response_status = status;
+        err.params["response_body_preview"] = exchange->response->body();
+        co_return Result::Err(std::move(err));
       }
 
-      const int current_attempt = *retry_count;
-      const bool can_retry = (current_attempt + 1) < kMaxAttempts;
-      if (can_retry) {
-        auto delay = *next_delay;
-        output_.logger().info()
-            << "Retrying install-config fetch (attempt "
-            << (current_attempt + 2) << "/" << kMaxAttempts << ") after "
-            << delay.count() << "ms" << std::endl;
-        *next_delay = *next_delay * 2;
-      } else {
+      auto parsed =
+          exchange
+              ->template parseJsonDataResponse<dto::DeviceInstallConfigDto>();
+      if (parsed.is_err()) {
+        co_return Result::Err(std::move(parsed).error());
+      }
+      auto config = std::move(parsed).value();
+
+      if (expected_version && config.version < *expected_version) {
         output_.logger().warning()
-            << "install-config fetch exhausted retries for stale version"
+            << "Fetched install-config version " << config.version
+            << " is older than expected " << *expected_version << std::endl;
+        if (attempt == kMaxAttempts) {
+          auto err = monad::make_error(
+              my_errors::GENERAL::UNEXPECTED_RESULT,
+              fmt::format("install-config fetch returned stale version {} "
+                          "(expected >= {})",
+                          config.version, *expected_version));
+          err.params["expected_version"] = std::to_string(*expected_version);
+          err.params["observed_version"] = std::to_string(config.version);
+          err.params["retry_reason"] = "stale_version";
+          co_return Result::Err(std::move(err));
+        }
+
+        output_.logger().info()
+            << "Retrying install-config fetch (attempt " << (attempt + 1) << '/'
+            << kMaxAttempts << ") after " << retry_delay.count() << "ms"
             << std::endl;
+        asio::steady_timer timer(executor, retry_delay);
+        co_await timer.async_wait(asio::use_awaitable);
+        retry_delay *= 2;
+        continue;
       }
 
-      ++(*retry_count);
-      return can_retry;
-    };
+      if (expected_version && config.version > *expected_version) {
+        output_.logger().info()
+            << "Fetched install-config version " << config.version
+            << " (ahead of expected " << *expected_version << ')' << std::endl;
+      }
+      if (expected_hash && !config.installs_hash.empty() &&
+          config.installs_hash != *expected_hash) {
+        output_.logger().warning()
+            << "Fetched install-config hash mismatch" << std::endl;
+      }
 
-  return std::move(validated_fetch)
-    .retry_exponential_if(kMaxAttempts, kBaseRetryDelay, io_context_,
-                should_retry);
+      co_return Result::Ok(std::move(config));
+    }
+
+    co_return Result::Err(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                          "install-config fetch exhausted without a result"));
   }
 
 private:
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;
   client_async::HttpClientManager &http_client_;
-  asio::io_context &io_context_;
 };
-} // namespace certctrl
+
+} // namespace certctrl::install_actions

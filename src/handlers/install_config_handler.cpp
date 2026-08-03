@@ -31,11 +31,10 @@ InstallConfigHandler::InstallConfigHandler(
 
 std::string InstallConfigHandler::command() const { return "install-config"; }
 
-monad::IO<void> InstallConfigHandler::start() {
-  using ReturnIO = monad::IO<void>;
-
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigHandler::start_awaitable() {
   if (cli_ctx_.positionals.size() < 2) {
-    return show_usage();
+    co_return show_usage();
   }
 
   const std::string action = cli_ctx_.positionals[1];
@@ -46,26 +45,26 @@ monad::IO<void> InstallConfigHandler::start() {
   install_config_manager_->invalidate_all_caches();
 
   if (action == "pull") {
-    return handle_pull();
+    co_return co_await handle_pull_awaitable();
   }
   if (action == "apply") {
-    return handle_apply();
+    co_return co_await handle_apply_awaitable();
   }
   if (action == "show") {
-    return handle_show();
+    co_return handle_show();
   }
   if (action == "clear-cache") {
-    return handle_clear_cache();
+    co_return handle_clear_cache();
   }
 
-  return show_usage(fmt::format("Unknown action '{}'.", action));
+  co_return show_usage(fmt::format("Unknown action '{}'.", action));
 }
 
-monad::IO<void> InstallConfigHandler::show_usage() const {
+monad::MyResult<void> InstallConfigHandler::show_usage() const {
   return show_usage("");
 }
 
-monad::IO<void>
+monad::MyResult<void>
 InstallConfigHandler::show_usage(const std::string &error) const {
   if (!error.empty()) {
     output_.logger().error() << error << std::endl;
@@ -91,7 +90,7 @@ InstallConfigHandler::show_usage(const std::string &error) const {
       << "  show          Display staged version information\n"
       << "  clear-cache   Drop cached install-config data\n"
       << std::endl;
-  return monad::IO<void>::pure();
+  return monad::MyResult<void>::Ok();
 }
 
 std::optional<std::int64_t> InstallConfigHandler::get_optional_id(
@@ -141,149 +140,146 @@ InstallConfigHandler::parse_pull_options(const std::string &action) const {
   return opts;
 }
 
-monad::IO<void> InstallConfigHandler::handle_pull() {
-  using ReturnIO = monad::IO<void>;
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigHandler::handle_pull_awaitable() {
   auto options = parse_pull_options("pull");
 
   output_.logger().info() << "Fetching latest install-config from API"
                           << std::endl;
-  auto self = shared_from_this();
-  return install_config_manager_
-      ->ensure_config_version(std::nullopt, std::nullopt)
-      .then([self, options](std::shared_ptr<const dto::DeviceInstallConfigDto>
-                                config_ptr) mutable {
-        if (!config_ptr) {
-          self->output_.logger().warning()
-              << "install-config fetch returned no payload" << std::endl;
-          return monad::IO<void>::pure();
-        }
+  auto config_result = co_await install_config_manager_->ensure_config_version(
+      std::nullopt, std::nullopt);
+  if (config_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(config_result).error());
+  }
+  auto config = std::move(config_result).value();
+  if (!config) {
+    output_.logger().warning()
+        << "install-config fetch returned no payload" << std::endl;
+    co_return monad::MyResult<void>::Ok();
+  }
 
-        self->output_.logger().info() << "Fetched install-config version "
-                                      << config_ptr->version << std::endl;
+  output_.logger().info() << "Fetched install-config version "
+                          << config->version << std::endl;
+  if (options.no_apply) {
+    output_.logger().info()
+        << "Staged install-config without applying actions." << std::endl;
+    co_return monad::MyResult<void>::Ok();
+  }
 
-        if (options.no_apply) {
-          self->output_.logger().info()
-              << "Staged install-config without applying actions." << std::endl;
-          return monad::IO<void>::pure();
-        }
-
-        return self->install_config_manager_
-            ->rearm_local_install_update_window()
-            .then([self, config_ptr]() {
-              return self->install_config_manager_
-                  ->approve_and_persist_after_update_script(*config_ptr);
-            })
-            .then([self, config_ptr, options]() {
-              return self->apply_copy_and_import(config_ptr, options);
-            });
-      });
+  auto rearm_result =
+      co_await install_config_manager_->rearm_local_install_update_window();
+  if (rearm_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(rearm_result).error());
+  }
+  auto persist_result =
+      co_await install_config_manager_->approve_and_persist_after_update_script(
+          *config);
+  if (persist_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(persist_result).error());
+  }
+  co_return co_await apply_copy_and_import_awaitable(std::move(config),
+                                                     options);
 }
 
-monad::IO<void> InstallConfigHandler::handle_apply() {
-  using ReturnIO = monad::IO<void>;
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigHandler::handle_apply_awaitable() {
   auto options = parse_pull_options("apply");
 
   output_.logger().info() << "Fetching latest install-config before apply"
                           << std::endl;
 
-  auto self = shared_from_this();
-  return install_config_manager_
-      ->ensure_config_version(std::nullopt, std::nullopt)
-      .then([self, options](
-                std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr) {
-        if (!config_ptr) {
-          self->output_.logger().warning()
-              << "install-config fetch returned no payload" << std::endl;
-          return monad::IO<void>::pure();
-        }
+  auto config_result = co_await install_config_manager_->ensure_config_version(
+      std::nullopt, std::nullopt);
+  if (config_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(config_result).error());
+  }
+  auto config = std::move(config_result).value();
+  if (!config) {
+    output_.logger().warning()
+        << "install-config fetch returned no payload" << std::endl;
+    co_return monad::MyResult<void>::Ok();
+  }
 
-        self->output_.logger().info() << "Applying install-config version "
-                                      << config_ptr->version << std::endl;
-
-        return self->install_config_manager_
-            ->rearm_local_install_update_window()
-            .then([self, config_ptr]() {
-              return self->install_config_manager_
-                  ->approve_and_persist_after_update_script(*config_ptr);
-            })
-            .then([self, config_ptr, options]() {
-              return self->apply_copy_and_import(config_ptr, options);
-            });
-      });
+  output_.logger().info() << "Applying install-config version "
+                          << config->version << std::endl;
+  auto rearm_result =
+      co_await install_config_manager_->rearm_local_install_update_window();
+  if (rearm_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(rearm_result).error());
+  }
+  auto persist_result =
+      co_await install_config_manager_->approve_and_persist_after_update_script(
+          *config);
+  if (persist_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(persist_result).error());
+  }
+  co_return co_await apply_copy_and_import_awaitable(std::move(config),
+                                                     options);
 }
 
-monad::IO<void> InstallConfigHandler::handle_show() {
-  using ReturnIO = monad::IO<void>;
+monad::MyResult<void> InstallConfigHandler::handle_show() {
   auto config_ptr = install_config_manager_->cached_config_snapshot();
   if (!config_ptr) {
     std::cerr << "No staged install-config available." << std::endl;
-    return ReturnIO::pure();
+    return monad::MyResult<void>::Ok();
   }
 
   std::cerr << "Staged install-config version: " << config_ptr->version
             << " (installs=" << config_ptr->installs.size() << ")" << std::endl;
-  return ReturnIO::pure();
+  return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void> InstallConfigHandler::handle_clear_cache() {
+monad::MyResult<void> InstallConfigHandler::handle_clear_cache() {
   install_config_manager_->clear_cache();
   std::cerr << "Cleared cached install-config state (disk and memory)."
             << std::endl;
-  return monad::IO<void>::pure();
+  return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void> InstallConfigHandler::apply_copy_and_import(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigHandler::apply_copy_and_import_awaitable(
     std::shared_ptr<const dto::DeviceInstallConfigDto> config,
     const PullOptions &options) {
-  using ReturnIO = monad::IO<void>;
+  auto log_error = [](const monad::Error &error) {
+    BOOST_LOG_SEV(app_logger(), trivial::error)
+        << "apply_copy_and_import encountered error code=" << error.code
+        << " status=" << error.response_status << " what=" << error.what;
+  };
 
-  active_config_ = std::move(config);
-  active_options_ = options;
-  auto self = shared_from_this();
-
-  return run_copy_stage()
-      .then([self]() { return self->run_import_stage(); })
-      .then([self]() {
-        if (!self->active_config_) {
-          return monad::IO<void>::fail(monad::make_error(
-              my_errors::GENERAL::INVALID_ARGUMENT,
-              "after_update_script invoked without active config"));
-        }
-        ::data::DeviceUpdateSignal synthetic_signal{};
-        synthetic_signal.type = "install.updated";
-        synthetic_signal.ts_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        return self->install_config_manager_
-            ->maybe_run_after_update_script_for_signal(
-                *self->active_config_, synthetic_signal,
-                /*bypass_auto_apply_config_gate=*/true);
-      })
-      .then([self]() {
-        self->output_.logger().info()
-            << "install-config actions completed successfully." << std::endl;
-        self->clear_active_context();
-        return monad::IO<void>::pure();
-      })
-      .catch_then([self](monad::Error err) -> ReturnIO {
-        BOOST_LOG_SEV(app_logger(), trivial::error)
-            << "apply_copy_and_import encountered error code=" << err.code
-            << " status=" << err.response_status << " what=" << err.what;
-        self->clear_active_context();
-        return ReturnIO::fail(std::move(err));
-      });
-}
-
-monad::IO<void> InstallConfigHandler::run_copy_stage() {
-  using ReturnIO = monad::IO<void>;
-  if (!active_config_ || !active_options_) {
-    return ReturnIO::fail(
-        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                          "copy stage invoked without active context"));
+  auto copy_result = co_await run_copy_stage_awaitable(*config, options);
+  if (copy_result.is_err()) {
+    log_error(copy_result.error());
+    co_return copy_result;
+  }
+  auto import_result = co_await run_import_stage_awaitable(*config, options);
+  if (import_result.is_err()) {
+    log_error(import_result.error());
+    co_return import_result;
   }
 
-  const auto &options = *active_options_;
+  ::data::DeviceUpdateSignal synthetic_signal{};
+  synthetic_signal.type = "install.updated";
+  synthetic_signal.ts_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count();
+  auto script_result = co_await install_config_manager_
+                           ->maybe_run_after_update_script_for_signal(
+                               *config, synthetic_signal,
+                               /*bypass_auto_apply_config_gate=*/true);
+  if (script_result.is_err()) {
+    log_error(script_result.error());
+    co_return script_result;
+  }
+
+  output_.logger().info() << "install-config actions completed successfully."
+                          << std::endl;
+  co_return monad::MyResult<void>::Ok();
+}
+
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigHandler::run_copy_stage_awaitable(
+    const dto::DeviceInstallConfigDto &config, const PullOptions &options) {
   BOOST_LOG_SEV(app_logger(), trivial::trace)
       << "apply_copy_and_import select_copy start cert_id="
       << (options.cert_id ? std::to_string(*options.cert_id) : "<none>")
@@ -292,53 +288,41 @@ monad::IO<void> InstallConfigHandler::run_copy_stage() {
       << " skip_copy=" << (options.skip_copy ? "true" : "false");
 
   if (options.skip_copy) {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
-  const auto &config = *active_config_;
-
   if (options.cert_id && options.ca_id) {
-    auto self = shared_from_this();
-    return install_config_manager_
-        ->apply_copy_actions(config, std::optional<std::string>("cert"),
-                             options.cert_id)
-        .then([self]() {
-          const auto &config_inner = *self->active_config_;
-          const auto &options_inner = *self->active_options_;
-          return self->install_config_manager_->apply_copy_actions(
-              config_inner, std::optional<std::string>("ca"),
-              options_inner.ca_id);
-        });
+    auto cert_result = co_await install_config_manager_->apply_copy_actions(
+        config, std::optional<std::string>("cert"), options.cert_id);
+    if (cert_result.is_err()) {
+      co_return cert_result;
+    }
+    co_return co_await install_config_manager_->apply_copy_actions(
+        config, std::optional<std::string>("ca"), options.ca_id);
   }
 
   if (options.cert_id) {
-    return install_config_manager_->apply_copy_actions(
+    co_return co_await install_config_manager_->apply_copy_actions(
         config, std::optional<std::string>("cert"), options.cert_id);
   }
 
   if (options.ca_id) {
-    return install_config_manager_->apply_copy_actions(
+    co_return co_await install_config_manager_->apply_copy_actions(
         config, std::optional<std::string>("ca"), options.ca_id);
   }
 
-  return install_config_manager_->apply_copy_actions(config, std::nullopt,
-                                                     std::nullopt);
+  co_return co_await install_config_manager_->apply_copy_actions(
+      config, std::nullopt, std::nullopt);
 }
 
-monad::IO<void> InstallConfigHandler::run_import_stage() {
-  using ReturnIO = monad::IO<void>;
-  if (!active_config_ || !active_options_) {
-    return ReturnIO::fail(
-        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                          "import stage invoked without active context"));
-  }
-
-  const auto &options = *active_options_;
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigHandler::run_import_stage_awaitable(
+    const dto::DeviceInstallConfigDto &config, const PullOptions &options) {
   DEBUG_PRINT("InstallConfigHandler::apply_copy_and_import - select_import");
   if (options.skip_import || options.cert_id) {
     BOOST_LOG_SEV(app_logger(), trivial::trace)
         << "Skipping import_ca actions due to options";
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   std::optional<std::string> target_type;
@@ -356,13 +340,8 @@ monad::IO<void> InstallConfigHandler::run_import_stage() {
   DEBUG_PRINT("InstallConfigHandler::apply_copy_and_import - calling "
               "apply_import_ca_actions");
 
-  return install_config_manager_->apply_import_ca_actions(
-      *active_config_, target_type, target_id);
-}
-
-void InstallConfigHandler::clear_active_context() {
-  active_config_.reset();
-  active_options_.reset();
+  co_return co_await install_config_manager_->apply_import_ca_actions(
+      config, target_type, target_id);
 }
 
 } // namespace certctrl

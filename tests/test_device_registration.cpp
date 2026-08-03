@@ -20,6 +20,7 @@
 #include "handlers/login_handler.hpp"
 #include "http_client_config_provider.hpp"
 #include "http_client_manager.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "include/login_helper.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
@@ -131,8 +132,8 @@ protected:
             .to<certctrl::CertctrlConfigProviderFile>()
             .in(di::singleton),
         di::bind<certctrl::IDeviceStateStore>()
-          .to<certctrl::SqliteDeviceStateStore>()
-          .in(di::singleton),
+            .to<certctrl::SqliteDeviceStateStore>()
+            .in(di::singleton),
         di::bind<cjj365::IIoContextManager>().to<cjj365::IoContextManager>().in(
             di::singleton));
 
@@ -147,20 +148,16 @@ protected:
     io_context_manager_ = &inj.create<cjj365::IIoContextManager &>();
     http_client_manager_ = &inj.create<client_async::HttpClientManager &>();
 
-    misc::ThreadNotifier login_notifier(60000);
-    std::optional<testutil::loginSuccessResult> login_result;
-    testutil::login_io(*http_client_manager_, base_url_,
-                       testutil::login_email(), testutil::login_password())
-        .run([&](auto r) {
-          login_result = std::move(r);
-          login_notifier.notify();
-        });
-    login_notifier.waitForNotification();
-    ASSERT_TRUE(login_result.has_value()) << "login_io produced no result";
-    ASSERT_FALSE(login_result->is_err())
-        << "login failed: " << login_result->error().what;
-    session_cookie_ = login_result->value().session_cookie;
-    user_id_ = login_result->value().user.id;
+    auto login_result = testinfra::run_result_awaitable(
+        io_context_manager_->ioc(),
+        testutil::login_awaitable(*http_client_manager_, base_url_,
+                                  testutil::login_email(),
+                                  testutil::login_password()),
+        std::chrono::seconds(60));
+    ASSERT_FALSE(login_result.is_err())
+        << "login failed: " << login_result.error().what;
+    session_cookie_ = login_result.value().session_cookie;
+    user_id_ = login_result.value().user.id;
     ASSERT_FALSE(session_cookie_.empty()) << "login returned empty cookie";
     ASSERT_GT(user_id_, 0) << "login returned invalid user_id";
 
@@ -189,23 +186,15 @@ TEST(DeviceAuthTypes, PollRespParsesNumericUserId) {
 }
 
 TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
-  using StartRespResult = monad::MyResult<data::deviceauth::StartResp>;
-  using PollRespResult = monad::MyResult<data::deviceauth::PollResp>;
+  auto start_result =
+      testinfra::run_result_awaitable<data::deviceauth::StartResp>(
+          io_context_manager_->ioc(),
+          handler_->start_device_authorization_awaitable(),
+          std::chrono::seconds(180));
+  ASSERT_FALSE(start_result.is_err())
+      << "device_start failed: " << start_result.error().what;
 
-  misc::ThreadNotifier start_notifier(180000);
-  std::optional<StartRespResult> start_result;
-  handler_->start_device_authorization().run([&](auto r) {
-    start_result = std::move(r);
-    start_notifier.notify();
-  });
-  start_notifier.waitForNotification();
-
-  ASSERT_TRUE(start_result.has_value())
-      << "start_device_authorization yielded no result";
-  ASSERT_FALSE(start_result->is_err())
-      << "device_start failed: " << start_result->error().what;
-
-  const auto start_resp = start_result->value();
+  const auto start_resp = start_result.value();
   ASSERT_FALSE(start_resp.device_code.empty()) << "missing device_code";
   ASSERT_FALSE(start_resp.user_code.empty()) << "missing user_code";
   ASSERT_FALSE(start_resp.verification_uri.empty())
@@ -218,33 +207,28 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
   std::cerr << "User code: " << start_resp.user_code << std::endl;
   std::cerr << "Verification URI: " << start_resp.verification_uri << std::endl;
 
-  misc::ThreadNotifier verify_notifier(60000);
-  std::optional<monad::MyResult<data::deviceauth::VerifyResp>> verify_result;
-  testutil::device_verify_io(*http_client_manager_, base_url_, session_cookie_,
-                             start_resp.user_code)
-      .run([&](auto r) {
-        verify_result = std::move(r);
-        verify_notifier.notify();
-      });
-  verify_notifier.waitForNotification();
+  auto verify_result = testinfra::run_result_awaitable(
+      io_context_manager_->ioc(),
+      testutil::device_verify_awaitable(*http_client_manager_, base_url_,
+                                        session_cookie_, start_resp.user_code),
+      std::chrono::seconds(60));
 
-  ASSERT_TRUE(verify_result.has_value()) << "device_verify produced no result";
-  if (verify_result->is_err()) {
-    std::cerr << "Verify error code: " << verify_result->error().code
+  if (verify_result.is_err()) {
+    std::cerr << "Verify error code: " << verify_result.error().code
               << std::endl;
-    std::cerr << "Verify error what: " << verify_result->error().what
+    std::cerr << "Verify error what: " << verify_result.error().what
               << std::endl;
     std::cerr << "Verify error response_status: "
-              << verify_result->error().response_status << std::endl;
-    if (verify_result->error().params.contains("response_body_preview")) {
+              << verify_result.error().response_status << std::endl;
+    if (verify_result.error().params.contains("response_body_preview")) {
       std::cerr << "Response body preview: "
-                << verify_result->error().params.at("response_body_preview")
+                << verify_result.error().params.at("response_body_preview")
                 << std::endl;
     }
   }
-  ASSERT_FALSE(verify_result->is_err())
-      << "device_verify failed: " << verify_result->error().what;
-  EXPECT_EQ(verify_result->value().status, "approved");
+  ASSERT_FALSE(verify_result.is_err())
+      << "device_verify failed: " << verify_result.error().what;
+  EXPECT_EQ(verify_result.value().status, "approved");
 
   const auto poll_sleep =
       std::chrono::seconds(std::clamp(start_resp.interval, 1, 10));
@@ -255,20 +239,14 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
   std::string last_status;
 
   for (int attempt = 0; attempt < max_attempts; ++attempt) {
-    misc::ThreadNotifier poll_notifier(60000);
-    std::optional<PollRespResult> poll_result;
-    handler_->poll_device_once().run([&](auto r) {
-      poll_result = std::move(r);
-      poll_notifier.notify();
-    });
-    poll_notifier.waitForNotification();
+    auto poll_result =
+        testinfra::run_result_awaitable<data::deviceauth::PollResp>(
+            io_context_manager_->ioc(), handler_->poll_device_once_awaitable(),
+            std::chrono::seconds(60));
+    ASSERT_FALSE(poll_result.is_err())
+        << "device_poll failed: " << poll_result.error().what;
 
-    ASSERT_TRUE(poll_result.has_value())
-        << "device_poll attempt " << attempt << " produced no result";
-    ASSERT_FALSE(poll_result->is_err())
-        << "device_poll failed: " << poll_result->error().what;
-
-    const auto poll_resp = poll_result->value();
+    const auto poll_resp = poll_result.value();
     ASSERT_FALSE(poll_resp.status.empty())
         << "device_poll returned empty status";
     last_status = poll_resp.status;
@@ -312,38 +290,24 @@ TEST_F(RealServerLoginHandlerFixture, StartAndPollOnceRealServer) {
   EXPECT_FALSE(successful_poll->user_id->empty())
       << "ready poll response contained empty user_id";
 
-  misc::ThreadNotifier register_notifier(60000);
-  std::optional<monad::MyVoidResult> register_result;
-  handler_->register_device().run([&](auto r) {
-    register_result = std::move(r);
-    register_notifier.notify();
-  });
-  register_notifier.waitForNotification();
-
-  ASSERT_TRUE(register_result.has_value())
-      << "register_device produced no result";
-  ASSERT_FALSE(register_result->is_err())
-      << "device_register failed: " << register_result->error().what;
+  auto register_result = testinfra::run_result_awaitable<void>(
+      io_context_manager_->ioc(), handler_->register_device_awaitable(),
+      std::chrono::seconds(60));
+  ASSERT_FALSE(register_result.is_err())
+      << "device_register failed: " << register_result.error().what;
 
   // Verify the device was registered by querying the user's devices
   std::cerr << "Verifying device registration by querying devices list..."
             << std::endl;
-  misc::ThreadNotifier devices_notifier(60000);
-  std::optional<monad::MyResult<json::array>> devices_result;
-  testutil::list_user_devices_io(*http_client_manager_, base_url_,
-                                 session_cookie_, user_id_)
-      .run([&](auto r) {
-        devices_result = std::move(r);
-        devices_notifier.notify();
-      });
-  devices_notifier.waitForNotification();
+  auto devices_result = testinfra::run_result_awaitable(
+      io_context_manager_->ioc(),
+      testutil::list_user_devices_awaitable(*http_client_manager_, base_url_,
+                                            session_cookie_, user_id_),
+      std::chrono::seconds(60));
+  ASSERT_FALSE(devices_result.is_err())
+      << "list_user_devices failed: " << devices_result.error().what;
 
-  ASSERT_TRUE(devices_result.has_value())
-      << "list_user_devices produced no result";
-  ASSERT_FALSE(devices_result->is_err())
-      << "list_user_devices failed: " << devices_result->error().what;
-
-  const auto &devices = devices_result->value();
+  const auto &devices = devices_result.value();
   std::cerr << "Found " << devices.size() << " device(s) for user " << user_id_
             << std::endl;
 

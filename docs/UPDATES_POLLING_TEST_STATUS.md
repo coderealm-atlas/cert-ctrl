@@ -132,22 +132,24 @@ POST /apiv1/device/updates        - Poll updates (not reached)
 **Location:** `tests/include/api_test_helper.hpp`
 
 **Key Functions:**
-- `login_io()` - Username/password authentication
-- `device_authorize_io()` - Start device auth flow
-- `device_verify_io()` - Verify device code
-- `device_token_io()` - Get access token
-- `list_devices_io()` - List user's devices
-- `create_self_ca_io()` - Create self-CA with proper config
-- `create_acme_account_io()` - Create ACME account with ca_id
-- `create_cert_record_io()` - Create certificate record
-- `issue_cert_io()` - Issue certificate
-- `assign_cert_to_device_io()` - Assign cert (blocked on test server)
+- `login_awaitable()` - Username/password authentication
+- `device_start_awaitable()` - Start device auth flow
+- `device_poll_awaitable()` - Poll device auth flow
+- `device_verify_awaitable()` - Verify device code
+- `device_register_awaitable()` - Register an authorized device
+- `list_user_devices_awaitable()` - List devices through the login helper
+- `list_devices_awaitable()` - List user's devices
+- `create_self_ca_awaitable()` - Create self-CA with proper config
+- `create_acme_account_awaitable()` - Create ACME account with ca_id
+- `create_cert_record_awaitable()` - Create certificate record
+- `issue_cert_awaitable()` - Issue certificate
+- `assign_cert_to_device_awaitable()` - Assign cert (blocked on test server)
 
 **Features:**
 - Comprehensive error logging (includes response bodies)
 - JSON parsing with proper error handling
-- monad::IO pattern throughout
-- Result<T, Error> return types
+- Native Boost.Asio coroutine pattern throughout
+- `boost::asio::awaitable<monad::MyResult<T>>` return types
 - Detailed diagnostic output
 
 ## Running the Test

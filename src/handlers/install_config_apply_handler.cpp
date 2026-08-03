@@ -22,13 +22,12 @@ InstallConfigApplyHandler::InstallConfigApplyHandler(
 
 std::string InstallConfigApplyHandler::command() const { return "install"; }
 
-monad::IO<void> InstallConfigApplyHandler::start() {
-  using ReturnIO = monad::IO<void>;
-
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigApplyHandler::start_awaitable() {
   if (cli_ctx_.positionals.size() < 2 || cli_ctx_.positionals[1] != "apply") {
     output_.logger().error()
         << "Usage: cert-ctrl install-config apply" << std::endl;
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   if (config_provider_.get().auto_apply_config) {
@@ -44,7 +43,7 @@ monad::IO<void> InstallConfigApplyHandler::start() {
     // Future: parse target filters from CLI (not yet implemented).
   }
 
-  return workflow_runner_->start(options);
+  co_return co_await workflow_runner_->start_awaitable(options);
 }
 
 } // namespace certctrl

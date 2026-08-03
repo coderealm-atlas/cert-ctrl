@@ -18,14 +18,14 @@ class DeviceAutomationHandler
     : public IHandler,
       public std::enable_shared_from_this<DeviceAutomationHandler> {
 public:
-  DeviceAutomationHandler(CliCtx &cli_ctx,                   //
-                          customio::ConsoleOutput &output,   //
+  DeviceAutomationHandler(CliCtx &cli_ctx,                 //
+                          customio::ConsoleOutput &output, //
                           certctrl::ICertctrlConfigProvider &config_provider,
                           client_async::HttpClientManager &http_client,
                           certctrl::IDeviceStateStore &state_store);
 
   std::string command() const override { return "device"; }
-  monad::IO<void> start() override;
+  boost::asio::awaitable<monad::MyResult<void>> start_awaitable() override;
 
 private:
   struct ActionOptions {
@@ -41,11 +41,14 @@ private:
   client_async::HttpClientManager &http_client_;
   certctrl::IDeviceStateStore &state_store_;
 
-  monad::IO<void> show_usage(const std::string &error = "") const;
-  monad::IO<void> handle_assign_certificate(const std::string &api_key);
-  monad::IO<void> handle_install_config_update(const ActionOptions &options);
-  monad::IO<void> dispatch_action(const std::string &action,
-                                  const ActionOptions &options);
+  monad::MyResult<void> show_usage(const std::string &error = "") const;
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_assign_certificate_awaitable(const std::string &api_key);
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_install_config_update_awaitable(const ActionOptions &options);
+  boost::asio::awaitable<monad::MyResult<void>>
+  dispatch_action_awaitable(const std::string &action,
+                            const ActionOptions &options);
   ActionOptions parse_action_options(const std::string &action) const;
 };
 

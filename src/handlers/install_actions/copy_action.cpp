@@ -15,7 +15,6 @@
 #include <vector>
 
 #include "common_macros.hpp"
-#include "io_monad.hpp"
 #include "my_error_codes.hpp"
 #include "result_monad.hpp"
 #include "util/my_logging.hpp"
@@ -224,111 +223,88 @@ CopyActionHandler::CopyActionHandler(
   }
 }
 
-/**
- * If you don't copy the config, make sure to keep the config object alive
- * during the lifetime of the returned IO.
- * If you copy the config, manage the lifetime of the returned IO accordingly.
- */
-monad::IO<void>
+boost::asio::awaitable<monad::MyResult<void>>
 CopyActionHandler::apply(const dto::DeviceInstallConfigDto &config,
                          const std::optional<std::string> &target_ob_type,
                          std::optional<std::int64_t> target_ob_id) {
-  using ReturnIO = monad::IO<void>;
-
-  auto resource_materializer = resource_materializer_;
-  if (!resource_materializer && resource_materializer_factory_) {
-    resource_materializer = resource_materializer_factory_();
-    resource_materializer_ = resource_materializer;
-  }
-
-  if (!resource_materializer) {
-    return ReturnIO::fail(
-        monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
-                          "CopyActionHandler missing resource materializer"));
-  }
-
-  failure_messages_.clear();
+  using Result = monad::MyResult<void>;
 
   try {
-    std::vector<monad::IO<void>> action_ios;
-
-    for (const auto &item : config.installs) {
-      action_ios.push_back(process_one_item(item, resource_materializer,
-                                            target_ob_type, target_ob_id));
+    auto resource_materializer = resource_materializer_;
+    if (!resource_materializer && resource_materializer_factory_) {
+      resource_materializer = resource_materializer_factory_();
+      resource_materializer_ = resource_materializer;
     }
 
-    DEBUG_PRINT("**Dispatching copy action_ios count=" << action_ios.size());
+    if (!resource_materializer) {
+      co_return Result::Err(
+          monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
+                            "CopyActionHandler missing resource materializer"));
+    }
 
-    auto self = shared_from_this();
-    return monad::collect_result_io(std::move(action_ios))
-        .then([self](auto results) -> ReturnIO {
-          DEBUG_PRINT("**action_ios** returned.");
-          for (const auto &res : results) {
-            if (res.is_err()) {
-              self->failure_messages_.push_back(res.error().what);
-            }
-          }
-          if (!self->failure_messages_.empty()) {
-            BOOST_LOG_SEV(app_logger(), trivial::trace)
-                << "copy actions encountered " << self->failure_messages_.size()
-                << " failure(s)";
-            std::ostringstream oss;
-            oss << "copy actions encountered " << self->failure_messages_.size()
-                << " failure(s): ";
-            for (std::size_t i = 0; i < self->failure_messages_.size(); ++i) {
-              if (i != 0) {
-                oss << ", ";
-              }
-              oss << self->failure_messages_.at(i);
-            }
+    failure_messages_.clear();
 
-            const bool looks_like_permission_issue = std::any_of(
-                self->failure_messages_.begin(), self->failure_messages_.end(),
-                [](const std::string &msg) {
-                  return msg.find("Permission denied") != std::string::npos ||
-                         msg.find("Read-only file system") != std::string::npos ||
-                         msg.find("EACCES") != std::string::npos ||
-                         msg.find("EPERM") != std::string::npos;
-                });
+    std::size_t action_count = 0;
+    for (const auto &item : config.installs) {
+      ++action_count;
+      auto result = co_await process_one_item(item, resource_materializer,
+                                              target_ob_type, target_ob_id);
+      if (result.is_err()) {
+        failure_messages_.push_back(std::move(result).error().what);
+      }
+    }
 
-            if (looks_like_permission_issue) {
-              oss << ".****** If in linux system, it's most likely permission "
-                     "issue"
-                     " need to add ReadWritePaths in systemd service file. "
-                     "******";
-            }
-            auto err = monad::make_error(my_errors::GENERAL::FILE_READ_WRITE,
-                                         oss.str());
-            return ReturnIO::fail(std::move(err));
-          }
+    DEBUG_PRINT("**Completed copy action count=" << action_count);
+    if (!failure_messages_.empty()) {
+      BOOST_LOG_SEV(app_logger(), trivial::trace)
+          << "copy actions encountered " << failure_messages_.size()
+          << " failure(s)";
+      std::ostringstream oss;
+      oss << "copy actions encountered " << failure_messages_.size()
+          << " failure(s): ";
+      for (std::size_t i = 0; i < failure_messages_.size(); ++i) {
+        if (i != 0) {
+          oss << ", ";
+        }
+        oss << failure_messages_.at(i);
+      }
 
-          BOOST_LOG_SEV(app_logger(), trivial::trace)
-              << "copy actions completed successfully with no failures";
-          return ReturnIO::pure();
-        })
-        .catch_then([](monad::Error err) -> ReturnIO {
-          BOOST_LOG_SEV(app_logger(), trivial::error)
-              << "copy actions pipeline failed code=" << err.code
-              << " status=" << err.response_status << " what=" << err.what
-              << " params=" << boost::json::serialize(err.params);
-          return ReturnIO::fail(std::move(err));
-        });
+      const bool looks_like_permission_issue = std::any_of(
+          failure_messages_.begin(), failure_messages_.end(),
+          [](const std::string &msg) {
+            return msg.find("Permission denied") != std::string::npos ||
+                   msg.find("Read-only file system") != std::string::npos ||
+                   msg.find("EACCES") != std::string::npos ||
+                   msg.find("EPERM") != std::string::npos;
+          });
+      if (looks_like_permission_issue) {
+        oss << ".****** If in linux system, it's most likely permission issue"
+               " need to add ReadWritePaths in systemd service file. ******";
+      }
+      co_return Result::Err(
+          monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, oss.str()));
+    }
+
+    BOOST_LOG_SEV(app_logger(), trivial::trace)
+        << "copy actions completed successfully with no failures";
+    co_return Result::Ok();
   } catch (const std::exception &e) {
     BOOST_LOG_SEV(app_logger(), trivial::error)
         << "CopyActionHandler::apply caught exception: " << e.what();
-    return ReturnIO::fail(
+    co_return Result::Err(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, e.what()));
   }
 }
 
-monad::IO<void> CopyActionHandler::process_one_item(
+boost::asio::awaitable<monad::MyResult<void>>
+CopyActionHandler::process_one_item(
     const dto::InstallItem &item,
     IResourceMaterializer::Ptr resource_materializer,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
-  using ReturnIO = monad::IO<void>;
+  using Result = monad::MyResult<void>;
   if (item.type != "copy") {
-    return ReturnIO::pure();
+    co_return Result::Ok();
   }
 
   if (!item.enabled) {
@@ -336,40 +312,40 @@ monad::IO<void> CopyActionHandler::process_one_item(
         << "Skipping disabled copy item '" << item.id << "'" << std::endl;
     BOOST_LOG_SEV(app_logger(), trivial::debug)
         << "Skipping disabled copy item '" << item.id << "'";
-    return ReturnIO::pure();
+    co_return Result::Ok();
   }
 
   if (target_ob_type) {
     if (!item.ob_type || *item.ob_type != *target_ob_type) {
-      return ReturnIO::pure();
+      co_return Result::Ok();
     }
     if (target_ob_id && (!item.ob_id || *item.ob_id != *target_ob_id)) {
-      return ReturnIO::pure();
+      co_return Result::Ok();
     }
   }
 
   if (!item.from || item.from->empty()) {
     failure_messages_.push_back(
         fmt::format("copy item '{}' missing from entries", item.id));
-    return ReturnIO::pure();
+    co_return Result::Ok();
   }
 
   if (!item.to || item.to->empty()) {
     output_.logger().info() << "Skipping copy item '" << item.id
                             << "' due to empty destination list" << std::endl;
-    return ReturnIO::pure();
+    co_return Result::Ok();
   }
 
   if (item.from->size() != item.to->size()) {
     failure_messages_.push_back(
         fmt::format("copy item '{}': from/to length mismatch", item.id));
-    return ReturnIO::pure();
+    co_return Result::Ok();
   }
 
   if (!item.ob_type || !item.ob_id) {
     failure_messages_.push_back(
         fmt::format("copy item '{}' missing ob_type/ob_id", item.id));
-    return ReturnIO::pure();
+    co_return Result::Ok();
   }
 
   const std::string ob_type = *item.ob_type;
@@ -377,63 +353,56 @@ monad::IO<void> CopyActionHandler::process_one_item(
   output_.logger().debug() << "Processing copy item '" << item.id
                            << "' ob_type=" << ob_type << " ob_id=" << ob_id
                            << std::endl;
-  auto self = shared_from_this();
+  auto materialize_result =
+      co_await resource_materializer->ensure_materialized(item);
+  if (materialize_result.is_err()) {
+    auto err = std::move(materialize_result).error();
+    output_.logger().warning() << "ensure_materialized failed for '" << item.id
+                               << "': " << err.what << std::endl;
+    failure_messages_.push_back(
+        fmt::format("copy item '{}': {}", item.id, err.what));
+    co_return Result::Ok();
+  }
 
-  return resource_materializer->ensure_materialized(item)
-      .then([self, item, ob_type, ob_id]() -> ReturnIO {
-        self->output_.logger().debug()
-            << "ensure_materialized complete for '" << item.id
-            << "' ob_type=" << ob_type << " ob_id=" << ob_id << std::endl;
-        auto resource_root =
-            resource_root_for(self->runtime_dir_, ob_type, ob_id);
+  output_.logger().debug() << "ensure_materialized complete for '" << item.id
+                           << "' ob_type=" << ob_type << " ob_id=" << ob_id
+                           << std::endl;
+  auto resource_root = resource_root_for(runtime_dir_, ob_type, ob_id);
 
-        for (std::size_t i = 0; i < item.from->size(); ++i) {
-          const auto &virtual_name = item.from->at(i);
-          const auto &dest_path_str = item.to->at(i);
+  for (std::size_t i = 0; i < item.from->size(); ++i) {
+    const auto &virtual_name = item.from->at(i);
+    const auto &dest_path_str = item.to->at(i);
+    if (dest_path_str.empty()) {
+      BOOST_LOG_SEV(app_logger(), trivial::trace)
+          << "Empty destination path, skip copying " << virtual_name;
+      continue;
+    }
 
-          if (dest_path_str.empty()) {
-            BOOST_LOG_SEV(app_logger(), trivial::trace)
-                << "Empty destination path, skip copying " << virtual_name;
-            continue;
-          }
+    std::filesystem::path source_path = resource_root / virtual_name;
+    std::filesystem::path dest_path(dest_path_str);
+    if (!dest_path.is_absolute()) {
+      failure_messages_.push_back(
+          fmt::format("copy item '{}': destination path '{}' is not absolute",
+                      item.id, dest_path.string()));
+      continue;
+    }
 
-          std::filesystem::path source_path = resource_root / virtual_name;
-          std::filesystem::path dest_path(dest_path_str);
+    const bool private_material = is_private_material_name(virtual_name);
+    if (auto err = perform_copy_operation(output_, source_path, dest_path,
+                                          private_material)) {
+      failure_messages_.push_back(
+          fmt::format("copy item '{}': failed to copy '{}' -> '{}': {}",
+                      item.id, source_path.string(), dest_path.string(), *err));
+      continue;
+    }
 
-          if (!dest_path.is_absolute()) {
-            auto msg = fmt::format(
-                "copy item '{}': destination path '{}' is not absolute",
-                item.id, dest_path.string());
-            self->failure_messages_.push_back(std::move(msg));
-            continue;
-          }
+    output_.logger().info() << "Copied '" << source_path << "' -> '"
+                            << dest_path << "'" << std::endl;
+    BOOST_LOG_SEV(app_logger(), trivial::info)
+        << "Copied '" << source_path << "' -> '" << dest_path << "'";
+  }
 
-          bool private_material = is_private_material_name(virtual_name);
-          if (auto err = perform_copy_operation(self->output_, source_path,
-                                                dest_path, private_material)) {
-            auto msg = fmt::format(
-                "copy item '{}': failed to copy '{}' -> '{}': {}", item.id,
-                source_path.string(), dest_path.string(), *err);
-            self->failure_messages_.push_back(std::move(msg));
-            continue;
-          }
-
-          self->output_.logger().info() << "Copied '" << source_path << "' -> '"
-                                        << dest_path << "'" << std::endl;
-          BOOST_LOG_SEV(app_logger(), trivial::info)
-              << "Copied '" << source_path << "' -> '" << dest_path << "'";
-        }
-
-        return ReturnIO::pure();
-      })
-      .catch_then([self, item](monad::Error err) -> ReturnIO {
-        self->output_.logger().warning()
-            << "ensure_materialized failed for '" << item.id
-            << "': " << err.what << std::endl;
-        auto msg = fmt::format("copy item '{}': {}", item.id, err.what);
-        self->failure_messages_.push_back(std::move(msg));
-        return ReturnIO::pure();
-      });
+  co_return Result::Ok();
 }
 
 } // namespace certctrl::install_actions

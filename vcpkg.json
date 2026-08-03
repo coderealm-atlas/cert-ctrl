@@ -16,7 +16,12 @@
     "boost-interprocess",
     "boost-program-options",
     "boost-log",
-    "jwt-cpp",
+    {
+      "name": "jwt-cpp",
+      "features": [
+        "picojson"
+      ]
+    },
     {
       "name": "boost-asio",
       "features": [

@@ -19,16 +19,17 @@ public:
 
   std::string signal_type() const override { return "acme.tlsalpn01.stop"; }
 
-  monad::IO<void> handle(const ::data::DeviceUpdateSignal& signal) override {
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_awaitable(const ::data::DeviceUpdateSignal &signal) override {
     if (!mgr_) {
-      return monad::IO<void>::fail(monad::make_error(
-          my_errors::GENERAL::POINTER_IS_NULL,
-          "acme.tlsalpn01 handler missing manager"));
+      co_return monad::MyResult<void>::Err(
+          monad::make_error(my_errors::GENERAL::POINTER_IS_NULL,
+                            "acme.tlsalpn01 handler missing manager"));
     }
 
-    const auto* cid_v = signal.ref.if_contains("challenge_id");
+    const auto *cid_v = signal.ref.if_contains("challenge_id");
     if (!cid_v || !cid_v->is_string()) {
-      return monad::IO<void>::fail(monad::make_error(
+      co_return monad::MyResult<void>::Err(monad::make_error(
           my_errors::GENERAL::MISSING_FIELD,
           "acme.tlsalpn01.stop ref.challenge_id must be string"));
     }
@@ -37,10 +38,10 @@ public:
 
     auto r = mgr_->stop_if_active(cid);
     if (r.is_err()) {
-      return monad::IO<void>::fail(std::move(r).error());
+      co_return monad::MyResult<void>::Err(std::move(r).error());
     }
 
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
 private:

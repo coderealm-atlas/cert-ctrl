@@ -90,6 +90,45 @@ target_link_libraries(test_boost_di_lifetimes PRIVATE
 
 gtest_discover_tests(test_boost_di_lifetimes DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
+add_executable(test_handler_dispatcher
+  test_handler_dispatcher.cpp
+)
+target_compile_features(test_handler_dispatcher PRIVATE cxx_std_20)
+target_include_directories(test_handler_dispatcher PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+)
+target_link_libraries(test_handler_dispatcher PRIVATE
+  GTest::gtest_main
+  Boost::asio
+  Boost::json
+  Boost::program_options
+)
+
+gtest_discover_tests(test_handler_dispatcher DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+
+add_executable(test_signal_dispatcher
+  test_signal_dispatcher.cpp
+)
+target_compile_features(test_signal_dispatcher PRIVATE cxx_std_20)
+target_include_directories(test_signal_dispatcher PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/external/http_client/include
+)
+target_link_libraries(test_signal_dispatcher PRIVATE
+  GTest::gtest_main
+  Boost::asio
+  Boost::json
+  Boost::log
+  Boost::log_setup
+  Boost::filesystem
+  Boost::thread
+  Boost::chrono
+  Boost::date_time
+)
+
+gtest_discover_tests(test_signal_dispatcher DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
+
 gtest_discover_tests(test_program_options DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_MEDIUM})
 
 add_executable(test_info_handler
@@ -183,7 +222,10 @@ endif()
 
 certctrl_use_static_atomic(test_websocket_client)
 
-gtest_discover_tests(test_websocket_client DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG})
+gtest_discover_tests(
+  test_websocket_client
+  DISCOVERY_TIMEOUT ${TEST_DISCOVERY_TIMEOUT_LONG}
+  PROPERTIES RUN_SERIAL TRUE)
 
 add_executable(test_acme_http01_server
   test_acme_http01_server.cpp

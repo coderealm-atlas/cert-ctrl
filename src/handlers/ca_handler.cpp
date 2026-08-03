@@ -125,9 +125,9 @@ std::optional<ParsedCertificate> parse_certificate_pem(const std::string &pem,
   return info;
 }
 
-std::vector<std::string> filter_tokens(
-    const std::vector<std::string> &source,
-    const std::vector<std::string> &excluded) {
+std::vector<std::string>
+filter_tokens(const std::vector<std::string> &source,
+              const std::vector<std::string> &excluded) {
   if (excluded.empty()) {
     return source;
   }
@@ -149,31 +149,31 @@ std::vector<std::string> filter_tokens(
 
 } // namespace
 
-CaHandler::CaHandler(cjj365::ConfigSources &config_sources, CliCtx &cli_ctx,
-                     customio::ConsoleOutput &output,
-                     std::unique_ptr<InstallConfigManager> install_config_manager)
+CaHandler::CaHandler(
+    cjj365::ConfigSources &config_sources, CliCtx &cli_ctx,
+    customio::ConsoleOutput &output,
+    std::unique_ptr<InstallConfigManager> install_config_manager)
     : config_sources_(config_sources), cli_ctx_(cli_ctx), output_(output),
       install_config_manager_(std::move(install_config_manager)) {}
 
-monad::IO<void> CaHandler::start() {
+boost::asio::awaitable<monad::MyResult<void>> CaHandler::start_awaitable() {
   if (cli_ctx_.positionals.size() < 2) {
     output_.logger().info()
         << "Usage: cert-ctrl cas <list|show> [options]" << std::endl;
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   const std::string action = cli_ctx_.positionals[1];
   if (action == "list") {
-    return handle_list();
+    co_return co_await handle_list_awaitable();
   }
   if (action == "show") {
-    return handle_show();
+    co_return co_await handle_show_awaitable();
   }
 
-  output_.logger().error()
-      << "Unknown cas action '" << action << "'. Expected 'list' or 'show'."
-      << std::endl;
-  return monad::IO<void>::pure();
+  output_.logger().error() << "Unknown cas action '" << action
+                           << "'. Expected 'list' or 'show'." << std::endl;
+  co_return monad::MyResult<void>::Ok();
 }
 
 CaHandler::ListOptions
@@ -182,18 +182,15 @@ CaHandler::parse_list_options(const std::string &action) {
   namespace po = boost::program_options;
 
   po::options_description desc("cas list options");
-  desc.add_options()("json", po::bool_switch(&opts.json),
-                     "Emit JSON output");
+  desc.add_options()("json", po::bool_switch(&opts.json), "Emit JSON output");
 
   try {
     auto args = filter_tokens(cli_ctx_.unrecognized,
                               std::vector<std::string>{command(), action});
     po::variables_map vm;
-    po::store(po::command_line_parser(args)
-                  .options(desc)
-                  .allow_unregistered()
-                  .run(),
-              vm);
+    po::store(
+        po::command_line_parser(args).options(desc).allow_unregistered().run(),
+        vm);
     po::notify(vm);
   } catch (const std::exception &ex) {
     output_.logger().warning()
@@ -209,21 +206,18 @@ CaHandler::parse_show_options(const std::string &action) {
   namespace po = boost::program_options;
 
   po::options_description desc("cas show options");
-  desc.add_options()("json", po::bool_switch(&opts.json),
-                     "Emit JSON output")
-      ("refresh", po::bool_switch(&opts.refresh),
-       "Refresh CA materials before rendering")
-      ("id", po::value<std::int64_t>(), "CA identifier");
+  desc.add_options()("json", po::bool_switch(&opts.json), "Emit JSON output")(
+      "refresh", po::bool_switch(&opts.refresh),
+      "Refresh CA materials before rendering")("id", po::value<std::int64_t>(),
+                                               "CA identifier");
 
   try {
     auto args = filter_tokens(cli_ctx_.unrecognized,
                               std::vector<std::string>{command(), action});
     po::variables_map vm;
-    po::store(po::command_line_parser(args)
-                  .options(desc)
-                  .allow_unregistered()
-                  .run(),
-              vm);
+    po::store(
+        po::command_line_parser(args).options(desc).allow_unregistered().run(),
+        vm);
     po::notify(vm);
     if (vm.count("id")) {
       opts.id = vm["id"].as<std::int64_t>();
@@ -247,146 +241,136 @@ CaHandler::parse_show_options(const std::string &action) {
   return opts;
 }
 
-monad::IO<void> CaHandler::handle_list() {
-  using ReturnIO = monad::IO<void>;
-
+boost::asio::awaitable<monad::MyResult<void>>
+CaHandler::handle_list_awaitable() {
   auto options = parse_list_options("list");
   auto self = shared_from_this();
 
-  return install_config_manager_
-      ->ensure_config_version(std::nullopt, std::nullopt)
-      .then([self, options](
-                std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr)
-                -> ReturnIO {
-        if (!config_ptr) {
-          self->output_.logger().warning()
-              << "No install-config cached yet; run 'cert-ctrl install-config "
-                 "pull' first."
-              << std::endl;
-          return ReturnIO::pure();
+  auto config_result = co_await install_config_manager_->ensure_config_version(
+      std::nullopt, std::nullopt);
+  if (config_result.is_err()) {
+    co_return monad::MyResult<void>::Err(config_result.error());
+  }
+  auto render =
+      [self,
+       options](std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr)
+      -> monad::MyResult<void> {
+    if (!config_ptr) {
+      self->output_.logger().warning()
+          << "No install-config cached yet; run 'cert-ctrl install-config "
+             "pull' first."
+          << std::endl;
+      return monad::MyResult<void>::Ok();
+    }
+
+    auto summaries = self->gather_cas(*config_ptr);
+    if (summaries.empty()) {
+      self->output_.logger().info()
+          << "No CA resources found in staged install-config." << std::endl;
+      return monad::MyResult<void>::Ok();
+    }
+
+    if (options.json) {
+      boost::json::array arr;
+      arr.reserve(summaries.size());
+      auto now = std::chrono::system_clock::now();
+      for (const auto &summary : summaries) {
+        boost::json::object obj;
+        obj["id"] = summary.id;
+        if (!summary.name.empty()) {
+          obj["name"] = summary.name;
         }
-
-        auto summaries = self->gather_cas(*config_ptr);
-        if (summaries.empty()) {
-          self->output_.logger().info()
-              << "No CA resources found in staged install-config."
-              << std::endl;
-          return ReturnIO::pure();
+        std::string status = summary.artifacts.has_material ? "ok" : "missing";
+        if (summary.artifacts.has_material && summary.artifacts.not_after &&
+            *summary.artifacts.not_after < now) {
+          status = "expired";
         }
-
-        if (options.json) {
-          boost::json::array arr;
-          arr.reserve(summaries.size());
-          auto now = std::chrono::system_clock::now();
-          for (const auto &summary : summaries) {
-            boost::json::object obj;
-            obj["id"] = summary.id;
-            if (!summary.name.empty()) {
-              obj["name"] = summary.name;
-            }
-            std::string status = summary.artifacts.has_material ? "ok"
-                                                                : "missing";
-            if (summary.artifacts.has_material &&
-                summary.artifacts.not_after &&
-                *summary.artifacts.not_after < now) {
-              status = "expired";
-            }
-            obj["status"] = status;
-            obj["not_after"] = format_time(summary.artifacts.not_after);
-            obj["subject"] = summary.artifacts.subject;
-            obj["issuer"] = summary.artifacts.issuer;
-            obj["fingerprint_sha256"] = summary.artifacts.fingerprint_sha256;
-            if (!summary.artifacts.error.empty()) {
-              obj["error"] = summary.artifacts.error;
-            }
-            arr.emplace_back(std::move(obj));
-          }
-          self->output_.printer().stream()
-              << boost::json::serialize(arr) << std::endl;
-          return ReturnIO::pure();
+        obj["status"] = status;
+        obj["not_after"] = format_time(summary.artifacts.not_after);
+        obj["subject"] = summary.artifacts.subject;
+        obj["issuer"] = summary.artifacts.issuer;
+        obj["fingerprint_sha256"] = summary.artifacts.fingerprint_sha256;
+        if (!summary.artifacts.error.empty()) {
+          obj["error"] = summary.artifacts.error;
         }
+        arr.emplace_back(std::move(obj));
+      }
+      self->output_.printer().stream()
+          << boost::json::serialize(arr) << std::endl;
+      return monad::MyResult<void>::Ok();
+    }
 
-        auto header = fmt::format("{:>6}  {:<24}  {:<10}  {:<20}  {}", "ID",
-                                  "Name", "Status", "Not After",
-                                  "Subject");
-        self->output_.printer().yellow() << header << std::endl;
+    auto header = fmt::format("{:>6}  {:<24}  {:<10}  {:<20}  {}", "ID", "Name",
+                              "Status", "Not After", "Subject");
+    self->output_.printer().yellow() << header << std::endl;
 
-        auto now = std::chrono::system_clock::now();
-        for (const auto &summary : summaries) {
-          std::string status = summary.artifacts.has_material ? "ok"
-                                                              : "missing";
-          if (summary.artifacts.has_material &&
-              summary.artifacts.not_after &&
-              *summary.artifacts.not_after < now) {
-            status = "expired";
-          }
-          std::string name = summary.name.empty() ? "-" : summary.name;
-          if (name.size() > 24) {
-            name = name.substr(0, 21) + "...";
-          }
-          const std::string not_after =
-              format_time(summary.artifacts.not_after);
-          const std::string subject = summary.artifacts.subject.empty()
-                                          ? "-"
-                                          : summary.artifacts.subject;
+    auto now = std::chrono::system_clock::now();
+    for (const auto &summary : summaries) {
+      std::string status = summary.artifacts.has_material ? "ok" : "missing";
+      if (summary.artifacts.has_material && summary.artifacts.not_after &&
+          *summary.artifacts.not_after < now) {
+        status = "expired";
+      }
+      std::string name = summary.name.empty() ? "-" : summary.name;
+      if (name.size() > 24) {
+        name = name.substr(0, 21) + "...";
+      }
+      const std::string not_after = format_time(summary.artifacts.not_after);
+      const std::string subject =
+          summary.artifacts.subject.empty() ? "-" : summary.artifacts.subject;
 
-          self->output_.printer().stream()
-              << fmt::format("{:>6}  {:<24}  {:<10}  {:<20}  {}", summary.id,
-                             name, status, not_after, subject)
-              << std::endl;
-        }
+      self->output_.printer().stream()
+          << fmt::format("{:>6}  {:<24}  {:<10}  {:<20}  {}", summary.id, name,
+                         status, not_after, subject)
+          << std::endl;
+    }
 
-        return ReturnIO::pure();
-      });
+    return monad::MyResult<void>::Ok();
+  };
+  co_return render(std::move(config_result).value());
 }
 
-monad::IO<void> CaHandler::handle_show() {
-  using ReturnIO = monad::IO<void>;
-
+boost::asio::awaitable<monad::MyResult<void>>
+CaHandler::handle_show_awaitable() {
   auto options = parse_show_options("show");
   if (!options.id) {
     output_.logger().error()
         << "Provide a CA identifier via '--id <value>' or positional argument."
         << std::endl;
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
-  auto self = shared_from_this();
-  return install_config_manager_
-      ->ensure_config_version(std::nullopt, std::nullopt)
-      .then([self, options](
-                std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr)
-                -> ReturnIO {
-        if (!config_ptr) {
-          self->output_.logger().warning()
-              << "No install-config cached yet; pull one before running "
-                 "'cert-ctrl cas show'."
-              << std::endl;
-          return ReturnIO::pure();
-        }
+  auto config_result = co_await install_config_manager_->ensure_config_version(
+      std::nullopt, std::nullopt);
+  if (config_result.is_err()) {
+    co_return monad::MyResult<void>::Err(config_result.error());
+  }
+  auto config = std::move(config_result).value();
+  if (!config) {
+    output_.logger().warning()
+        << "No install-config cached yet; pull one before running "
+           "'cert-ctrl cas show'."
+        << std::endl;
+    co_return monad::MyResult<void>::Ok();
+  }
 
-        auto perform_render = [self, config_ptr, options]() -> ReturnIO {
-          return self->render_show(*config_ptr, *options.id, options);
-        };
+  if (options.refresh) {
+    install_config_manager_->invalidate_resource_cache("ca", *options.id);
+    std::optional<std::string> target_type{"ca"};
+    auto refresh_result =
+        co_await install_config_manager_->apply_import_ca_actions(
+            *config, target_type, options.id);
+    if (refresh_result.is_err()) {
+      co_return refresh_result;
+    }
+  }
 
-        if (options.refresh) {
-          self->install_config_manager_->invalidate_resource_cache("ca",
-                                                                   *options.id);
-          std::optional<std::string> target_type{"ca"};
-          return self->install_config_manager_
-              ->apply_import_ca_actions(*config_ptr, target_type, options.id)
-              .then([perform_render]() { return perform_render(); });
-        }
-
-        return perform_render();
-      });
+  co_return render_show(*config, *options.id, options);
 }
 
-monad::IO<void> CaHandler::render_show(
-    const dto::DeviceInstallConfigDto &config, std::int64_t ca_id,
-    const ShowOptions &options) {
-  using ReturnIO = monad::IO<void>;
-
+monad::MyResult<void>
+CaHandler::render_show(const dto::DeviceInstallConfigDto &config,
+                       std::int64_t ca_id, const ShowOptions &options) {
   const dto::InstallItem *match = nullptr;
   for (const auto &item : config.installs) {
     if (item.ob_type && *item.ob_type == "ca" && item.ob_id &&
@@ -426,30 +410,27 @@ monad::IO<void> CaHandler::render_show(
       obj["error"] = artifacts.error;
     }
     output_.printer().stream() << boost::json::serialize(obj) << std::endl;
-    return ReturnIO::pure();
+    return monad::MyResult<void>::Ok();
   }
 
   output_.printer().yellow()
       << fmt::format("CA {}{}", ca_id,
-                     name.empty() ? std::string{}
-                                  : fmt::format(" ({})", name))
+                     name.empty() ? std::string{} : fmt::format(" ({})", name))
       << std::endl;
 
   if (!artifacts.has_material) {
-    output_.printer().red()
-        << "  Local materials missing. Run 'cert-ctrl install-config pull --ca-id "
-        << ca_id << "' to stage them." << std::endl;
+    output_.printer().red() << "  Local materials missing. Run 'cert-ctrl "
+                               "install-config pull --ca-id "
+                            << ca_id << "' to stage them." << std::endl;
     if (!artifacts.error.empty()) {
       output_.printer().red() << "  Error: " << artifacts.error << std::endl;
     }
-    return ReturnIO::pure();
+    return monad::MyResult<void>::Ok();
   }
 
-  output_.printer().stream() << "  Subject: " << artifacts.subject
-                             << std::endl;
+  output_.printer().stream() << "  Subject: " << artifacts.subject << std::endl;
   if (!artifacts.issuer.empty()) {
-    output_.printer().stream() << "  Issuer: " << artifacts.issuer
-                               << std::endl;
+    output_.printer().stream() << "  Issuer: " << artifacts.issuer << std::endl;
   }
   output_.printer().stream()
       << "  Serial: "
@@ -479,13 +460,12 @@ monad::IO<void> CaHandler::render_show(
         << std::endl;
   }
 
-  output_.printer().stream() << "  Paths:" << std::endl
-                             << "    ca.pem:        "
-                             << artifacts.ca_pem_path.string() << std::endl
-                             << "    bundle_raw:    "
-                             << artifacts.bundle_path.string() << std::endl;
+  output_.printer().stream()
+      << "  Paths:" << std::endl
+      << "    ca.pem:        " << artifacts.ca_pem_path.string() << std::endl
+      << "    bundle_raw:    " << artifacts.bundle_path.string() << std::endl;
 
-  return ReturnIO::pure();
+  return monad::MyResult<void>::Ok();
 }
 
 std::vector<CaHandler::CaSummary>
@@ -515,8 +495,7 @@ CaHandler::gather_cas(const dto::DeviceInstallConfigDto &config) const {
   return summaries;
 }
 
-CaHandler::CaArtifacts
-CaHandler::load_ca_artifacts(std::int64_t ca_id) const {
+CaHandler::CaArtifacts CaHandler::load_ca_artifacts(std::int64_t ca_id) const {
   CaArtifacts info;
 
   const auto &runtime_dir = install_config_manager_->runtime_dir();
@@ -525,8 +504,7 @@ CaHandler::load_ca_artifacts(std::int64_t ca_id) const {
     return info;
   }
 
-  fs::path root = runtime_dir / "resources" / "cas" /
-                  std::to_string(ca_id);
+  fs::path root = runtime_dir / "resources" / "cas" / std::to_string(ca_id);
   fs::path current = root / "current";
 
   info.ca_pem_path = current / "ca.pem";

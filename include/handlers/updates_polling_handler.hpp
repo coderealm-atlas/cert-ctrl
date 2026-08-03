@@ -1,9 +1,9 @@
 #pragma once
 
 #include <algorithm>
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/strand.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/json.hpp>
 #include <boost/log/sources/severity_logger.hpp>
@@ -23,26 +23,26 @@
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "data/data_shape.hpp"
-#include <jwt-cpp/jwt.h>
 #include "handlers/i_handler.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "handlers/session_refresher.hpp"
 #include "handlers/signal_dispatcher.hpp"
 #include "handlers/signal_handlers/ca_assigned_handler.hpp"
 #include "handlers/signal_handlers/ca_unassigned_handler.hpp"
-#include "handlers/signal_handlers/cert_updated_handler.hpp"
 #include "handlers/signal_handlers/cert_unassigned_handler.hpp"
+#include "handlers/signal_handlers/cert_updated_handler.hpp"
 #include "handlers/signal_handlers/config_updated_handler.hpp"
 #include "handlers/signal_handlers/install_updated_handler.hpp"
 #include "handlers/signal_handlers/state_resync_required_handler.hpp"
+#include "http_client_awaitable.hpp"
 #include "http_client_manager.hpp"
-#include "http_client_monad.hpp"
 #include "io_context_manager.hpp"
 #include "io_monad.hpp"
 #include "my_error_codes.hpp"
+#include "state/device_state_store.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
 #include "version.h"
-#include "state/device_state_store.hpp"
+#include <jwt-cpp/jwt.h>
 
 namespace po = boost::program_options;
 namespace asio = boost::asio;
@@ -65,7 +65,6 @@ struct UpdatesPollingHandlerOptions {
 class UpdatesPollingHandler
     : public certctrl::IHandler,
       public std::enable_shared_from_this<UpdatesPollingHandler> {
-  asio::io_context &ioc_;
   cjj365::ConfigSources &config_sources_;
   certctrl::ICertctrlConfigProvider &certctrl_config_provider_;
   client_async::HttpClientManager &http_client_;
@@ -75,7 +74,6 @@ class UpdatesPollingHandler
   src::severity_logger<trivial::severity_level> lg;
   po::options_description opt_desc_;
   UpdatesPollingHandlerOptions options_;
-  boost::asio::any_io_executor exec_;
   std::string endpoint_base_; // /apiv1/devices/self/updates
   std::string cursor_;
   int last_http_status_{0};
@@ -114,7 +112,7 @@ public:
       client_async::HttpClientManager &http_client,                //
       std::shared_ptr<InstallConfigManager> install_config_manager,
       std::shared_ptr<ISessionRefresher> session_refresher)
-      : ioc_(io_context_manager.ioc()), config_sources_(config_sources),
+      : config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
         http_client_(http_client), output_hub_(output_hub),
         state_store_(state_store), cli_ctx_(cli_ctx),
@@ -125,7 +123,7 @@ public:
                                      certctrl_config_provider_.get().base_url)),
         install_config_manager_(std::move(install_config_manager)),
         session_refresher_(std::move(session_refresher)) {
-    exec_ = boost::asio::make_strand(ioc_);
+    (void)io_context_manager;
     po::options_description create_opts("Updates Polling Options");
     create_opts.add_options()("wait", po::value<int>()->default_value(0),
                               "long poll wait seconds (0-30)")(
@@ -158,24 +156,23 @@ public:
     auto runtime_dir = config_sources_.paths_.back();
     auto post_success_hook = [mgr = install_config_manager_](
                                  const ::data::DeviceUpdateSignal &signal)
-        -> monad::IO<void> {
+        -> asio::awaitable<monad::MyResult<void>> {
       if (!mgr) {
-        return monad::IO<void>::pure();
+        co_return monad::MyResult<void>::Ok();
       }
-      return mgr->maybe_run_after_update_script_for_signal(signal);
+      co_return co_await mgr->maybe_run_after_update_script_for_signal(signal);
     };
-    signal_dispatcher_ =
-      std::make_unique<SignalDispatcher>(runtime_dir, &state_store_,
-                                         std::move(post_success_hook));
+    signal_dispatcher_ = std::make_unique<SignalDispatcher>(
+        runtime_dir, &state_store_, std::move(post_success_hook));
 
     signal_dispatcher_->register_handler(
         std::make_shared<signal_handlers::ConfigUpdatedHandler>(
-        certctrl_config_provider_, output_hub_, nullptr));
+            certctrl_config_provider_, output_hub_, nullptr));
 
     if (install_config_manager_) {
       signal_dispatcher_->register_handler(
-        std::make_shared<signal_handlers::StateResyncRequiredHandler>(
-          install_config_manager_, state_store_, output_hub_));
+          std::make_shared<signal_handlers::StateResyncRequiredHandler>(
+              install_config_manager_, state_store_, output_hub_));
     }
 
     if (!install_config_manager_) {
@@ -188,20 +185,20 @@ public:
           std::make_shared<signal_handlers::InstallUpdatedHandler>(
               install_config_manager_, output_hub_));
 
-        signal_dispatcher_->register_handler(
+      signal_dispatcher_->register_handler(
           std::make_shared<signal_handlers::CertUpdatedHandler>(
-            install_config_manager_, output_hub_));
+              install_config_manager_, output_hub_));
 
-        signal_dispatcher_->register_handler(
+      signal_dispatcher_->register_handler(
           std::make_shared<signal_handlers::CertUnassignedHandler>(
-            install_config_manager_, output_hub_));
+              install_config_manager_, output_hub_));
 
-        signal_dispatcher_->register_handler(
+      signal_dispatcher_->register_handler(
           std::make_shared<signal_handlers::CaAssignedHandler>(
-            install_config_manager_, output_hub_));
+              install_config_manager_, output_hub_));
 
-          signal_dispatcher_->register_handler(
-            std::make_shared<signal_handlers::CaUnassignedHandler>(
+      signal_dispatcher_->register_handler(
+          std::make_shared<signal_handlers::CaUnassignedHandler>(
               install_config_manager_, output_hub_));
     }
 
@@ -214,142 +211,141 @@ public:
 
   std::string command() const override { return "updates"; }
 
-  monad::IO<void> show_usage(const std::string &error = "") const {
+  monad::MyResult<void> show_usage(const std::string &error = "") const {
     if (!error.empty()) {
       output_hub_.logger().error() << error << std::endl;
     }
-    output_hub_.logger().info()
-        << "Usage: cert-ctrl updates [clear-cursor] [--wait N] [--limit N] [--interval MS]\n"
-        << "  clear-cursor   Remove the persisted HTTP polling cursor from SQLite\n"
-        << std::endl;
-    return monad::IO<void>::pure();
+    output_hub_.logger().info() << "Usage: cert-ctrl updates [clear-cursor] "
+                                   "[--wait N] [--limit N] [--interval MS]\n"
+                                << "  clear-cursor   Remove the persisted HTTP "
+                                   "polling cursor from SQLite\n"
+                                << std::endl;
+    return monad::MyResult<void>::Ok();
   }
 
   const std::string &last_request_url() const noexcept {
     return last_request_url_;
   }
 
-  monad::IO<void> start() override {
+  asio::awaitable<monad::MyResult<void>> start_awaitable() override {
     if (cli_ctx_.positionals.size() >= 2) {
       const std::string &action = cli_ctx_.positionals[1];
       if (action == "clear-cursor") {
-        return clear_persisted_cursor();
+        co_return clear_persisted_cursor();
       }
-      return show_usage("Unknown updates action '" + action + "'.");
+      co_return show_usage("Unknown updates action '" + action + "'.");
     }
 
     if (!cli_ctx_.params.keep_running) {
-      return poll_once();
+      co_return co_await poll_once_awaitable();
     }
     // Continuous loop
-    return poll_loop(0);
+    co_return co_await poll_loop_awaitable();
   }
 
   // Report agent version to the server via HTTP notify endpoint.
   // This is the same mechanism used by the polling workflow, but exposed so
   // WebSocket-first deployments can still report versions without enabling
   // updates polling.
-  monad::IO<void> report_agent_version_once(bool allow_refresh_retry = true) {
-    using namespace monad;
-
+  asio::awaitable<monad::MyResult<void>>
+  report_agent_version_once_awaitable(bool allow_refresh_retry = true) {
     if (notify_sent_this_run_) {
-      return IO<void>::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     auto access_token_opt = load_access_token_from_state();
-    if ((!access_token_opt || access_token_opt->empty()) && allow_refresh_retry) {
+    if ((!access_token_opt || access_token_opt->empty()) &&
+        allow_refresh_retry) {
       output_hub_.logger().trace()
           << "Access token missing; attempting refresh before device notify."
           << std::endl;
-      auto self = shared_from_this();
-      return refresh_access_token("device notify bootstrap").then([self]() {
-        return self->report_agent_version_once(false);
-      });
+      auto refresh =
+          co_await refresh_access_token_awaitable("device notify bootstrap");
+      if (refresh.is_err()) {
+        co_return refresh;
+      }
+      co_return co_await report_agent_version_once_awaitable(false);
     }
 
     // Check if token is expired or expiring soon (within 60 seconds)
     static constexpr std::chrono::seconds kSkew{60};
-    if (access_token_opt && !access_token_opt->empty() && 
-        allow_refresh_retry && is_jwt_expiring_soon(*access_token_opt, kSkew)) {
-      output_hub_.logger().info()
-          << "Access token is expired/expiring; attempting refresh before device notify."
-          << std::endl;
-      auto self = shared_from_this();
-      return refresh_access_token("device notify token expired").then([self]() {
-        return self->report_agent_version_once(false);
-      });
+    if (access_token_opt && !access_token_opt->empty() && allow_refresh_retry &&
+        is_jwt_expiring_soon(*access_token_opt, kSkew)) {
+      output_hub_.logger().info() << "Access token is expired/expiring; "
+                                     "attempting refresh before device notify."
+                                  << std::endl;
+      auto refresh = co_await refresh_access_token_awaitable(
+          "device notify token expired");
+      if (refresh.is_err()) {
+        co_return refresh;
+      }
+      co_return co_await report_agent_version_once_awaitable(false);
     }
 
     if (!access_token_opt || access_token_opt->empty()) {
       output_hub_.logger().warning()
-          << "Skipping agent version notify: no cached session tokens were found. "
+          << "Skipping agent version notify: no cached session tokens were "
+             "found. "
              "Run 'cert-ctrl login' to authenticate this device."
           << std::endl;
-      return IO<void>::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
-    return maybe_send_startup_notification(*access_token_opt);
+    co_return co_await maybe_send_startup_notification_awaitable(
+        *access_token_opt);
   }
 
-  monad::IO<void> poll_loop(int iter) {
-    // perform one poll, swallow/log error, then schedule next (async delay if
-    // needed)
-    output_hub_.logger().trace()
-        << "Starting poll iteration " << iter << std::endl;
-    return poll_once()
-        .catch_then([self = this->shared_from_this()](monad::Error e) {
-          ++self->consecutive_failures_;
-          BOOST_LOG_SEV(self->lg, trivial::error)
-              << "poll iteration error: " << e;
-          return monad::IO<void>::pure(); // continue
-        })
-        .then([self = this->shared_from_this(), iter]() {
-          if (!self->cli_ctx_.params.keep_running) {
-            self->output_hub_.logger().info()
-                << "keep_running flag cleared; stopping polling loop"
-                << std::endl;
-            return monad::IO<void>::pure();
-          }
-          // Use asynchronous delay to avoid blocking thread when not
-          // long-polling
-          bool needs_delay = self->server_override_delay_ms_.has_value() ||
-                             self->consecutive_failures_ > 0 ||
-                             !self->options_.long_poll;
-          if (needs_delay) {
-            int delay_ms = 0;
-            if (self->server_override_delay_ms_) {
-              delay_ms = *self->server_override_delay_ms_;
-              self->server_override_delay_ms_.reset();
-            } else if (self->consecutive_failures_ > 0) {
-              delay_ms = self->compute_failure_delay_ms();
-            } else {
-              delay_ms = self->interval_ms_;
-            }
+  asio::awaitable<monad::MyResult<void>> poll_loop_awaitable() {
+    int iteration = 0;
+    while (true) {
+      output_hub_.logger().trace()
+          << "Starting poll iteration " << iteration++ << std::endl;
+      auto result = co_await poll_once_awaitable();
+      if (result.is_err()) {
+        ++consecutive_failures_;
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "poll iteration error: " << result.error();
+      }
 
-            if (delay_ms <= 0) {
-              delay_ms = self->interval_ms_ > 0 ? self->interval_ms_
-                                                : kFailureRetryBaseMs;
-            }
+      if (!cli_ctx_.params.keep_running) {
+        output_hub_.logger().info()
+            << "keep_running flag cleared; stopping polling loop" << std::endl;
+        co_return monad::MyResult<void>::Ok();
+      }
 
-            if (self->consecutive_failures_ > 0) {
-              self->output_hub_.logger().info()
-                  << "Retrying updates poll in " << delay_ms << " ms after "
-                  << self->consecutive_failures_ << " consecutive failures"
-                  << std::endl;
-            }
+      const bool needs_delay = server_override_delay_ms_.has_value() ||
+                               consecutive_failures_ > 0 || !options_.long_poll;
+      if (!needs_delay) {
+        continue;
+      }
 
-            return monad::delay_for<void>(self->ioc_,
-                                          std::chrono::milliseconds(delay_ms))
-                .then([self, iter]() { return self->poll_loop(iter + 1); });
-          }
-          // Long-poll immediately chains next iteration (server waits
-          // internally)
-          return self->poll_loop(iter + 1);
-        });
+      int delay_ms = 0;
+      if (server_override_delay_ms_) {
+        delay_ms = *server_override_delay_ms_;
+        server_override_delay_ms_.reset();
+      } else if (consecutive_failures_ > 0) {
+        delay_ms = compute_failure_delay_ms();
+      } else {
+        delay_ms = interval_ms_;
+      }
+      if (delay_ms <= 0) {
+        delay_ms = interval_ms_ > 0 ? interval_ms_ : kFailureRetryBaseMs;
+      }
+      if (consecutive_failures_ > 0) {
+        output_hub_.logger().info()
+            << "Retrying updates poll in " << delay_ms << " ms after "
+            << consecutive_failures_ << " consecutive failures" << std::endl;
+      }
+
+      asio::steady_timer timer(co_await asio::this_coro::executor);
+      timer.expires_after(std::chrono::milliseconds(delay_ms));
+      co_await timer.async_wait(asio::use_awaitable);
+    }
   }
 
 private:
-  bool is_jwt_expiring_soon(const std::string &token, std::chrono::seconds skew) const {
+  bool is_jwt_expiring_soon(const std::string &token,
+                            std::chrono::seconds skew) const {
     try {
       auto decoded = jwt::decode(token);
       if (!decoded.has_payload_claim("exp")) {
@@ -375,17 +371,19 @@ private:
     return std::nullopt;
   }
 
-  monad::IO<void> refresh_access_token(std::string reason) {
+  asio::awaitable<monad::MyResult<void>>
+  refresh_access_token_awaitable(std::string reason) {
     if (!session_refresher_) {
-      return monad::IO<void>::fail(monad::make_error(
+      co_return monad::MyResult<void>::Err(monad::make_error(
           my_errors::GENERAL::UNEXPECTED_RESULT,
           "Session refresher unavailable; re-run cert-ctrl login."));
     }
-    return session_refresher_->refresh(std::move(reason))
-        .then([this]() -> monad::IO<void> {
-          cached_access_token_.reset();
-          return monad::IO<void>::pure();
-        });
+    auto result =
+        co_await session_refresher_->refresh_awaitable(std::move(reason));
+    if (result.is_ok()) {
+      cached_access_token_.reset();
+    }
+    co_return result;
   }
   // Helper methods - must be defined before poll_once() because they're
   // templates
@@ -425,7 +423,7 @@ private:
   }
 
   template <typename ExchangePtr>
-  monad::IO<void> handle_no_content(ExchangePtr ex) {
+  monad::MyResult<void> handle_no_content(ExchangePtr ex) {
     namespace http = boost::beast::http;
 
     // Extract cursor from ETag header
@@ -445,17 +443,17 @@ private:
 
     BOOST_LOG_SEV(lg, trivial::trace) << "204 No Content, cursor=" << cursor_;
 
-    return monad::IO<void>::pure();
+    return monad::MyResult<void>::Ok();
   }
 
   template <typename ExchangePtr>
-  monad::IO<void> handle_ok_with_signals(ExchangePtr ex) {
+  asio::awaitable<monad::MyResult<void>>
+  handle_ok_with_signals_awaitable(ExchangePtr ex) {
     auto parse_result =
         ex->template parseJsonResponse<::data::DeviceUpdatesResponse>();
 
     if (parse_result.is_err()) {
-      return monad::IO<void>::from_result(
-          monad::Result<void, monad::Error>::Err(parse_result.error()));
+      co_return monad::MyResult<void>::Err(parse_result.error());
     }
 
     auto resp = std::move(parse_result).value();
@@ -472,9 +470,6 @@ private:
     // Store response
     last_updates_ = std::move(resp);
 
-    auto self = shared_from_this();
-    auto dispatch_chain = monad::IO<void>::pure();
-
     for (const auto &signal : last_updates_->data.signals) {
       if (signal.type == "install.updated") {
         ++install_updated_count_;
@@ -484,16 +479,17 @@ private:
         ++cert_unassigned_count_;
       }
 
-      auto signal_copy = signal;
-      dispatch_chain = dispatch_chain.then(
-          [self, signal_copy]() { return self->signal_dispatcher_->dispatch(signal_copy); });
+      auto result = co_await signal_dispatcher_->dispatch_awaitable(signal);
+      if (result.is_err()) {
+        co_return result;
+      }
     }
 
-    return dispatch_chain;
+    co_return monad::MyResult<void>::Ok();
   }
 
   template <typename ExchangePtr>
-  monad::IO<void> handle_error_status(ExchangePtr ex, int status) {
+  monad::MyResult<void> handle_error_status(ExchangePtr ex, int status) {
     std::string body = ex->response->body();
     BOOST_LOG_SEV(lg, trivial::error)
         << "HTTP " << status << " error on " << last_request_url_ << ": "
@@ -549,7 +545,7 @@ private:
       }
     }
 
-    return monad::IO<void>::fail(
+    return monad::MyResult<void>::Err(
         monad::make_error(my_errors::NETWORK::READ_ERROR,
                           fmt::format("HTTP {} response", status)));
   }
@@ -607,27 +603,28 @@ private:
     return candidate;
   }
 
-  monad::IO<void> poll_once(bool allow_refresh_retry = true,
-                            bool allow_resync_retry = true) {
-    using namespace monad;
-
+  asio::awaitable<monad::MyResult<void>>
+  poll_once_awaitable(bool allow_refresh_retry = true,
+                      bool allow_resync_retry = true) {
     auto access_token_opt = load_access_token_from_state();
     if ((!access_token_opt || access_token_opt->empty()) &&
         allow_refresh_retry) {
       output_hub_.logger().trace()
           << "Access token missing; attempting refresh before polling."
           << std::endl;
-      auto self = shared_from_this();
-      return refresh_access_token("updates polling bootstrap").then([self]() {
-        return self->poll_once(false, true);
-      });
+      auto refresh =
+          co_await refresh_access_token_awaitable("updates polling bootstrap");
+      if (refresh.is_err()) {
+        co_return refresh;
+      }
+      co_return co_await poll_once_awaitable(false, true);
     }
 
     if (!access_token_opt || access_token_opt->empty()) {
       output_hub_.printer().yellow()
           << "No device access token found; please run `cert_ctrl login` first."
           << std::endl;
-      return IO<void>::fail(monad::make_error(
+      co_return monad::MyResult<void>::Err(monad::make_error(
           my_errors::GENERAL::INVALID_ARGUMENT,
           "device access token not available in state; run cert_ctrl login"));
     }
@@ -650,14 +647,9 @@ private:
     }
     url += query;
 
-    auto self = shared_from_this();
-    return maybe_send_startup_notification(access_token)
-        .then([self, url = std::move(url), access_token,
-           allow_refresh_retry, allow_resync_retry]() mutable {
-          return self->execute_poll_request(
-          std::move(url), std::move(access_token), allow_refresh_retry,
-          allow_resync_retry);
-        });
+    co_await maybe_send_startup_notification_awaitable(access_token);
+    co_return co_await execute_poll_request_awaitable(
+        std::move(url), access_token, allow_refresh_retry, allow_resync_retry);
   }
 
 public:
@@ -673,16 +665,16 @@ public:
   friend struct UpdatesPollingHandlerTestFriend;
 
 private:
-  monad::IO<void> clear_persisted_cursor() {
+  monad::MyResult<void> clear_persisted_cursor() {
     cursor_.clear();
     if (auto err = state_store_.save_updates_cursor(std::nullopt)) {
-      return monad::IO<void>::fail(
+      return monad::MyResult<void>::Err(
           monad::make_error(my_errors::GENERAL::DELETE_FAILED,
                             "failed to clear updates cursor: " + *err));
     }
     output_hub_.logger().info()
         << "Cleared persisted updates cursor from SQLite state" << std::endl;
-    return monad::IO<void>::pure();
+    return monad::MyResult<void>::Ok();
   }
 
   boost::json::object build_startup_notify_payload() const {
@@ -701,13 +693,9 @@ private:
     return payload;
   }
 
-  monad::IO<void> execute_poll_request(std::string url,
-                                       std::string access_token,
-                                       bool allow_refresh_retry,
-                                       bool allow_resync_retry) {
-    using monad::GetStringTag;
-    using monad::http_io;
-    using monad::http_request_io;
+  asio::awaitable<monad::MyResult<void>> execute_poll_request_awaitable(
+      std::string url, const std::string &access_token,
+      bool allow_refresh_retry, bool allow_resync_retry) {
     namespace http = boost::beast::http;
 
     last_request_url_ = url;
@@ -715,63 +703,68 @@ private:
     output_hub_.logger().trace()
         << "Polling device updates at " << url << std::endl;
 
-    auto self = shared_from_this();
-    return http_io<GetStringTag>(url)
-        .map([self, access_token = std::move(access_token)](auto ex) {
-          ex->request.set(http::field::authorization,
+    auto exchange_result =
+        async_support::make_http_exchange<monad::GetStringTag>(url);
+    if (exchange_result.is_err()) {
+      co_return monad::MyResult<void>::Err(exchange_result.error());
+    }
+    auto exchange = std::move(exchange_result).value();
+    exchange->request.set(http::field::authorization,
                           std::string("Bearer ") + access_token);
-          if (!self->cursor_.empty()) {
-            ex->request.set(http::field::if_none_match,
-                            fmt::format("\"{}\"", self->cursor_));
-          }
-          return ex;
-        })
-        .then(http_request_io<GetStringTag>(http_client_))
-        .then([self, allow_refresh_retry, allow_resync_retry](auto ex) -> monad::IO<void> {
-          if (!ex->response.has_value()) {
-            return monad::IO<void>::fail(monad::make_error(
-                my_errors::NETWORK::READ_ERROR, "No response received"));
-          }
+    if (!cursor_.empty()) {
+      exchange->request.set(http::field::if_none_match,
+                            fmt::format("\"{}\"", cursor_));
+    }
 
-          int status = ex->response->result_int();
-          self->last_http_status_ = status;
+    auto request_result =
+        co_await async_support::http_exchange_awaitable<monad::GetStringTag>(
+            http_client_, std::move(exchange));
+    if (request_result.is_err()) {
+      co_return monad::MyResult<void>::Err(request_result.error());
+    }
+    auto response_exchange = std::move(request_result).value();
+    if (!response_exchange->response.has_value()) {
+      co_return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::NETWORK::READ_ERROR, "No response received"));
+    }
 
-          if (status == 204) {
-            return self->handle_no_content(ex);
-          } else if (status == 200) {
-            return self->handle_ok_with_signals(ex);
-          } else if (status == 409 && allow_resync_retry) {
-            std::string body = ex->response->body();
-            if (self->is_resync_required_response(body)) {
-              BOOST_LOG_SEV(self->lg, trivial::warning)
-                  << "Polling cursor gap detected; running full resync and retrying"
-                  << std::endl;
-              return self->auto_heal_stale_cursor(body)
-                  .then([self, allow_refresh_retry]() {
-                    return self->poll_once(allow_refresh_retry, false);
-                  })
-                  .catch_then([self, ex](const monad::Error &err) {
-                    BOOST_LOG_SEV(self->lg, trivial::error)
-                        << "Automatic full resync failed: " << err.what
-                        << std::endl;
-                    return self->handle_error_status(ex, 409);
-                  });
-            }
-          } else if ((status == 401 || status == 403) && allow_refresh_retry) {
-            BOOST_LOG_SEV(self->lg, trivial::info)
-                << "Received HTTP " << status
-                << " while polling; attempting token refresh." << std::endl;
-            auto reason = fmt::format("updates polling HTTP {}", status);
-            return self->refresh_access_token(std::move(reason))
-                .then([self, allow_resync_retry]() { return self->poll_once(false, allow_resync_retry); })
-                .catch_then([self, ex, status](const monad::Error &err) {
-                  BOOST_LOG_SEV(self->lg, trivial::error)
-                      << "Token refresh failed: " << err.what << std::endl;
-                  return self->handle_error_status(ex, status);
-                });
-          }
-          return self->handle_error_status(ex, status);
-        });
+    const int status = response_exchange->response->result_int();
+    last_http_status_ = status;
+    if (status == 204) {
+      co_return handle_no_content(response_exchange);
+    }
+    if (status == 200) {
+      co_return co_await handle_ok_with_signals_awaitable(response_exchange);
+    }
+    if (status == 409 && allow_resync_retry) {
+      const std::string body = response_exchange->response->body();
+      if (is_resync_required_response(body)) {
+        BOOST_LOG_SEV(lg, trivial::warning)
+            << "Polling cursor gap detected; running full resync and retrying"
+            << std::endl;
+        auto heal = co_await auto_heal_stale_cursor_awaitable(body);
+        if (heal.is_ok()) {
+          co_return co_await poll_once_awaitable(allow_refresh_retry, false);
+        }
+        BOOST_LOG_SEV(lg, trivial::error)
+            << "Automatic full resync failed: " << heal.error().what
+            << std::endl;
+        co_return handle_error_status(response_exchange, status);
+      }
+    }
+    if ((status == 401 || status == 403) && allow_refresh_retry) {
+      BOOST_LOG_SEV(lg, trivial::info)
+          << "Received HTTP " << status
+          << " while polling; attempting token refresh." << std::endl;
+      auto refresh = co_await refresh_access_token_awaitable(
+          fmt::format("updates polling HTTP {}", status));
+      if (refresh.is_ok()) {
+        co_return co_await poll_once_awaitable(false, allow_resync_retry);
+      }
+      BOOST_LOG_SEV(lg, trivial::error)
+          << "Token refresh failed: " << refresh.error().what << std::endl;
+    }
+    co_return handle_error_status(response_exchange, status);
   }
 
   bool is_resync_required_response(const std::string &body) const {
@@ -805,77 +798,85 @@ private:
     }
   }
 
-  monad::IO<void> auto_heal_stale_cursor(const std::string &body) {
+  asio::awaitable<monad::MyResult<void>>
+  auto_heal_stale_cursor_awaitable(const std::string &body) {
     if (!install_config_manager_) {
-      return monad::IO<void>::fail(monad::make_error(
-          my_errors::GENERAL::UNEXPECTED_RESULT,
-          "InstallConfigManager dependency missing; cannot auto-heal cursor gap"));
+      co_return monad::MyResult<void>::Err(
+          monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                            "InstallConfigManager dependency missing; cannot "
+                            "auto-heal cursor gap"));
     }
 
     output_hub_.logger().warning()
         << "Server requested a full resync after updates cursor gap: " << body
         << std::endl;
 
-    return clear_persisted_cursor().then([this]() {
-      return install_config_manager_->full_resync_from_server();
-    });
+    auto clear = clear_persisted_cursor();
+    if (clear.is_err()) {
+      co_return clear;
+    }
+    co_return co_await install_config_manager_->full_resync_from_server();
   }
 
-  monad::IO<void>
-  maybe_send_startup_notification(const std::string &access_token) {
-    using monad::http_io;
-    using monad::http_request_io;
-    using monad::PostJsonTag;
+  asio::awaitable<monad::MyResult<void>>
+  maybe_send_startup_notification_awaitable(const std::string &access_token) {
     namespace http = boost::beast::http;
 
     if (notify_sent_this_run_) {
-      return monad::IO<void>::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
-    auto payload_obj =
-        std::make_shared<boost::json::object>(build_startup_notify_payload());
-    auto self = shared_from_this();
-    return http_io<PostJsonTag>(notify_endpoint_)
-        .map([self, payload_obj, access_token](auto ex) {
-          ex->setRequestJsonBody(*payload_obj);
-          ex->request.set(http::field::authorization,
+    auto exchange_result =
+        async_support::make_http_exchange<monad::PostJsonTag>(notify_endpoint_);
+    if (exchange_result.is_err()) {
+      output_hub_.logger().warning()
+          << "Failed to prepare agent version notification: "
+          << exchange_result.error().what << std::endl;
+      co_return monad::MyResult<void>::Ok();
+    }
+    auto exchange = std::move(exchange_result).value();
+    const auto payload = build_startup_notify_payload();
+    exchange->setRequestJsonBody(payload);
+    exchange->request.set(http::field::authorization,
                           std::string("Bearer ") + access_token);
-          self->output_hub_.logger().trace()
-              << "Sending startup notification to " << self->notify_endpoint_
-              << " with payload: " << *payload_obj << std::endl;
-          return ex;
-        })
-        .then(http_request_io<PostJsonTag>(http_client_))
-        .then([self](auto ex) -> monad::IO<void> {
-          if (!ex->is_2xx()) {
-            int status = ex->response ? ex->response->result_int() : 0;
-            if (status == 401 || status == 403) {
-              self->output_hub_.logger().warning()
-                  << "Device notify endpoint authorization failed via "
-                  << self->notify_endpoint_ << " (HTTP " << status
-                  << "). Token may be expired or the device is not onboarded. "
-                     "Re-run the device onboarding/registration flow to refresh credentials. "
-                     "Will retry next iteration." << std::endl;
-            } else {
-              self->output_hub_.logger().warning()
-                  << "Device notify endpoint returned HTTP " << status
-                  << " via " << self->notify_endpoint_
-                  << "; will retry next iteration." << std::endl;
-            }
-            return monad::IO<void>::pure();
-          }
-          self->notify_sent_this_run_ = true;
-          self->output_hub_.logger().info()
-              << "Reported agent version " << MYAPP_VERSION
-              << " via /devices/self/notify" << std::endl;
-          return monad::IO<void>::pure();
-        })
-        .catch_then([self](monad::Error err) {
-          self->output_hub_.logger().warning()
-              << "Failed to notify server of agent version: " << err.what
-              << std::endl;
-          return monad::IO<void>::pure();
-        });
+    output_hub_.logger().trace()
+        << "Sending startup notification to " << notify_endpoint_
+        << " with payload: " << payload << std::endl;
+
+    auto request_result =
+        co_await async_support::http_exchange_awaitable<monad::PostJsonTag>(
+            http_client_, std::move(exchange));
+    if (request_result.is_err()) {
+      output_hub_.logger().warning()
+          << "Failed to notify server of agent version: "
+          << request_result.error().what << std::endl;
+      co_return monad::MyResult<void>::Ok();
+    }
+    auto response_exchange = std::move(request_result).value();
+    if (!response_exchange->is_2xx()) {
+      const int status = response_exchange->response
+                             ? response_exchange->response->result_int()
+                             : 0;
+      if (status == 401 || status == 403) {
+        output_hub_.logger().warning()
+            << "Device notify endpoint authorization failed via "
+            << notify_endpoint_ << " (HTTP " << status
+            << "). Token may be expired or the device is not onboarded. "
+               "Re-run the device onboarding/registration flow to refresh "
+               "credentials. Will retry next iteration."
+            << std::endl;
+      } else {
+        output_hub_.logger().warning()
+            << "Device notify endpoint returned HTTP " << status << " via "
+            << notify_endpoint_ << "; will retry next iteration." << std::endl;
+      }
+      co_return monad::MyResult<void>::Ok();
+    }
+
+    notify_sent_this_run_ = true;
+    output_hub_.logger().info() << "Reported agent version " << MYAPP_VERSION
+                                << " via /devices/self/notify" << std::endl;
+    co_return monad::MyResult<void>::Ok();
   }
 
   std::optional<std::string> load_device_public_id_from_state() const {

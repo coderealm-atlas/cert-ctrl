@@ -3,9 +3,7 @@
 
 namespace certctrl {
 
-using VoidPureIO = monad::IO<void>;
-
-VoidPureIO ConfHandler::start() {
+boost::asio::awaitable<monad::MyResult<void>> ConfHandler::start_awaitable() {
   auto normalize_websocket_key = [](const std::string &key) {
     return key == "websocket_enabled" || key == "websocket.enabled";
   };
@@ -41,26 +39,28 @@ VoidPureIO ConfHandler::start() {
       output_hub_.logger().info()
           << "Set websocket.enabled to " << (bool_value ? "true" : "false")
           << std::endl;
-      } else if (normalize_script_hash_key(key)) {
-        bool bool_value = parse_bool(value);
-        if (bool_value !=
+    } else if (normalize_script_hash_key(key)) {
+      bool bool_value = parse_bool(value);
+      if (bool_value !=
           certctrl_config_provider_.get().auto_allow_after_update_script_hash) {
         certctrl_config_provider_.get().auto_allow_after_update_script_hash =
-          bool_value;
+            bool_value;
         certctrl_config_provider_.save(
-          {{"auto_allow_after_update_script_hash", bool_value}});
+            {{"auto_allow_after_update_script_hash", bool_value}});
         if (bool_value) {
           certctrl_config_provider_.refresh_install_update_grace_window(false);
         }
-        }
-        output_hub_.logger().info()
+      }
+      output_hub_.logger().info()
           << "Set auto_allow_after_update_script_hash to "
           << (bool_value ? "true" : "false") << std::endl;
     } else {
-      std::string msg = fmt::format(
-          "Unknown configuration key: {}, supported keys are: auto_apply_config, auto_allow_after_update_script_hash, verbose, websocket.enabled",
-          key);
-      return show_usage(msg);
+      std::string msg =
+          fmt::format("Unknown configuration key: {}, supported keys are: "
+                      "auto_apply_config, auto_allow_after_update_script_hash, "
+                      "verbose, websocket.enabled",
+                      key);
+      co_return show_usage(msg);
     }
   } else if (auto getv_r = cli_ctx_.get_get_k(); getv_r.is_ok()) {
     auto key = getv_r.value();
@@ -82,19 +82,22 @@ VoidPureIO ConfHandler::start() {
     } else if (normalize_script_hash_key(key)) {
       output_hub_.logger().info()
           << "auto_allow_after_update_script_hash = "
-          << (certctrl_config_provider_.get().auto_allow_after_update_script_hash
+          << (certctrl_config_provider_.get()
+                      .auto_allow_after_update_script_hash
                   ? "true"
                   : "false")
           << std::endl;
     } else {
-      std::string msg = fmt::format(
-          "Unknown configuration key: {}, supported keys are: auto_apply_config, auto_allow_after_update_script_hash, verbose, websocket.enabled",
-          key);
-      return show_usage(msg);
+      std::string msg =
+          fmt::format("Unknown configuration key: {}, supported keys are: "
+                      "auto_apply_config, auto_allow_after_update_script_hash, "
+                      "verbose, websocket.enabled",
+                      key);
+      co_return show_usage(msg);
     }
   } else {
-    return show_usage(print_opt_desc());
+    co_return show_usage(print_opt_desc());
   }
-  return VoidPureIO::pure();
+  co_return monad::MyResult<void>::Ok();
 }
 } // namespace certctrl

@@ -26,15 +26,16 @@ public:
 
   std::string signal_type() const override { return "cert.updated"; }
 
-  monad::IO<void> handle(const ::data::DeviceUpdateSignal &signal) override {
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_awaitable(const ::data::DeviceUpdateSignal &signal) override {
     if (!config_manager_) {
       BOOST_LOG_SEV(lg, trivial::warning)
           << "CertUpdatedHandler missing InstallConfigManager; skipping signal";
-      return monad::IO<void>::pure();
+      co_return monad::MyResult<void>::Ok();
     }
     BOOST_LOG_SEV(lg, trivial::info) << "Handling cert.updated signal: "
                                      << boost::json::serialize(signal.ref);
-    return config_manager_->apply_copy_actions_for_signal(signal);
+    co_return co_await config_manager_->apply_copy_actions_for_signal(signal);
   }
 };
 

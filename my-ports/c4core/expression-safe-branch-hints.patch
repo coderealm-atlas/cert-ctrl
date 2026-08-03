@@ -1,0 +1,18 @@
+diff --git a/src/c4/language.hpp b/src/c4/language.hpp
+index 8c19808..e59db01 100644
+--- a/src/c4/language.hpp
++++ b/src/c4/language.hpp
+@@ -294,8 +294,13 @@
+ #endif
+ 
+ #ifdef C4_UNLIKELY_IS_ATTR_
++#   if defined(__clang__) || defined(__GNUC__)
++#       define C4_LIKELY(x)   (__builtin_expect(x, 1))
++#       define C4_UNLIKELY(x) (__builtin_expect(x, 0))
++#   else
+ #   define C4_LIKELY(x)   (x) [[likely]]
+ #   define C4_UNLIKELY(x) (x) [[unlikely]]
++#   endif
+ #   define C4_LIKELY20   [[likely]]
+ #   define C4_UNLIKELY20 [[unlikely]]
+ #elif defined(__clang__) || defined(__GNUC__)

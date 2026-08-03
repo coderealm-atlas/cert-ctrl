@@ -18,7 +18,6 @@
 #include "conf/websocket_config.hpp"
 #include "handlers/i_handler.hpp"
 #include "io_context_manager.hpp"
-#include "io_monad.hpp"
 #include "my_error_codes.hpp"
 #include "util/my_logging.hpp" // IWYU pragma: keep
 
@@ -28,9 +27,8 @@ namespace certctrl {
 
 struct ConfHandlerOptions {};
 
-class ConfHandler : public certctrl::IHandler, 
+class ConfHandler : public certctrl::IHandler,
                     public std::enable_shared_from_this<ConfHandler> {
-  asio::io_context &ioc_;
   certctrl::ICertctrlConfigProvider &certctrl_config_provider_;
   certctrl::IWebsocketConfigProvider &websocket_config_provider_;
   customio::ConsoleOutput &output_hub_;
@@ -43,14 +41,14 @@ class ConfHandler : public certctrl::IHandler,
 public:
   ConfHandler(cjj365::IoContextManager &io_context_manager,
               certctrl::ICertctrlConfigProvider &certctrl_config_provider,
-        certctrl::IWebsocketConfigProvider &websocket_config_provider,
+              certctrl::IWebsocketConfigProvider &websocket_config_provider,
               CliCtx &cli_ctx, //
               customio::ConsoleOutput &output_hub)
-      : ioc_(io_context_manager.ioc()),
-      certctrl_config_provider_(certctrl_config_provider),
-      websocket_config_provider_(websocket_config_provider),
+      : certctrl_config_provider_(certctrl_config_provider),
+        websocket_config_provider_(websocket_config_provider),
         output_hub_(output_hub), cli_ctx_(cli_ctx),
         opt_desc_("misc subcommand options") {
+    (void)io_context_manager;
     boost::program_options::options_description create_opts("Conf Options");
     opt_desc_.add(create_opts);
     po::parsed_options parsed = po::command_line_parser(cli_ctx_.unrecognized)
@@ -74,15 +72,14 @@ public:
     return oss.str();
   }
 
-  monad::IO<void> show_usage(const std::string &msg = "") {
+  monad::MyResult<void> show_usage(const std::string &msg = "") {
     if (!msg.empty()) {
       output_hub_.logger().error() << msg << std::endl;
     }
-    return monad::IO<void>::fail(
-        monad::make_error(my_errors::GENERAL::SHOW_OPT_DESC,
-                          print_opt_desc()));
+    return monad::MyResult<void>::Err(
+        monad::make_error(my_errors::GENERAL::SHOW_OPT_DESC, print_opt_desc()));
   }
 
-  monad::IO<void> start() override;
+  boost::asio::awaitable<monad::MyResult<void>> start_awaitable() override;
 };
 } // namespace certctrl

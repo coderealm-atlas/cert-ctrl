@@ -33,10 +33,11 @@
 #include "data/install_config_dto.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "handlers/updates_polling_handler.hpp"
+#include "http_client_awaitable.hpp"
 #include "http_client_config_provider.hpp"
 #include "http_client_manager.hpp"
-#include "http_client_monad.hpp"
 #include "include/api_test_helper.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "include/install_config_manager_test_utils.hpp"
 #include "include/install_manager_harness.hpp"
 #include "include/login_helper.hpp"
@@ -81,13 +82,13 @@ struct UpdatesPollingHandlerTestFriend {
     handler.interval_ms_ = value;
   }
 
-  static monad::IO<void> ForceRefresh(UpdatesPollingHandler &handler,
-                                      std::string reason) {
-    return handler.refresh_access_token(std::move(reason));
+  static boost::asio::awaitable<monad::MyResult<void>>
+  ForceRefresh(UpdatesPollingHandler &handler, std::string reason) {
+    return handler.refresh_access_token_awaitable(std::move(reason));
   }
 
-  static boost::json::object BuildNotifyPayload(
-      const UpdatesPollingHandler &handler) {
+  static boost::json::object
+  BuildNotifyPayload(const UpdatesPollingHandler &handler) {
     return handler.build_startup_notify_payload();
   }
 
@@ -95,7 +96,8 @@ struct UpdatesPollingHandlerTestFriend {
     handler.cursor_ = std::move(value);
   }
 
-  static monad::IO<void> ClearPersistedCursor(UpdatesPollingHandler &handler) {
+  static monad::MyResult<void>
+  ClearPersistedCursor(UpdatesPollingHandler &handler) {
     return handler.clear_persisted_cursor();
   }
 };
@@ -241,16 +243,21 @@ private:
 
 class RecordingSessionRefresher : public certctrl::ISessionRefresher {
 public:
-  monad::IO<void> refresh(std::string reason) override {
-    reasons_.push_back(std::move(reason));
-    ++call_count_;
-    return monad::IO<void>::pure();
+  boost::asio::awaitable<monad::MyResult<void>>
+  refresh_awaitable(std::string reason) override {
+    record(std::move(reason));
+    co_return monad::MyResult<void>::Ok();
   }
 
   int call_count() const { return call_count_; }
   const std::vector<std::string> &reasons() const { return reasons_; }
 
 private:
+  void record(std::string reason) {
+    reasons_.push_back(std::move(reason));
+    ++call_count_;
+  }
+
   int call_count_{0};
   std::vector<std::string> reasons_;
 };
@@ -284,22 +291,27 @@ public:
 
       output_ = &inj.template create<customio::ConsoleOutput &>();
       io_context_manager_ = &inj.template create<cjj365::IoContextManager &>();
-      http_client_manager_ = &inj.template create<client_async::HttpClientManager &>();
-      config_provider_ = &inj.template create<certctrl::ICertctrlConfigProvider &>();
+      http_client_manager_ =
+          &inj.template create<client_async::HttpClientManager &>();
+      config_provider_ =
+          &inj.template create<certctrl::ICertctrlConfigProvider &>();
       config_provider_->get().base_url = std::move(base_url);
       state_store_ = &inj.template create<certctrl::IDeviceStateStore &>();
-      handler_ = inj.template create<std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+      handler_ = inj.template create<
+          std::shared_ptr<certctrl::UpdatesPollingHandler>>();
     };
 
-    auto make_final_injector = [&](auto base_injector) {
-      return di::make_injector(
+    auto
+        make_final_injector =
+            [&](auto base_injector) {
+              return di::make_injector(
           std::move(base_injector),
           di::bind<certctrl::install_actions::IDeviceInstallConfigFetcher>
               .to<certctrl::install_actions::DeviceInstallConfigFetcher>(),
           di::bind<certctrl::install_actions::IResourceFetcher>
               .to<certctrl::install_actions::ResourceFetcher>(),
           di::bind<certctrl::CliCtx>().to(cli_ctx));
-    };
+            };
 
     if (session_refresher_override_) {
       auto session_binding = di::bind<certctrl::ISessionRefresher>().to(
@@ -363,8 +375,8 @@ private:
 };
 
 TEST(UpdatesPollingHandlerUnitTest, AppliesServerIntervalHints) {
-  auto tmp_root = fs::temp_directory_path() / "updates-unit" /
-                  make_unique_suffix();
+  auto tmp_root =
+      fs::temp_directory_path() / "updates-unit" / make_unique_suffix();
   std::error_code ec;
   fs::create_directories(tmp_root, ec);
   ASSERT_FALSE(ec) << "failed to create temp dir: " << ec.message();
@@ -419,8 +431,8 @@ TEST(UpdatesPollingHandlerUnitTest, AppliesServerIntervalHints) {
 
 TEST(UpdatesPollingHandlerUnitTest,
      StartupNotifyPayloadIncludesStoredDeviceId) {
-  auto tmp_root = fs::temp_directory_path() / "updates-notify" /
-                  make_unique_suffix();
+  auto tmp_root =
+      fs::temp_directory_path() / "updates-notify" / make_unique_suffix();
   std::error_code ec;
   fs::create_directories(tmp_root / "state", ec);
   ASSERT_FALSE(ec) << "failed to create temp state dir: " << ec.message();
@@ -465,8 +477,8 @@ TEST(UpdatesPollingHandlerUnitTest,
 }
 
 TEST(UpdatesPollingHandlerUnitTest, UsesSessionRefresherForTokenRefresh) {
-  auto tmp_root = fs::temp_directory_path() / "updates-refresher" /
-                  make_unique_suffix();
+  auto tmp_root =
+      fs::temp_directory_path() / "updates-refresher" / make_unique_suffix();
   std::error_code ec;
   fs::create_directories(tmp_root, ec);
   ASSERT_FALSE(ec) << "failed to create temp dir: " << ec.message();
@@ -492,23 +504,18 @@ TEST(UpdatesPollingHandlerUnitTest, UsesSessionRefresherForTokenRefresh) {
   auto handler = harness.handler();
   ASSERT_TRUE(handler);
 
-  bool refresh_completed = false;
-  auto io = certctrl::UpdatesPollingHandlerTestFriend::ForceRefresh(
-      *handler, "unit-test refresh");
-  io.run([&](auto result) {
-    EXPECT_FALSE(result.is_err()) << result.error().what;
-    refresh_completed = true;
-  });
-
-  EXPECT_TRUE(refresh_completed);
+  auto result = testinfra::run_result_awaitable(
+      certctrl::UpdatesPollingHandlerTestFriend::ForceRefresh(
+          *handler, "unit-test refresh"));
+  EXPECT_FALSE(result.is_err()) << result.error().what;
   ASSERT_EQ(fake_refresher->call_count(), 1);
   ASSERT_EQ(fake_refresher->reasons().size(), 1u);
   EXPECT_EQ(fake_refresher->reasons().front(), "unit-test refresh");
 }
 
 TEST(UpdatesPollingHandlerUnitTest, ClearCursorActionRemovesStoredCursor) {
-  auto tmp_root = fs::temp_directory_path() / "updates-clear-cursor" /
-                  make_unique_suffix();
+  auto tmp_root =
+      fs::temp_directory_path() / "updates-clear-cursor" / make_unique_suffix();
   std::error_code ec;
   fs::create_directories(tmp_root, ec);
   ASSERT_FALSE(ec) << "failed to create temp dir: " << ec.message();
@@ -537,14 +544,9 @@ TEST(UpdatesPollingHandlerUnitTest, ClearCursorActionRemovesStoredCursor) {
       harness.state_store().save_updates_cursor("cursor-123").has_value());
   certctrl::UpdatesPollingHandlerTestFriend::SetCursor(*handler, "cursor-123");
 
-  bool completed = false;
-  certctrl::UpdatesPollingHandlerTestFriend::ClearPersistedCursor(*handler)
-      .run([&](auto result) {
-    EXPECT_FALSE(result.is_err()) << result.error().what;
-    completed = true;
-  });
-
-  EXPECT_TRUE(completed);
+  auto result =
+      certctrl::UpdatesPollingHandlerTestFriend::ClearPersistedCursor(*handler);
+  EXPECT_FALSE(result.is_err()) << result.error().what;
   EXPECT_FALSE(harness.state_store().get_updates_cursor().has_value());
   EXPECT_TRUE(handler->last_cursor().empty());
 }
@@ -601,20 +603,15 @@ protected:
     cfg_provider_ = &harness_->config_provider();
     handler_ = harness_->handler();
 
-    misc::ThreadNotifier login_notifier(60000);
-    std::optional<testutil::loginSuccessResult> login_r;
-    testutil::login_io(*http_mgr_, base_url_, testutil::login_email(),
-                       testutil::login_password())
-        .run([&](auto r) {
-          login_r = std::move(r);
-          login_notifier.notify();
-        });
-    login_notifier.waitForNotification();
-    ASSERT_TRUE(login_r.has_value()) << "login_io produced no result";
-    ASSERT_FALSE(login_r->is_err())
-        << "login failed: " << login_r->error().what;
-    session_cookie_ = login_r->value().session_cookie;
-    user_id_ = login_r->value().user.id;
+    auto login_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::login_awaitable(*http_mgr_, base_url_,
+                                  testutil::login_email(),
+                                  testutil::login_password()),
+        std::chrono::seconds(60));
+    ASSERT_FALSE(login_r.is_err()) << "login failed: " << login_r.error().what;
+    session_cookie_ = login_r.value().session_cookie;
+    user_id_ = login_r.value().user.id;
     ASSERT_FALSE(session_cookie_.empty()) << "missing session cookie";
     ASSERT_GT(user_id_, 0) << "login returned invalid user_id";
 
@@ -629,19 +626,16 @@ protected:
 
   void TearDown() override {
     if (newly_registered_device_id_.has_value()) {
-      misc::ThreadNotifier del_notifier(60000);
-      std::optional<monad::MyVoidResult> del_result;
-      testutil::delete_device_io(*http_mgr_, base_url_, session_cookie_,
-                                 user_id_, *newly_registered_device_id_)
-          .run([&](auto r) {
-            del_result = std::move(r);
-            del_notifier.notify();
-          });
-      del_notifier.waitForNotification();
-      if (del_result && del_result->is_err()) {
+      auto del_result = testinfra::run_result_awaitable(
+          io_ctx_mgr_->ioc(),
+          testutil::delete_device_awaitable(*http_mgr_, base_url_,
+                                            session_cookie_, user_id_,
+                                            *newly_registered_device_id_),
+          std::chrono::seconds(60));
+      if (del_result.is_err()) {
         std::cerr << "Failed to delete test device id="
                   << *newly_registered_device_id_ << ": "
-                  << del_result->error().what << std::endl;
+                  << del_result.error().what << std::endl;
       }
     }
 
@@ -668,22 +662,16 @@ protected:
   }
 
   json::array fetch_user_devices() {
-    misc::ThreadNotifier notifier(60000);
-    std::optional<monad::MyResult<json::array>> devices_r;
-    testutil::list_devices_io(*http_mgr_, base_url_, session_cookie_, user_id_)
-        .run([&](auto r) {
-          devices_r = std::move(r);
-          notifier.notify();
-        });
-    notifier.waitForNotification();
-    EXPECT_TRUE(devices_r.has_value());
-    if (!devices_r || devices_r->is_err()) {
-      ADD_FAILURE() << "list_devices failed: "
-                    << (devices_r ? devices_r->error().what
-                                  : "list_devices_io produced no result");
+    auto devices_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::list_devices_awaitable(*http_mgr_, base_url_, session_cookie_,
+                                         user_id_),
+        std::chrono::seconds(60));
+    if (devices_r.is_err()) {
+      ADD_FAILURE() << "list_devices failed: " << devices_r.error().what;
       return {};
     }
-    return devices_r->value();
+    return devices_r.value();
   }
 
   std::optional<RegisteredDeviceSession>
@@ -790,43 +778,39 @@ protected:
                       {"dev_pk", dev_pk_b64},
                       {"registration_code", registration_code}};
 
-    using RegisterIO = monad::IO<json::object>;
     namespace http = boost::beast::http;
 
     std::string url =
         base_url_ + "/apiv1/users/" + std::to_string(user_id_) + "/devices";
-    auto payload_ptr = std::make_shared<json::object>(std::move(body));
-
-    misc::ThreadNotifier notifier(60000);
-    std::optional<monad::MyResult<json::object>> register_r;
-
-    monad::http_io<monad::PostJsonTag>(url)
-        .map([cookie = session_cookie_, payload_ptr](auto ex) {
-          ex->setRequestJsonBody(*payload_ptr);
-          ex->request.set(http::field::cookie, cookie);
-          return ex;
-        })
-        .then(monad::http_request_io<monad::PostJsonTag>(*http_mgr_))
-        .then([](auto ex) {
-          return RegisterIO::from_result(
-              ex->template parseJsonDataResponse<json::object>());
-        })
-        .run([&](auto r) {
-          register_r = std::move(r);
-          notifier.notify();
-        });
-
-    notifier.waitForNotification();
-    if (!register_r.has_value()) {
-      ADD_FAILURE() << "register_device_with_code produced no result";
+    auto exchange_result =
+        certctrl::async_support::make_http_exchange<monad::PostJsonTag>(url);
+    if (exchange_result.is_err()) {
+      ADD_FAILURE() << "device register setup failed: "
+                    << exchange_result.error().what;
       return std::nullopt;
     }
-    if (register_r->is_err()) {
-      ADD_FAILURE() << "device register failed: " << register_r->error().what;
+    auto exchange = std::move(exchange_result).value();
+    exchange->setRequestJsonBody(body);
+    exchange->request.set(http::field::cookie, session_cookie_);
+
+    auto register_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        certctrl::async_support::http_exchange_awaitable<monad::PostJsonTag>(
+            *http_mgr_, std::move(exchange)),
+        std::chrono::seconds(60));
+    if (register_r.is_err()) {
+      ADD_FAILURE() << "device register request failed: "
+                    << register_r.error().what;
       return std::nullopt;
     }
 
-    auto data_obj = register_r->value();
+    auto parsed =
+        register_r.value()->template parseJsonDataResponse<json::object>();
+    if (parsed.is_err()) {
+      ADD_FAILURE() << "device register failed: " << parsed.error().what;
+      return std::nullopt;
+    }
+    auto data_obj = std::move(parsed).value();
     if (!data_obj.if_contains("device")) {
       ADD_FAILURE() << "register response missing device object";
       return std::nullopt;
@@ -866,19 +850,14 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
 
   debug_log("DeviceRegistrationWorkflowPollsUpdates: starting");
 
-  misc::ThreadNotifier start_notifier(60000);
-  std::optional<monad::MyResult<data::deviceauth::StartResp>> start_r;
-  testutil::device_start_io(*http_mgr_, base_url_, session_cookie_)
-      .run([&](auto r) {
-        start_r = std::move(r);
-        start_notifier.notify();
-      });
-  start_notifier.waitForNotification();
-  ASSERT_TRUE(start_r.has_value()) << "device_start produced no result";
-  ASSERT_FALSE(start_r->is_err())
-      << "device_start failed: " << start_r->error().what;
+  auto start_r = testinfra::run_result_awaitable(
+      io_ctx_mgr_->ioc(),
+      testutil::device_start_awaitable(*http_mgr_, base_url_, session_cookie_),
+      std::chrono::seconds(60));
+  ASSERT_FALSE(start_r.is_err())
+      << "device_start failed: " << start_r.error().what;
 
-  const auto start_resp = start_r->value();
+  const auto start_resp = start_r.value();
   ASSERT_FALSE(start_resp.device_code.empty());
   ASSERT_FALSE(start_resp.user_code.empty());
   debug_log(fmt::format("device_start returned device_code={} user_code={} "
@@ -886,18 +865,13 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
                         start_resp.device_code, start_resp.user_code,
                         start_resp.interval, start_resp.expires_in));
 
-  misc::ThreadNotifier verify_notifier(30000);
-  std::optional<monad::MyResult<data::deviceauth::VerifyResp>> verify_r;
-  testutil::device_verify_io(*http_mgr_, base_url_, session_cookie_,
-                             start_resp.user_code, true)
-      .run([&](auto r) {
-        verify_r = std::move(r);
-        verify_notifier.notify();
-      });
-  verify_notifier.waitForNotification();
-  ASSERT_TRUE(verify_r.has_value()) << "device_verify produced no result";
-  ASSERT_FALSE(verify_r->is_err())
-      << "device_verify failed: " << verify_r->error().what;
+  auto verify_r = testinfra::run_result_awaitable(
+      io_ctx_mgr_->ioc(),
+      testutil::device_verify_awaitable(*http_mgr_, base_url_, session_cookie_,
+                                        start_resp.user_code, true),
+      std::chrono::seconds(30));
+  ASSERT_FALSE(verify_r.is_err())
+      << "device_verify failed: " << verify_r.error().what;
   debug_log("device_verify succeeded");
 
   const int poll_interval = std::clamp(start_resp.interval, 1, 10);
@@ -910,20 +884,15 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
   std::string last_status;
 
   for (int attempt = 0; attempt < max_attempts; ++attempt) {
-    misc::ThreadNotifier poll_notifier(30000);
-    std::optional<monad::MyResult<data::deviceauth::PollResp>> poll_r;
-    testutil::device_poll_io(*http_mgr_, base_url_, start_resp.device_code)
-        .run([&](auto r) {
-          poll_r = std::move(r);
-          poll_notifier.notify();
-        });
-    poll_notifier.waitForNotification();
-    ASSERT_TRUE(poll_r.has_value())
-        << "device_poll attempt " << attempt << " produced no result";
-    ASSERT_FALSE(poll_r->is_err())
-        << "device_poll failed: " << poll_r->error().what;
+    auto poll_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::device_poll_awaitable(*http_mgr_, base_url_,
+                                        start_resp.device_code),
+        std::chrono::seconds(30));
+    ASSERT_FALSE(poll_r.is_err())
+        << "device_poll failed: " << poll_r.error().what;
 
-    const auto &poll_resp = poll_r->value();
+    const auto &poll_resp = poll_r.value();
     last_status = poll_resp.status;
     debug_log(fmt::format(
         "device_poll attempt={} status={} has_code={} has_access_token={}",
@@ -1020,19 +989,15 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
   std::string ca_name = "test-ca-" + unique_suffix;
   testutil::SelfCAInfo ca_info;
   {
-    misc::ThreadNotifier ca_notifier(30000);
-    std::optional<monad::MyResult<testutil::SelfCAInfo>> ca_r;
-    testutil::create_self_ca_io(*http_mgr_, base_url_, session_cookie_,
-                                user_id_, ca_name, "Test CA")
-        .run([&](auto r) {
-          ca_r = std::move(r);
-          ca_notifier.notify();
-        });
-    ca_notifier.waitForNotification();
-    ASSERT_TRUE(ca_r.has_value()) << "create_self_ca produced no result";
-    ASSERT_FALSE(ca_r->is_err())
-        << "create_self_ca failed: " << ca_r->error().what;
-    ca_info = ca_r->value();
+    auto ca_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::create_self_ca_awaitable(*http_mgr_, base_url_,
+                                           session_cookie_, user_id_, ca_name,
+                                           "Test CA"),
+        std::chrono::seconds(30));
+    ASSERT_FALSE(ca_r.is_err())
+        << "create_self_ca failed: " << ca_r.error().what;
+    ca_info = ca_r.value();
     debug_log(
         fmt::format("created self CA id={} name={}", ca_info.id, ca_info.name));
   }
@@ -1040,94 +1005,69 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
   std::string acct_name = "test-updates-" + unique_suffix;
   testutil::AcmeAccountInfo acme_info;
   {
-    misc::ThreadNotifier acme_notifier(120000);
-    std::optional<monad::MyResult<testutil::AcmeAccountInfo>> acme_r;
-    testutil::create_acme_account_io(*http_mgr_, base_url_, session_cookie_,
-                                     user_id_, acct_name, "test@example.com",
-                                     "letsencrypt", ca_info.id)
-        .run([&](auto r) {
-          acme_r = std::move(r);
-          acme_notifier.notify();
-        });
-    acme_notifier.waitForNotification();
-    ASSERT_TRUE(acme_r.has_value()) << "create_acme_account produced no result";
-    ASSERT_FALSE(acme_r->is_err())
-        << "create_acme_account failed: " << acme_r->error().what;
-    acme_info = acme_r->value();
+    auto acme_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::create_acme_account_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_, acct_name,
+            "test@example.com", "letsencrypt", ca_info.id),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(acme_r.is_err())
+        << "create_acme_account failed: " << acme_r.error().what;
+    acme_info = acme_r.value();
     debug_log(fmt::format("created ACME account id={}", acme_info.id));
   }
 
   testutil::CertInfo cert_info;
   {
-    misc::ThreadNotifier cert_notifier(120000);
-    std::optional<monad::MyResult<testutil::CertInfo>> cert_r;
     std::vector<std::string> sans{"*.test-updates.local"};
-    testutil::create_cert_record_io(*http_mgr_, base_url_, session_cookie_,
-                                    user_id_, acme_info.id,
-                                    "test-updates.local", sans)
-        .run([&](auto r) {
-          cert_r = std::move(r);
-          cert_notifier.notify();
-        });
-    cert_notifier.waitForNotification();
-    ASSERT_TRUE(cert_r.has_value()) << "create_cert_record produced no result";
-    ASSERT_FALSE(cert_r->is_err())
-        << "create_cert_record failed: " << cert_r->error().what;
-    cert_info = cert_r->value();
+    auto cert_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::create_cert_record_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_, acme_info.id,
+            "test-updates.local", sans),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(cert_r.is_err())
+        << "create_cert_record failed: " << cert_r.error().what;
+    cert_info = cert_r.value();
     debug_log(fmt::format("created cert id={} domain={}", cert_info.id,
                           cert_info.domain_name));
   }
 
   {
-    misc::ThreadNotifier issue_notifier(120000);
-    std::optional<monad::MyResult<testutil::CertInfo>> issue_r;
-    testutil::issue_cert_io(*http_mgr_, base_url_, session_cookie_, user_id_,
-                            cert_info.id, 7776000)
-        .run([&](auto r) {
-          issue_r = std::move(r);
-          issue_notifier.notify();
-        });
-    issue_notifier.waitForNotification();
-    ASSERT_TRUE(issue_r.has_value()) << "issue_cert produced no result";
-    ASSERT_FALSE(issue_r->is_err())
-        << "issue_cert failed: " << issue_r->error().what;
-    if (issue_r->value().id > 0) {
-      cert_info = issue_r->value();
+    auto issue_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::issue_cert_awaitable(*http_mgr_, base_url_, session_cookie_,
+                                       user_id_, cert_info.id, 7776000),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(issue_r.is_err())
+        << "issue_cert failed: " << issue_r.error().what;
+    if (issue_r.value().id > 0) {
+      cert_info = issue_r.value();
     }
     debug_log("certificate issuance completed");
   }
 
   {
-    misc::ThreadNotifier assoc_notifier(120000);
-    std::optional<monad::MyVoidResult> assoc_r;
-    testutil::associate_ca_with_device_io(*http_mgr_, base_url_,
-                                          session_cookie_, user_id_,
-                                          device_session.device_id, ca_info.id)
-        .run([&](auto r) {
-          assoc_r = std::move(r);
-          assoc_notifier.notify();
-        });
-    assoc_notifier.waitForNotification();
-    ASSERT_TRUE(assoc_r.has_value()) << "associate_ca produced no result";
-    ASSERT_FALSE(assoc_r->is_err())
-        << "associate_ca failed: " << assoc_r->error().what;
+    auto assoc_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::associate_ca_with_device_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_,
+            device_session.device_id, ca_info.id),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(assoc_r.is_err())
+        << "associate_ca failed: " << assoc_r.error().what;
     debug_log("associated CA with device");
   }
 
   {
-    misc::ThreadNotifier assign_notifier(120000);
-    std::optional<monad::MyVoidResult> assign_r;
-    testutil::assign_cert_to_device_io(*http_mgr_, base_url_, session_cookie_,
-                                       user_id_, device_session.device_id,
-                                       cert_info.id)
-        .run([&](auto r) {
-          assign_r = std::move(r);
-          assign_notifier.notify();
-        });
-    assign_notifier.waitForNotification();
-    ASSERT_TRUE(assign_r.has_value()) << "assign_cert produced no result";
-    ASSERT_FALSE(assign_r->is_err())
-        << "assign_cert failed: " << assign_r->error().what;
+    auto assign_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::assign_cert_to_device_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_,
+            device_session.device_id, cert_info.id),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(assign_r.is_err())
+        << "assign_cert failed: " << assign_r.error().what;
     debug_log("assigned cert to device");
   }
 
@@ -1195,20 +1135,14 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     const std::string change_note =
         "test-updates install config " + install_suffix;
 
-    misc::ThreadNotifier install_notifier(120000);
-    std::optional<monad::MyVoidResult> install_r;
-    testutil::create_install_config_io(*http_mgr_, base_url_, session_cookie_,
-                                       user_id_, device_session.device_id,
-                                       install_items, change_note)
-        .run([&](auto r) {
-          install_r = std::move(r);
-          install_notifier.notify();
-        });
-    install_notifier.waitForNotification();
-    ASSERT_TRUE(install_r.has_value())
-        << "create_install_config produced no result";
-    ASSERT_FALSE(install_r->is_err())
-        << "create_install_config failed: " << install_r->error().what;
+    auto install_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::create_install_config_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_,
+            device_session.device_id, install_items, change_note),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(install_r.is_err())
+        << "create_install_config failed: " << install_r.error().what;
 
     std::string install_manager_base_url = base_url_;
     certctrl::install_actions::DeviceInstallConfigFetcher install_fetcher(
@@ -1231,16 +1165,11 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     monad::Error last_config_error{};
 
     for (int attempt = 0; attempt < max_config_attempts; ++attempt) {
-      misc::ThreadNotifier config_notifier(120000);
       std::optional<monad::Result<
           std::shared_ptr<const dto::DeviceInstallConfigDto>, monad::Error>>
           config_result;
-      install_manager.ensure_config_version(std::nullopt, std::nullopt)
-          .run([&](auto r) {
-            config_result = std::move(r);
-            config_notifier.notify();
-          });
-      config_notifier.waitForNotification();
+      config_result = testinfra::run_result_awaitable(
+          install_manager.ensure_config_version(std::nullopt, std::nullopt));
       ASSERT_TRUE(config_result.has_value())
           << "ensure_config_version produced no result";
 
@@ -1267,14 +1196,10 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
     auto run_apply = [&](const char *label,
                          const std::optional<std::string> &target_type,
                          std::optional<std::int64_t> target_id) {
-      misc::ThreadNotifier notifier(120000);
       std::optional<monad::MyVoidResult> result;
-      install_manager.apply_copy_actions(*config_ptr, target_type, target_id)
-          .run([&](auto r) {
-            result = std::move(r);
-            notifier.notify();
-          });
-      notifier.waitForNotification();
+      result =
+          testinfra::run_result_awaitable(install_manager.apply_copy_actions(
+              *config_ptr, target_type, target_id));
       ASSERT_TRUE(result.has_value())
           << "apply_copy_actions(" << label << ") produced no result";
       ASSERT_FALSE(result->is_err()) << "apply_copy_actions(" << label
@@ -1452,18 +1377,13 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
   std::this_thread::sleep_for(2500ms);
   debug_log("sleep complete, starting updates handler");
 
-  misc::ThreadNotifier updates_notifier(120000);
-  std::optional<monad::MyVoidResult> updates_r;
-  handler_->start().run([&](auto r) {
-    updates_r = std::move(r);
-    updates_notifier.notify();
-  });
-  updates_notifier.waitForNotification();
+  auto updates_r = testinfra::run_result_awaitable(io_ctx_mgr_->ioc(),
+                                                   handler_->start_awaitable(),
+                                                   std::chrono::seconds(120));
 
-  ASSERT_TRUE(updates_r.has_value()) << "updates handler produced no result";
-  if (updates_r->is_err()) {
-    FAIL() << "updates handler error: code=" << updates_r->error().code
-           << " message=" << updates_r->error().what
+  if (updates_r.is_err()) {
+    FAIL() << "updates handler error: code=" << updates_r.error().code
+           << " message=" << updates_r.error().what
            << " url=" << handler_->last_request_url();
   }
 
@@ -1501,23 +1421,21 @@ TEST_F(UpdatesRealServerFixture, DeviceRegistrationWorkflowPollsUpdates) {
       << "parse error: " << handler_->parse_error();
   debug_log("updates handler parse complete, beginning cleanup");
 
-  misc::ThreadNotifier del_cert_notifier(60000);
-  testutil::delete_cert_io(*http_mgr_, base_url_, session_cookie_, user_id_,
-                           cert_info.id)
-      .run([&](auto) { del_cert_notifier.notify(); });
-  del_cert_notifier.waitForNotification();
-
-  misc::ThreadNotifier del_acme_notifier(60000);
-  testutil::delete_acme_account_io(*http_mgr_, base_url_, session_cookie_,
-                                   user_id_, acme_info.id)
-      .run([&](auto) { del_acme_notifier.notify(); });
-  del_acme_notifier.waitForNotification();
-
-  misc::ThreadNotifier del_ca_notifier(60000);
-  testutil::delete_self_ca_io(*http_mgr_, base_url_, session_cookie_, user_id_,
-                              ca_info.id)
-      .run([&](auto) { del_ca_notifier.notify(); });
-  del_ca_notifier.waitForNotification();
+  (void)testinfra::run_result_awaitable(
+      io_ctx_mgr_->ioc(),
+      testutil::delete_cert_awaitable(*http_mgr_, base_url_, session_cookie_,
+                                      user_id_, cert_info.id),
+      std::chrono::seconds(60));
+  (void)testinfra::run_result_awaitable(
+      io_ctx_mgr_->ioc(),
+      testutil::delete_acme_account_awaitable(
+          *http_mgr_, base_url_, session_cookie_, user_id_, acme_info.id),
+      std::chrono::seconds(60));
+  (void)testinfra::run_result_awaitable(
+      io_ctx_mgr_->ioc(),
+      testutil::delete_self_ca_awaitable(*http_mgr_, base_url_, session_cookie_,
+                                         user_id_, ca_info.id),
+      std::chrono::seconds(60));
 }
 
 TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
@@ -1530,50 +1448,38 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
   RealServerWorkflowContext ctx;
 
   auto safe_delete_cert = [&](int64_t cert_id) {
-    misc::ThreadNotifier notifier(60000);
-    std::optional<monad::MyVoidResult> result;
-    testutil::delete_cert_io(*http_mgr_, base_url_, session_cookie_, user_id_,
-                             cert_id)
-        .run([&](auto r) {
-          result = std::move(r);
-          notifier.notify();
-        });
-    notifier.waitForNotification();
-    if (result && result->is_err()) {
+    auto result = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::delete_cert_awaitable(*http_mgr_, base_url_, session_cookie_,
+                                        user_id_, cert_id),
+        std::chrono::seconds(60));
+    if (result.is_err()) {
       std::cerr << "Failed to delete cert " << cert_id << ": "
-                << result->error().what << std::endl;
+                << result.error().what << std::endl;
     }
   };
 
   auto safe_delete_acme = [&](int64_t acct_id) {
-    misc::ThreadNotifier notifier(60000);
-    std::optional<monad::MyVoidResult> result;
-    testutil::delete_acme_account_io(*http_mgr_, base_url_, session_cookie_,
-                                     user_id_, acct_id)
-        .run([&](auto r) {
-          result = std::move(r);
-          notifier.notify();
-        });
-    notifier.waitForNotification();
-    if (result && result->is_err()) {
+    auto result = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::delete_acme_account_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_, acct_id),
+        std::chrono::seconds(60));
+    if (result.is_err()) {
       std::cerr << "Failed to delete ACME account " << acct_id << ": "
-                << result->error().what << std::endl;
+                << result.error().what << std::endl;
     }
   };
 
   auto safe_delete_ca = [&](int64_t ca_id) {
-    misc::ThreadNotifier notifier(60000);
-    std::optional<monad::MyVoidResult> result;
-    testutil::delete_self_ca_io(*http_mgr_, base_url_, session_cookie_,
-                                user_id_, ca_id)
-        .run([&](auto r) {
-          result = std::move(r);
-          notifier.notify();
-        });
-    notifier.waitForNotification();
-    if (result && result->is_err()) {
+    auto result = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::delete_self_ca_awaitable(*http_mgr_, base_url_,
+                                           session_cookie_, user_id_, ca_id),
+        std::chrono::seconds(60));
+    if (result.is_err()) {
       std::cerr << "Failed to delete self-CA " << ca_id << ": "
-                << result->error().what << std::endl;
+                << result.error().what << std::endl;
     }
   };
 
@@ -1589,52 +1495,37 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
     }
   });
 
-  misc::ThreadNotifier start_notifier(120000);
-  std::optional<monad::MyResult<data::deviceauth::StartResp>> start_r;
-  testutil::device_start_io(*http_mgr_, base_url_, session_cookie_)
-      .run([&](auto r) {
-        start_r = std::move(r);
-        start_notifier.notify();
-      });
-  start_notifier.waitForNotification();
-  ASSERT_TRUE(start_r.has_value()) << "device_start produced no result";
-  ASSERT_FALSE(start_r->is_err())
-      << "device_start failed: " << start_r->error().what;
-  ctx.start_resp = start_r->value();
+  auto start_r = testinfra::run_result_awaitable(
+      io_ctx_mgr_->ioc(),
+      testutil::device_start_awaitable(*http_mgr_, base_url_, session_cookie_),
+      std::chrono::seconds(120));
+  ASSERT_FALSE(start_r.is_err())
+      << "device_start failed: " << start_r.error().what;
+  ctx.start_resp = start_r.value();
 
-  misc::ThreadNotifier verify_notifier(120000);
-  std::optional<monad::MyResult<data::deviceauth::VerifyResp>> verify_r;
-  testutil::device_verify_io(*http_mgr_, base_url_, session_cookie_,
-                             ctx.start_resp->user_code, true)
-      .run([&](auto r) {
-        verify_r = std::move(r);
-        verify_notifier.notify();
-      });
-  verify_notifier.waitForNotification();
-  ASSERT_TRUE(verify_r.has_value()) << "device_verify produced no result";
-  ASSERT_FALSE(verify_r->is_err())
-      << "device_verify failed: " << verify_r->error().what;
-  ctx.verify_resp = verify_r->value();
+  auto verify_r = testinfra::run_result_awaitable(
+      io_ctx_mgr_->ioc(),
+      testutil::device_verify_awaitable(*http_mgr_, base_url_, session_cookie_,
+                                        ctx.start_resp->user_code, true),
+      std::chrono::seconds(120));
+  ASSERT_FALSE(verify_r.is_err())
+      << "device_verify failed: " << verify_r.error().what;
+  ctx.verify_resp = verify_r.value();
 
   const int poll_interval = std::clamp(ctx.start_resp->interval, 1, 10);
   const int max_attempts =
       std::clamp(ctx.start_resp->expires_in / ctx.start_resp->interval, 1, 20);
 
   for (int attempt = 0; attempt < max_attempts; ++attempt) {
-    misc::ThreadNotifier poll_notifier(120000);
-    std::optional<monad::MyResult<data::deviceauth::PollResp>> poll_r;
-    testutil::device_poll_io(*http_mgr_, base_url_, ctx.start_resp->device_code)
-        .run([&](auto r) {
-          poll_r = std::move(r);
-          poll_notifier.notify();
-        });
-    poll_notifier.waitForNotification();
-    ASSERT_TRUE(poll_r.has_value())
-        << "device_poll attempt " << attempt << " produced no result";
-    ASSERT_FALSE(poll_r->is_err())
-        << "device_poll failed: " << poll_r->error().what;
+    auto poll_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::device_poll_awaitable(*http_mgr_, base_url_,
+                                        ctx.start_resp->device_code),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(poll_r.is_err())
+        << "device_poll failed: " << poll_r.error().what;
 
-    ctx.poll_attempts.push_back(poll_r->value());
+    ctx.poll_attempts.push_back(poll_r.value());
     const auto &poll_resp = ctx.poll_attempts.back();
     ctx.last_poll_status = poll_resp.status;
     if (poll_resp.registration_code && !poll_resp.registration_code->empty()) {
@@ -1692,89 +1583,65 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
 
   std::string ca_name = "test-ca-" + unique_suffix;
   {
-    misc::ThreadNotifier ca_notifier(120000);
-    std::optional<monad::MyResult<testutil::SelfCAInfo>> ca_r;
-    testutil::create_self_ca_io(*http_mgr_, base_url_, session_cookie_,
-                                user_id_, ca_name, "Test CA")
-        .run([&](auto r) {
-          ca_r = std::move(r);
-          ca_notifier.notify();
-        });
-    ca_notifier.waitForNotification();
-    ASSERT_TRUE(ca_r.has_value()) << "create_self_ca produced no result";
-    ASSERT_FALSE(ca_r->is_err())
-        << "create_self_ca failed: " << ca_r->error().what;
-    ctx.ca_info = ca_r->value();
+    auto ca_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::create_self_ca_awaitable(*http_mgr_, base_url_,
+                                           session_cookie_, user_id_, ca_name,
+                                           "Test CA"),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(ca_r.is_err())
+        << "create_self_ca failed: " << ca_r.error().what;
+    ctx.ca_info = ca_r.value();
   }
 
   std::string acct_name = "test-updates-" + unique_suffix;
   {
-    misc::ThreadNotifier acme_notifier(120000);
-    std::optional<monad::MyResult<testutil::AcmeAccountInfo>> acme_r;
-    testutil::create_acme_account_io(*http_mgr_, base_url_, session_cookie_,
-                                     user_id_, acct_name, "test@example.com",
-                                     "letsencrypt", ctx.ca_info->id)
-        .run([&](auto r) {
-          acme_r = std::move(r);
-          acme_notifier.notify();
-        });
-    acme_notifier.waitForNotification();
-    ASSERT_TRUE(acme_r.has_value()) << "create_acme_account produced no result";
-    ASSERT_FALSE(acme_r->is_err())
-        << "create_acme_account failed: " << acme_r->error().what;
-    ctx.acme_info = acme_r->value();
+    auto acme_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::create_acme_account_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_, acct_name,
+            "test@example.com", "letsencrypt", ctx.ca_info->id),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(acme_r.is_err())
+        << "create_acme_account failed: " << acme_r.error().what;
+    ctx.acme_info = acme_r.value();
   }
 
   {
-    misc::ThreadNotifier cert_notifier(120000);
-    std::optional<monad::MyResult<testutil::CertInfo>> cert_r;
     std::vector<std::string> sans{"*.test-updates.local"};
-    testutil::create_cert_record_io(*http_mgr_, base_url_, session_cookie_,
-                                    user_id_, ctx.acme_info->id,
-                                    "test-updates.local", sans)
-        .run([&](auto r) {
-          cert_r = std::move(r);
-          cert_notifier.notify();
-        });
-    cert_notifier.waitForNotification();
-    ASSERT_TRUE(cert_r.has_value()) << "create_cert_record produced no result";
-    ASSERT_FALSE(cert_r->is_err())
-        << "create_cert_record failed: " << cert_r->error().what;
-    ctx.cert_info = cert_r->value();
+    auto cert_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::create_cert_record_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_, ctx.acme_info->id,
+            "test-updates.local", sans),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(cert_r.is_err())
+        << "create_cert_record failed: " << cert_r.error().what;
+    ctx.cert_info = cert_r.value();
   }
 
   {
-    misc::ThreadNotifier issue_notifier(120000);
-    std::optional<monad::MyResult<testutil::CertInfo>> issue_r;
-    testutil::issue_cert_io(*http_mgr_, base_url_, session_cookie_, user_id_,
-                            ctx.cert_info->id, 7776000)
-        .run([&](auto r) {
-          issue_r = std::move(r);
-          issue_notifier.notify();
-        });
-    issue_notifier.waitForNotification();
-    ASSERT_TRUE(issue_r.has_value()) << "issue_cert produced no result";
-    ASSERT_FALSE(issue_r->is_err())
-        << "issue_cert failed: " << issue_r->error().what;
-    if (issue_r->value().id > 0) {
-      ctx.cert_info = issue_r->value();
+    auto issue_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::issue_cert_awaitable(*http_mgr_, base_url_, session_cookie_,
+                                       user_id_, ctx.cert_info->id, 7776000),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(issue_r.is_err())
+        << "issue_cert failed: " << issue_r.error().what;
+    if (issue_r.value().id > 0) {
+      ctx.cert_info = issue_r.value();
     }
   }
 
   {
-    misc::ThreadNotifier assign_notifier(120000);
-    std::optional<monad::MyVoidResult> assign_r;
-    testutil::assign_cert_to_device_io(*http_mgr_, base_url_, session_cookie_,
-                                       user_id_, ctx.device_session->device_id,
-                                       ctx.cert_info->id)
-        .run([&](auto r) {
-          assign_r = std::move(r);
-          assign_notifier.notify();
-        });
-    assign_notifier.waitForNotification();
-    ASSERT_TRUE(assign_r.has_value()) << "assign_cert produced no result";
-    ASSERT_FALSE(assign_r->is_err())
-        << "assign_cert failed: " << assign_r->error().what;
+    auto assign_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::assign_cert_to_device_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_,
+            ctx.device_session->device_id, ctx.cert_info->id),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(assign_r.is_err())
+        << "assign_cert failed: " << assign_r.error().what;
   }
 
   {
@@ -1841,36 +1708,25 @@ TEST_F(UpdatesRealServerFixture, EndToEndWorkflowTemplate) {
     const std::string change_note =
         "test-updates install config " + install_suffix;
 
-    misc::ThreadNotifier install_notifier(120000);
-    std::optional<monad::MyVoidResult> install_r;
-    testutil::create_install_config_io(*http_mgr_, base_url_, session_cookie_,
-                                       user_id_, ctx.device_session->device_id,
-                                       install_items, change_note)
-        .run([&](auto r) {
-          install_r = std::move(r);
-          install_notifier.notify();
-        });
-    install_notifier.waitForNotification();
-    ASSERT_TRUE(install_r.has_value())
-        << "create_install_config produced no result";
-    ASSERT_FALSE(install_r->is_err())
-        << "create_install_config failed: " << install_r->error().what;
+    auto install_r = testinfra::run_result_awaitable(
+        io_ctx_mgr_->ioc(),
+        testutil::create_install_config_awaitable(
+            *http_mgr_, base_url_, session_cookie_, user_id_,
+            ctx.device_session->device_id, install_items, change_note),
+        std::chrono::seconds(120));
+    ASSERT_FALSE(install_r.is_err())
+        << "create_install_config failed: " << install_r.error().what;
   }
 
   std::this_thread::sleep_for(2500ms);
 
-  misc::ThreadNotifier updates_notifier(120000);
-  std::optional<monad::MyVoidResult> updates_r;
-  handler_->start().run([&](auto r) {
-    updates_r = std::move(r);
-    updates_notifier.notify();
-  });
-  updates_notifier.waitForNotification();
+  auto updates_r = testinfra::run_result_awaitable(io_ctx_mgr_->ioc(),
+                                                   handler_->start_awaitable(),
+                                                   std::chrono::seconds(120));
 
-  ASSERT_TRUE(updates_r.has_value()) << "updates handler produced no result";
-  if (updates_r->is_err()) {
-    FAIL() << "updates handler error: code=" << updates_r->error().code
-           << " message=" << updates_r->error().what
+  if (updates_r.is_err()) {
+    FAIL() << "updates handler error: code=" << updates_r.error().code
+           << " message=" << updates_r.error().what
            << " url=" << handler_->last_request_url();
   }
 

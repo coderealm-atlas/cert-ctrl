@@ -1,40 +1,37 @@
 #include <gtest/gtest.h>
 
+#include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "data/install_config_dto.hpp"
 #include "handlers/install_actions/exec_action.hpp"
 #include "handlers/install_actions/function_adapters.hpp"
-#include "conf/certctrl_config.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "result_monad.hpp"
 #include <boost/json.hpp>
 
 #if defined(__has_feature)
-#  if __has_feature(address_sanitizer)
-#    define CERTCTRL_TESTS_WITH_ASAN 1
-#  endif
+#if __has_feature(address_sanitizer)
+#define CERTCTRL_TESTS_WITH_ASAN 1
+#endif
 #endif
 #if defined(__SANITIZE_ADDRESS__)
-#  define CERTCTRL_TESTS_WITH_ASAN 1
+#define CERTCTRL_TESTS_WITH_ASAN 1
 #endif
 
 #if defined(CERTCTRL_TESTS_WITH_ASAN)
-extern "C" const char *__asan_default_options() {
-  return "detect_leaks=0";
-}
-extern "C" const char *__lsan_default_options() {
-  return "detect_leaks=0";
-}
+extern "C" const char *__asan_default_options() { return "detect_leaks=0"; }
+extern "C" const char *__lsan_default_options() { return "detect_leaks=0"; }
 #endif
 
-#include <sstream>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
-#include <chrono>
-#include <system_error>
 #include <fstream>
 #include <mutex>
-#include <string>
 #include <optional>
+#include <sstream>
+#include <string>
+#include <system_error>
 #include <unordered_map>
 
 using namespace certctrl::install_actions;
@@ -49,12 +46,15 @@ using certctrl::install_actions::IResourceMaterializer;
 IResourceMaterializer::Ptr make_default_materializer() {
   return std::make_shared<FunctionResourceMaterializer>(
       [](const dto::InstallItem &)
-          -> monad::IO<void> { return monad::IO<void>::pure(); });
+          -> boost::asio::awaitable<monad::MyResult<void>> {
+        co_return monad::MyResult<void>::Ok();
+      });
 }
 
 IExecEnvironmentResolver::Ptr make_env_resolver(
     std::function<std::optional<std::unordered_map<std::string, std::string>>(
-        const dto::InstallItem &)> fn) {
+        const dto::InstallItem &)>
+        fn) {
   return std::make_shared<FunctionExecEnvironmentResolver>(std::move(fn));
 }
 
@@ -66,8 +66,8 @@ struct TestConfigProvider : certctrl::ICertctrlConfigProvider {
   const certctrl::CertctrlConfig &get() const override { return config; }
   certctrl::CertctrlConfig &get() override { return config; }
 
-  monad::MyVoidResult refresh_install_update_grace_window(
-      bool enable_flags) override {
+  monad::MyVoidResult
+  refresh_install_update_grace_window(bool enable_flags) override {
     if (enable_flags) {
       config.auto_apply_config = true;
       config.auto_allow_after_update_script_hash = true;
@@ -95,14 +95,11 @@ struct HandlerContext {
 
 HandlerContext make_handler(
     customio::ConsoleOutput &cout,
-    const std::filesystem::path &runtime_dir =
-        std::filesystem::current_path(),
+    const std::filesystem::path &runtime_dir = std::filesystem::current_path(),
     IResourceMaterializer::Factory materializer_factory = {},
     IExecEnvironmentResolver::Factory resolver_factory = {}) {
   if (!materializer_factory) {
-    materializer_factory = []() {
-      return make_default_materializer();
-    };
+    materializer_factory = []() { return make_default_materializer(); };
   }
   if (!resolver_factory) {
     resolver_factory = []() { return IExecEnvironmentResolver::Ptr{}; };
@@ -112,6 +109,12 @@ HandlerContext make_handler(
   auto handler = std::make_shared<ExecActionHandler>(
       *provider, cout, materializer_factory, resolver_factory);
   return HandlerContext{std::move(provider), std::move(handler)};
+}
+
+monad::MyResult<void> apply_config(HandlerContext &context,
+                                   const dto::DeviceInstallConfigDto &config) {
+  return testinfra::run_result_awaitable(
+      context.handler->apply(config, std::nullopt));
 }
 
 } // namespace
@@ -156,17 +159,15 @@ TEST(ExecActionTest, RunsShellCmdAndCapturesSuccess) {
   it.type = "exec";
   it.cmd =
 #ifndef _WIN32
-  "/bin/echo hello-from-test";
+      "/bin/echo hello-from-test";
 #else
-  "echo hello-from-test";
+      "echo hello-from-test";
 #endif
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
   auto ctx = make_handler(cout);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    EXPECT_TRUE(result.is_ok());
-  });
+  EXPECT_TRUE(apply_config(ctx, cfg).is_ok());
 }
 
 TEST(ExecActionTest, TimesOutOnLongSleep) {
@@ -179,17 +180,15 @@ TEST(ExecActionTest, TimesOutOnLongSleep) {
   it.type = "exec";
   it.cmd =
 #ifndef _WIN32
-  "/bin/sleep 5";
+      "/bin/sleep 5";
 #else
-  "ping -n 6 127.0.0.1 >nul";
+      "ping -n 6 127.0.0.1 >nul";
 #endif
   it.timeout_ms = 1000; // 1s
   cfg.installs.push_back(it);
 
   auto ctx = make_handler(cout);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    EXPECT_FALSE(result.is_ok());
-  });
+  EXPECT_FALSE(apply_config(ctx, cfg).is_ok());
 }
 
 #ifndef _WIN32
@@ -206,9 +205,7 @@ TEST(ExecActionTest, ZeroTimeoutFallsBackToDefault) {
   cfg.installs.push_back(it);
 
   auto ctx = make_handler(cout);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    EXPECT_TRUE(result.is_ok());
-  });
+  EXPECT_TRUE(apply_config(ctx, cfg).is_ok());
 }
 #endif
 
@@ -224,16 +221,16 @@ TEST(ExecActionTest, RunsCmdArgvDirectly) {
 #ifndef _WIN32
   it.cmd_argv = std::vector<std::string>{"/bin/echo", "argv-echo-test"};
 #else
-  // On Windows cmd_argv should execute via CreateProcess; use simple cmd.exe /C echo
-  it.cmd_argv = std::vector<std::string>{"cmd.exe", "/C", "echo argv-echo-test"};
+  // On Windows cmd_argv should execute via CreateProcess; use simple cmd.exe /C
+  // echo
+  it.cmd_argv =
+      std::vector<std::string>{"cmd.exe", "/C", "echo argv-echo-test"};
 #endif
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
   auto ctx = make_handler(cout);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    EXPECT_TRUE(result.is_ok());
-  });
+  EXPECT_TRUE(apply_config(ctx, cfg).is_ok());
 }
 
 #ifndef _WIN32
@@ -244,9 +241,8 @@ TEST(ExecActionTest, SuppliesAdditionalEnvironmentFromContext) {
   customio::ConsoleOutput cout(iout);
 
   auto resolver = make_env_resolver(
-      [expected = std::string(kExpectedSecret)](
-          const dto::InstallItem &)
-      -> std::optional<std::unordered_map<std::string, std::string>> {
+      [expected = std::string(kExpectedSecret)](const dto::InstallItem &)
+          -> std::optional<std::unordered_map<std::string, std::string>> {
         std::unordered_map<std::string, std::string> env;
         env.emplace("CERTCTRL_PFX_PASSWORD", expected);
         return env;
@@ -269,9 +265,7 @@ TEST(ExecActionTest, SuppliesAdditionalEnvironmentFromContext) {
   auto resolver_factory = [resolver]() { return resolver; };
   auto ctx = make_handler(cout, std::filesystem::current_path(),
                           materializer_factory, resolver_factory);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    ASSERT_TRUE(result.is_ok());
-  });
+  ASSERT_TRUE(apply_config(ctx, cfg).is_ok());
 }
 
 TEST(ExecActionTest, MergesItemEnvWithContextEnv) {
@@ -281,9 +275,8 @@ TEST(ExecActionTest, MergesItemEnvWithContextEnv) {
   customio::ConsoleOutput cout(iout);
 
   auto resolver = make_env_resolver(
-      [expected = std::string(kExpectedSecret)](
-          const dto::InstallItem &)
-      -> std::optional<std::unordered_map<std::string, std::string>> {
+      [expected = std::string(kExpectedSecret)](const dto::InstallItem &)
+          -> std::optional<std::unordered_map<std::string, std::string>> {
         std::unordered_map<std::string, std::string> env;
         env.emplace("CERTCTRL_PFX_PASSWORD", expected);
         return env;
@@ -296,7 +289,8 @@ TEST(ExecActionTest, MergesItemEnvWithContextEnv) {
   it.env = std::unordered_map<std::string, std::string>{{"KEEP", "yes"}};
   it.cmd_argv = std::vector<std::string>{
       "/bin/sh", "-c",
-      "if [ \"$KEEP\" = \"yes\" ] && [ -n \"$CERTCTRL_PFX_PASSWORD\" ]; then exit 0; else exit 7; fi"};
+      "if [ \"$KEEP\" = \"yes\" ] && [ -n \"$CERTCTRL_PFX_PASSWORD\" ]; then "
+      "exit 0; else exit 7; fi"};
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
@@ -306,9 +300,7 @@ TEST(ExecActionTest, MergesItemEnvWithContextEnv) {
   auto resolver_factory = [resolver]() { return resolver; };
   auto ctx = make_handler(cout, std::filesystem::current_path(),
                           materializer_factory, resolver_factory);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    ASSERT_TRUE(result.is_ok());
-  });
+  ASSERT_TRUE(apply_config(ctx, cfg).is_ok());
 }
 
 TEST(ExecActionTest, RunsMultipleCommandsFromSingleShellLine) {
@@ -317,9 +309,11 @@ TEST(ExecActionTest, RunsMultipleCommandsFromSingleShellLine) {
   TestOutput iout;
   customio::ConsoleOutput cout(iout);
 
-  const auto temp_dir = fs::temp_directory_path() /
+  const auto temp_dir =
+      fs::temp_directory_path() /
       ("certctrl_exec_multi_cmd_test_" +
-       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+       std::to_string(
+           std::chrono::steady_clock::now().time_since_epoch().count()));
   struct DirCleanup {
     fs::path path;
     ~DirCleanup() {
@@ -345,15 +339,15 @@ TEST(ExecActionTest, RunsMultipleCommandsFromSingleShellLine) {
   dto::InstallItem it;
   it.id = "t-multi-cmd";
   it.type = "exec";
-  // Run two shell commands in one line to ensure chaining works: overwrite the file then chmod it.
-  it.cmd = std::string("printf 'updated' > '") + file_path + "';chmod 640 '" + file_path + "'";
+  // Run two shell commands in one line to ensure chaining works: overwrite the
+  // file then chmod it.
+  it.cmd = std::string("printf 'updated' > '") + file_path + "';chmod 640 '" +
+           file_path + "'";
   it.timeout_ms = 2000;
   cfg.installs.push_back(it);
 
   auto ctx = make_handler(cout, temp_dir);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    ASSERT_TRUE(result.is_ok());
-  });
+  ASSERT_TRUE(apply_config(ctx, cfg).is_ok());
 
   {
     std::ifstream verify_in(test_file);
@@ -378,7 +372,7 @@ bool command_exists(const std::string &exe_name) {
   return rc == 0;
 }
 
-}
+} // namespace
 
 TEST(ExecActionTest, WindowsShellCmdRunsUnderCmdExe) {
   TestOutput iout;
@@ -394,9 +388,7 @@ TEST(ExecActionTest, WindowsShellCmdRunsUnderCmdExe) {
   cfg.installs.push_back(it);
 
   auto ctx = make_handler(cout);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    EXPECT_TRUE(result.is_ok());
-  });
+  EXPECT_TRUE(apply_config(ctx, cfg).is_ok());
 }
 
 TEST(ExecActionTest, WindowsPwshCmdArgvRunsWhenAvailable) {
@@ -411,15 +403,13 @@ TEST(ExecActionTest, WindowsPwshCmdArgvRunsWhenAvailable) {
   dto::InstallItem it;
   it.id = "t5";
   it.type = "exec";
-  it.cmd_argv = std::vector<std::string>{
-      "pwsh", "-NoLogo", "-NoProfile", "-Command", "Write-Output pwsh-test"};
+  it.cmd_argv = std::vector<std::string>{"pwsh", "-NoLogo", "-NoProfile",
+                                         "-Command", "Write-Output pwsh-test"};
   it.timeout_ms = 5000;
   cfg.installs.push_back(it);
 
   auto ctx = make_handler(cout);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    EXPECT_TRUE(result.is_ok());
-  });
+  EXPECT_TRUE(apply_config(ctx, cfg).is_ok());
 }
 
 TEST(ExecActionTest, WindowsPowerShellCmdArgvRunsWhenAvailable) {
@@ -434,18 +424,16 @@ TEST(ExecActionTest, WindowsPowerShellCmdArgvRunsWhenAvailable) {
   dto::InstallItem it;
   it.id = "t6";
   it.type = "exec";
-  it.cmd_argv = std::vector<std::string>{
-      "powershell", "-NoLogo", "-NonInteractive", "-Command",
-      "Write-Output powershell-test"};
+  it.cmd_argv =
+      std::vector<std::string>{"powershell", "-NoLogo", "-NonInteractive",
+                               "-Command", "Write-Output powershell-test"};
   // Powershell.exe can take a few extra seconds to cold-start under load, so
   // give it a little more headroom than pwsh to keep this test stable.
   it.timeout_ms = 10000;
   cfg.installs.push_back(it);
 
   auto ctx = make_handler(cout);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    EXPECT_TRUE(result.is_ok());
-  });
+  EXPECT_TRUE(apply_config(ctx, cfg).is_ok());
 }
 
 TEST(ExecActionTest, WindowsMergesItemEnvWithContextEnv) {
@@ -455,9 +443,8 @@ TEST(ExecActionTest, WindowsMergesItemEnvWithContextEnv) {
   customio::ConsoleOutput cout(iout);
 
   auto resolver = make_env_resolver(
-      [expected = std::string(kExpectedSecret)](
-          const dto::InstallItem &)
-      -> std::optional<std::unordered_map<std::string, std::string>> {
+      [expected = std::string(kExpectedSecret)](const dto::InstallItem &)
+          -> std::optional<std::unordered_map<std::string, std::string>> {
         std::unordered_map<std::string, std::string> env;
         env.emplace("CERTCTRL_PFX_PASSWORD", expected);
         return env;
@@ -470,7 +457,8 @@ TEST(ExecActionTest, WindowsMergesItemEnvWithContextEnv) {
   it.env = std::unordered_map<std::string, std::string>{{"KEEP", "yes"}};
   it.cmd_argv = std::vector<std::string>{
       "cmd.exe", "/C",
-      "if \"%KEEP%\"==\"yes\" (if not \"%CERTCTRL_PFX_PASSWORD%\"==\"\" exit 0 else exit 7) else exit 7"};
+      "if \"%KEEP%\"==\"yes\" (if not \"%CERTCTRL_PFX_PASSWORD%\"==\"\" exit 0 "
+      "else exit 7) else exit 7"};
   it.timeout_ms = 4000;
   cfg.installs.push_back(it);
 
@@ -480,8 +468,6 @@ TEST(ExecActionTest, WindowsMergesItemEnvWithContextEnv) {
   auto resolver_factory = [resolver]() { return resolver; };
   auto ctx = make_handler(cout, std::filesystem::current_path(),
                           materializer_factory, resolver_factory);
-  ctx.handler->apply(cfg, std::nullopt).run([&](auto result) {
-    ASSERT_TRUE(result.is_ok());
-  });
+  ASSERT_TRUE(apply_config(ctx, cfg).is_ok());
 }
 #endif

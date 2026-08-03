@@ -466,74 +466,57 @@ run_item_cmd(const dto::InstallItem &item,
   return std::optional<std::string>("unknown command result");
 }
 #endif
-monad::IO<void>
+boost::asio::awaitable<monad::MyResult<void>>
 ExecActionHandler::process_one_item(const dto::InstallItem &item) {
-  using ReturnIO = monad::IO<void>;
-
-  if (!item.enabled) {
-    return ReturnIO::pure();
+  if (!item.enabled || ((!item.cmd || item.cmd->empty()) &&
+                        (!item.cmd_argv || item.cmd_argv->empty()))) {
+    co_return monad::MyResult<void>::Ok();
   }
 
-  if ((!item.cmd || item.cmd->empty()) &&
-      (!item.cmd_argv || item.cmd_argv->empty())) {
-    return ReturnIO::pure();
+  auto materialize_result =
+      co_await resource_materializer_->ensure_materialized(item);
+  if (materialize_result.is_err()) {
+    auto err = materialize_result.error();
+    auto message = fmt::format("exec item '{}': {}", item.id, err.what);
+    if (item.continue_on_error) {
+      output_.logger().warning()
+          << "exec item '" << item.id
+          << "' resource materialize failed: " << err.what << std::endl;
+      failure_messages_.push_back(std::move(message));
+      co_return monad::MyResult<void>::Ok();
+    }
+    co_return monad::MyResult<void>::Err(std::move(err));
   }
 
-  auto self = shared_from_this();
+  if (auto err = run_item_cmd(item, exec_env_resolver_)) {
+    auto message = fmt::format("exec item '{}': {}", item.id, *err);
+    if (item.continue_on_error) {
+      output_.logger().warning()
+          << "exec item '" << item.id << "' failed: " << *err << std::endl;
+      failure_messages_.push_back(std::move(message));
+      co_return monad::MyResult<void>::Ok();
+    }
 
-  return resource_materializer_->ensure_materialized(item)
-      .then([self, item]() -> ReturnIO {
-        if (auto err = run_item_cmd(item, self->exec_env_resolver_)) {
-          auto message = fmt::format("exec item '{}': {}", item.id, *err);
-          if (item.continue_on_error) {
-            self->output_.logger().warning()
-                << "exec item '" << item.id << "' failed: " << *err
-                << std::endl;
-            self->failure_messages_.push_back(std::move(message));
-            return ReturnIO::pure();
-          }
+    auto error_obj = monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                                       std::move(*err));
+    error_obj.params["stage"] = "exec";
+    co_return monad::MyResult<void>::Err(std::move(error_obj));
+  }
 
-          auto error_obj = monad::make_error(
-              my_errors::GENERAL::UNEXPECTED_RESULT, std::move(*err));
-          error_obj.params["stage"] = "exec";
-          return ReturnIO::fail(std::move(error_obj));
-        }
-
-        self->output_.logger().info() << "Executed exec item '" << item.id
-                                      << "' successfully" << std::endl;
-        return ReturnIO::pure();
-      })
-      .catch_then([self, item](monad::Error err) -> ReturnIO {
-        if (auto *stage = err.params.if_contains("stage")) {
-          if (stage->is_string() && stage->as_string() == "exec") {
-            return ReturnIO::fail(std::move(err));
-          }
-        }
-
-        auto message = fmt::format("exec item '{}': {}", item.id, err.what);
-        if (item.continue_on_error) {
-          self->output_.logger().warning()
-              << "exec item '" << item.id
-              << "' resource materialize failed: " << err.what << std::endl;
-          self->failure_messages_.push_back(std::move(message));
-          return ReturnIO::pure();
-        }
-
-        return ReturnIO::fail(std::move(err));
-      });
+  output_.logger().info() << "Executed exec item '" << item.id
+                          << "' successfully" << std::endl;
+  co_return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void> ExecActionHandler::apply(
+boost::asio::awaitable<monad::MyResult<void>> ExecActionHandler::apply(
     const dto::DeviceInstallConfigDto &config,
     std::optional<std::vector<std::string>> allowed_types) {
-  using ReturnIO = monad::IO<void>;
   try {
     failure_messages_.clear();
-    auto self = shared_from_this();
 
     resource_materializer_ = resource_materializer_factory_();
     if (!resource_materializer_) {
-      return ReturnIO::fail(
+      co_return monad::MyResult<void>::Err(
           monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                             "ExecActionHandler missing resource materializer"));
     }
@@ -547,79 +530,57 @@ monad::IO<void> ExecActionHandler::apply(
       if (!item.ob_type) {
         return false;
       }
-      for (const auto &t : *allowed_types) {
-        if (*item.ob_type == t) {
+      for (const auto &type : *allowed_types) {
+        if (*item.ob_type == type) {
           return true;
         }
       }
       return false;
     };
 
-    std::vector<monad::IO<void>> action_ios;
     bool processed_any = false;
-
     for (const auto &item : config.installs) {
-      if (!is_allowed(item)) {
-        continue;
-      }
-
-      if (item.ob_type && *item.ob_type == "cert") {
-        continue;
-      }
-
-      if (!item.enabled) {
-        continue;
-      }
-
-      if ((!item.cmd || item.cmd->empty()) &&
-          (!item.cmd_argv || item.cmd_argv->empty())) {
+      if (!is_allowed(item) || (item.ob_type && *item.ob_type == "cert") ||
+          !item.enabled ||
+          ((!item.cmd || item.cmd->empty()) &&
+           (!item.cmd_argv || item.cmd_argv->empty()))) {
         continue;
       }
 
       processed_any = true;
-      action_ios.push_back(process_one_item(item));
+      auto item_result = co_await process_one_item(item);
+      if (item_result.is_err()) {
+        const auto &err = item_result.error();
+        BOOST_LOG_SEV(app_logger(), trivial::error)
+            << "exec actions pipeline failed code=" << err.code
+            << " status=" << err.response_status << " what=" << err.what
+            << " params=" << boost::json::serialize(err.params);
+        co_return item_result;
+      }
     }
 
     if (!processed_any) {
-      self->output_.logger().debug()
-          << "No exec items present in plan" << std::endl;
-      return ReturnIO::pure();
+      output_.logger().debug() << "No exec items present in plan" << std::endl;
+      co_return monad::MyResult<void>::Ok();
     }
 
-    return monad::collect_result_io(action_ios)
-        .then([self](auto results) -> ReturnIO {
-          for (const auto &res : results) {
-            if (res.is_err()) {
-              return ReturnIO::fail(res.error());
-            }
-          }
+    if (!failure_messages_.empty()) {
+      std::ostringstream oss;
+      oss << "exec actions completed with " << failure_messages_.size()
+          << " warning(s): ";
+      for (std::size_t idx = 0; idx < failure_messages_.size(); ++idx) {
+        if (idx != 0) {
+          oss << "; ";
+        }
+        oss << failure_messages_[idx];
+      }
+      output_.logger().warning() << oss.str() << std::endl;
+      BOOST_LOG_SEV(app_logger(), trivial::trace) << oss.str();
+    }
 
-          if (!self->failure_messages_.empty()) {
-            std::ostringstream oss;
-            oss << "exec actions completed with "
-                << self->failure_messages_.size() << " warning(s): ";
-            for (std::size_t idx = 0; idx < self->failure_messages_.size();
-                 ++idx) {
-              if (idx != 0) {
-                oss << "; ";
-              }
-              oss << self->failure_messages_[idx];
-            }
-            self->output_.logger().warning() << oss.str() << std::endl;
-            BOOST_LOG_SEV(app_logger(), trivial::trace) << oss.str();
-          }
-
-          return ReturnIO::pure();
-        })
-        .catch_then([self](monad::Error err) -> ReturnIO {
-          BOOST_LOG_SEV(app_logger(), trivial::error)
-              << "exec actions pipeline failed code=" << err.code
-              << " status=" << err.response_status << " what=" << err.what
-              << " params=" << boost::json::serialize(err.params);
-          return ReturnIO::fail(std::move(err));
-        });
+    co_return monad::MyResult<void>::Ok();
   } catch (const std::exception &ex) {
-    return ReturnIO::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT, ex.what()));
   }
 }

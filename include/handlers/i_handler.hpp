@@ -3,7 +3,9 @@
 #include <memory>
 #include <string>
 
-#include "io_monad.hpp"
+#include <boost/asio/awaitable.hpp>
+
+#include "result_monad.hpp"
 
 namespace certctrl {
 
@@ -19,8 +21,8 @@ struct IHandler {
   virtual ~IHandler() = default;
   // The subcommand name this handler responds to (e.g., "conf", "login")
   virtual std::string command() const = 0;
-  // Execute the handler's main work
-  virtual monad::IO<void> start() = 0;
+  // Execute the handler's main work using the canonical coroutine boundary.
+  virtual boost::asio::awaitable<monad::MyResult<void>> start_awaitable() = 0;
 };
 
 struct HandlerFactoryImpl : public IHandlerFactory {

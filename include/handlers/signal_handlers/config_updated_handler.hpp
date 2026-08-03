@@ -22,8 +22,9 @@ namespace signal_handlers {
  * - Consumes ref.replace entries of {file, content}.
  * - application: selectively applies allowlisted keys (currently verbose only)
  *   and persists via ICertctrlConfigProvider::save (application.override.json).
- * - websocket: persists the full snapshot via IWebsocketConfigProvider::save_replace
- *   and triggers a websocket session restart callback (if provided).
+ * - websocket: persists the full snapshot via
+ * IWebsocketConfigProvider::save_replace and triggers a websocket session
+ * restart callback (if provided).
  */
 class ConfigUpdatedHandler : public ISignalHandler {
 private:
@@ -33,18 +34,19 @@ private:
   customio::ConsoleOutput &output_hub_;
   src::severity_logger<trivial::severity_level> lg;
 
-  static monad::IO<void> fail_invalid_argument(const std::string &what) {
+  static monad::MyResult<void> fail_invalid_argument(const std::string &what) {
     monad::Error err{};
     err.code = my_errors::GENERAL::INVALID_ARGUMENT;
     err.what = what;
-    return monad::IO<void>::fail(std::move(err));
+    return monad::MyResult<void>::Err(std::move(err));
   }
 
 public:
-  ConfigUpdatedHandler(certctrl::ICertctrlConfigProvider &config_provider,
-                      customio::ConsoleOutput &output_hub,
-                      certctrl::IWebsocketConfigProvider *websocket_config_provider = nullptr,
-                      std::function<void()> on_websocket_config_updated = {})
+  ConfigUpdatedHandler(
+      certctrl::ICertctrlConfigProvider &config_provider,
+      customio::ConsoleOutput &output_hub,
+      certctrl::IWebsocketConfigProvider *websocket_config_provider = nullptr,
+      std::function<void()> on_websocket_config_updated = {})
       : config_provider_(config_provider),
         websocket_config_provider_(websocket_config_provider),
         on_websocket_config_updated_(std::move(on_websocket_config_updated)),
@@ -52,17 +54,19 @@ public:
 
   std::string signal_type() const override { return "config.updated"; }
 
-  monad::IO<void> handle(const ::data::DeviceUpdateSignal &signal) override {
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_awaitable(const ::data::DeviceUpdateSignal &signal) override {
     namespace json = boost::json;
 
     if (signal.ref.if_contains("set")) {
-      return fail_invalid_argument(
+      co_return fail_invalid_argument(
           "config.updated ref.set is not supported; use ref.replace");
     }
 
     if (const json::value *replace_val = signal.ref.if_contains("replace")) {
       if (!replace_val->is_array()) {
-        return fail_invalid_argument("config.updated ref.replace must be an array");
+        co_return fail_invalid_argument(
+            "config.updated ref.replace must be an array");
       }
       const auto &arr = replace_val->as_array();
 
@@ -71,7 +75,7 @@ public:
 
       for (const auto &entry_val : arr) {
         if (!entry_val.is_object()) {
-          return fail_invalid_argument(
+          co_return fail_invalid_argument(
               "config.updated ref.replace entries must be objects");
         }
         const auto &entry = entry_val.as_object();
@@ -79,31 +83,36 @@ public:
         const auto *file_val = entry.if_contains("file");
         const auto *content_val = entry.if_contains("content");
         if (!file_val || !file_val->is_string()) {
-          return fail_invalid_argument(
+          co_return fail_invalid_argument(
               "config.updated ref.replace entry.file must be string");
         }
         if (!content_val || !content_val->is_object()) {
-          return fail_invalid_argument(
+          co_return fail_invalid_argument(
               "config.updated ref.replace entry.content must be object");
         }
         const std::string file = std::string(file_val->as_string().c_str());
         const auto &content_obj = content_val->as_object();
 
         if (file == "application") {
-          if (const json::value *v = content_obj.if_contains("auto_apply_config")) {
+          if (const json::value *v =
+                  content_obj.if_contains("auto_apply_config")) {
             if (!v->is_bool()) {
-              return fail_invalid_argument(
-                  "config.updated replace(application).content.auto_apply_config must be boolean");
+              co_return fail_invalid_argument(
+                  "config.updated "
+                  "replace(application).content.auto_apply_config must be "
+                  "boolean");
             }
             BOOST_LOG_SEV(lg, trivial::warning)
-                << "Ignoring remote config.updated application.auto_apply_config; "
+                << "Ignoring remote config.updated "
+                   "application.auto_apply_config; "
                    "this setting is local-only";
           }
 
           if (const json::value *v = content_obj.if_contains("verbose")) {
             if (!v->is_string()) {
-              return fail_invalid_argument(
-                  "config.updated replace(application).content.verbose must be string");
+              co_return fail_invalid_argument(
+                  "config.updated replace(application).content.verbose must be "
+                  "string");
             }
             const std::string str_value = std::string(v->as_string().c_str());
             config_provider_.get().verbose = str_value;
@@ -123,16 +132,17 @@ public:
             << json::serialize(application_patch);
         auto save_r = config_provider_.save(application_patch);
         if (save_r.is_err()) {
-          return monad::IO<void>::fail(save_r.error());
+          co_return monad::MyResult<void>::Err(save_r.error());
         }
       }
 
       if (websocket_content.has_value()) {
         if (!websocket_config_provider_) {
           output_hub_.logger().info()
-              << "config.updated replace(websocket) ignored: websocket config provider not available"
+              << "config.updated replace(websocket) ignored: websocket config "
+                 "provider not available"
               << std::endl;
-          return monad::IO<void>::pure();
+          co_return monad::MyResult<void>::Ok();
         }
 
         try {
@@ -140,30 +150,32 @@ public:
               boost::json::value_to<certctrl::WebsocketConfig>(
                   json::value(*websocket_content));
         } catch (const std::exception &ex) {
-          return fail_invalid_argument(
-              std::string("config.updated replace(websocket).content invalid: ") + ex.what());
+          co_return fail_invalid_argument(
+              std::string(
+                  "config.updated replace(websocket).content invalid: ") +
+              ex.what());
         }
 
-        auto save_r = websocket_config_provider_->save_replace(*websocket_content);
+        auto save_r =
+            websocket_config_provider_->save_replace(*websocket_content);
         if (save_r.is_err()) {
-          return monad::IO<void>::fail(save_r.error());
+          co_return monad::MyResult<void>::Err(save_r.error());
         }
 
-        BOOST_LOG_SEV(lg, trivial::info)
-            << "Applied websocket config snapshot";
+        BOOST_LOG_SEV(lg, trivial::info) << "Applied websocket config snapshot";
 
         if (on_websocket_config_updated_) {
           on_websocket_config_updated_();
         }
       }
 
-      return monad::IO<void>::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     output_hub_.logger().info()
         << "Received config.updated without ref.replace; no action taken. ref="
         << json::serialize(signal.ref) << std::endl;
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 };
 

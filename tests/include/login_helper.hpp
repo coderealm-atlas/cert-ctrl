@@ -1,5 +1,6 @@
 #pragma once
 
+#include <boost/asio/awaitable.hpp>
 #include <boost/json.hpp>
 #include <cctype>
 #include <iostream>
@@ -10,27 +11,19 @@
 #include "api_response_result.hpp"
 #include "data/data_shape.hpp"
 #include "data/device_auth_types.hpp"
+#include "http_client_awaitable.hpp"
 #include "http_client_manager.hpp"
-#include "http_client_monad.hpp"
 
-// High level monadic helpers for login & device workflow against real server.
-// They build on the generic http_io / http_request_io primitives and keep the
-// fluent functional style inside tests.
-//
-// The helpers intentionally avoid hiding the monadic pipeline; they just
-// provide small reusable functions that append .map / .then chains.
+// High-level coroutine helpers for login and device workflows against a real
+// server.
 
 namespace testutil {
 namespace json = boost::json;
 namespace http = boost::beast::http;
-using monad::GetStringTag;
-using monad::http_io;         // bring into scope
-using monad::http_request_io; // bring into scope
-using monad::PostJsonTag;
 using LoginResponse = apihandler::ApiDataResponse<data::LoginSuccess>;
 using LoginResponseResult = apihandler::ApiResponseResult<data::LoginSuccess>;
 using loginSuccessResult = monad::MyResult<data::LoginSuccess>;
-using LoginSuccessIO = monad::IO<data::LoginSuccess>;
+using LoginSuccessAwaitable = boost::asio::awaitable<loginSuccessResult>;
 
 inline std::string make_body_preview(const std::string &body,
                                      std::size_t max_len = 512) {
@@ -127,165 +120,189 @@ inline std::string url_base() {
 //   return {};
 // }
 
-inline LoginSuccessIO login_io(client_async::HttpClientManager &mgr,
-                               const std::string &base_url,
-                               const std::string &email,
-                               const std::string &password) {
+inline LoginSuccessAwaitable
+login_awaitable(client_async::HttpClientManager &mgr,
+                const std::string &base_url, const std::string &email,
+                const std::string &password) {
   // Contract per docs: POST /auth { action: login, email, password }
   std::string login_url =
       base_url + "/auth/general"; // unified multi-action endpoint
-  return http_io<PostJsonTag>(login_url)
-      .map([email, password, login_url](auto ex) {
-        json::object body{
-            {"action", "login"}, {"email", email}, {"password", password}};
-        std::cout << "[login_io] POST " << login_url
-                  << " body=" << json::serialize(body) << std::endl;
-        ex->setRequestJsonBody(std::move(body));
-        ex->request.set(http::field::accept, "application/json");
-        return ex;
-      })
-      .then(http_request_io<PostJsonTag>(mgr))
-      .then([&](auto ex) {
-        log_http_response("login_io", ex);
-        // Get the cookie value and construct the full cookie string
-        auto cookie_value = ex->getResponseCookie().value_or("");
-        auto auth_cookie = cookie_value.empty() ? std::string{} 
-                                                : "cjj365=" + cookie_value;
-        auto r =
-            ex->template parseJsonResponseResult<LoginResponseResult>().map(
-                [auth_cookie](auto api_resp) {
-                  auto login_success =
-                      std::get<data::LoginSuccess>(api_resp.data);
-                  login_success.session_cookie = auth_cookie;
-                  return login_success;
-                });
-        return LoginSuccessIO::from_result(std::move(r));
+  auto exchange_result =
+      certctrl::async_support::make_http_exchange<monad::PostJsonTag>(
+          login_url);
+  if (exchange_result.is_err()) {
+    co_return loginSuccessResult::Err(std::move(exchange_result).error());
+  }
+  auto exchange = std::move(exchange_result).value();
+  json::object body{
+      {"action", "login"}, {"email", email}, {"password", password}};
+  std::cout << "[login_awaitable] POST " << login_url
+            << " body=" << json::serialize(body) << std::endl;
+  exchange->setRequestJsonBody(std::move(body));
+  exchange->request.set(http::field::accept, "application/json");
+
+  auto request_result =
+      co_await certctrl::async_support::http_exchange_awaitable<
+          monad::PostJsonTag>(mgr, std::move(exchange));
+  if (request_result.is_err()) {
+    co_return loginSuccessResult::Err(std::move(request_result).error());
+  }
+  exchange = std::move(request_result).value();
+  log_http_response("login_awaitable", exchange);
+  auto cookie_value = exchange->getResponseCookie().value_or("");
+  auto auth_cookie =
+      cookie_value.empty() ? std::string{} : "cjj365=" + cookie_value;
+  co_return exchange->template parseJsonResponseResult<LoginResponseResult>()
+      .map([auth_cookie](auto api_resp) {
+        auto login_success = std::get<data::LoginSuccess>(api_resp.data);
+        login_success.session_cookie = auth_cookie;
+        return login_success;
       });
 }
 
-inline monad::IO<data::deviceauth::StartResp>
-device_start_io(client_async::HttpClientManager &mgr,
-                const std::string &base_url, const std::string &cookie) {
-  using StartRespResult = monad::MyResult<data::deviceauth::StartResp>;
-  using StartRespIO = monad::IO<data::deviceauth::StartResp>;
+inline boost::asio::awaitable<monad::MyResult<data::deviceauth::StartResp>>
+device_start_awaitable(client_async::HttpClientManager &mgr,
+                       const std::string &base_url, const std::string &cookie) {
+  using Result = monad::MyResult<data::deviceauth::StartResp>;
 
   std::string url = base_url + "/auth/device";
-  return http_io<PostJsonTag>(url)
-      .map([cookie](auto ex) {
-        ex->setRequestJsonBody(
-            json::object{{"action", "device_start"},
-                         {"scopes", json::array{json::value("openid"),
-                                                json::value("profile")}}});
-        ex->request.set(http::field::cookie, cookie);
-        return ex;
-      })
-      .then(http_request_io<PostJsonTag>(mgr))
-      .then([](auto ex) {
-        return StartRespIO::from_result(
-    ex->template parseJsonDataResponse<data::deviceauth::StartResp>());
-      });
+  auto exchange_result =
+      certctrl::async_support::make_http_exchange<monad::PostJsonTag>(url);
+  if (exchange_result.is_err()) {
+    co_return Result::Err(std::move(exchange_result).error());
+  }
+  auto exchange = std::move(exchange_result).value();
+  exchange->setRequestJsonBody(json::object{
+      {"action", "device_start"},
+      {"scopes", json::array{json::value("openid"), json::value("profile")}}});
+  exchange->request.set(http::field::cookie, cookie);
+  auto request_result =
+      co_await certctrl::async_support::http_exchange_awaitable<
+          monad::PostJsonTag>(mgr, std::move(exchange));
+  if (request_result.is_err()) {
+    co_return Result::Err(std::move(request_result).error());
+  }
+  co_return std::move(request_result)
+      .value()
+      ->template parseJsonDataResponse<data::deviceauth::StartResp>();
 }
 
-inline monad::IO<data::deviceauth::PollResp>
-device_poll_io(client_async::HttpClientManager &mgr,
-               const std::string &base_url, const std::string &device_code,
-               std::optional<int64_t> device_id = std::nullopt) {
-  using PollRespResult = monad::MyResult<data::deviceauth::PollResp>;
-  using PollRespIO = monad::IO<data::deviceauth::PollResp>;
+inline boost::asio::awaitable<monad::MyResult<data::deviceauth::PollResp>>
+device_poll_awaitable(client_async::HttpClientManager &mgr,
+                      const std::string &base_url,
+                      const std::string &device_code,
+                      std::optional<int64_t> device_id = std::nullopt) {
+  using Result = monad::MyResult<data::deviceauth::PollResp>;
 
   std::string url = base_url + "/auth/device";
-  return http_io<PostJsonTag>(url)
-      .map([device_code, device_id](auto ex) {
-        json::object body{{"action", "device_poll"},
-                          {"device_code", device_code}};
-        if (device_id.has_value()) {
-          body.emplace("device_id", *device_id);
-        }
-        ex->setRequestJsonBody(std::move(body));
-        return ex;
-      })
-      .then(http_request_io<PostJsonTag>(mgr))
-      .then([](auto ex) {
-        return PollRespIO::from_result(
-            ex->template parseJsonDataResponse<data::deviceauth::PollResp>()
-        );
-      });
+  auto exchange_result =
+      certctrl::async_support::make_http_exchange<monad::PostJsonTag>(url);
+  if (exchange_result.is_err()) {
+    co_return Result::Err(std::move(exchange_result).error());
+  }
+  auto exchange = std::move(exchange_result).value();
+  json::object body{{"action", "device_poll"}, {"device_code", device_code}};
+  if (device_id.has_value()) {
+    body.emplace("device_id", *device_id);
+  }
+  exchange->setRequestJsonBody(std::move(body));
+  auto request_result =
+      co_await certctrl::async_support::http_exchange_awaitable<
+          monad::PostJsonTag>(mgr, std::move(exchange));
+  if (request_result.is_err()) {
+    co_return Result::Err(std::move(request_result).error());
+  }
+  co_return std::move(request_result)
+      .value()
+      ->template parseJsonDataResponse<data::deviceauth::PollResp>();
 }
 
-inline monad::IO<data::deviceauth::VerifyResp>
-device_verify_io(client_async::HttpClientManager &mgr,
-                 const std::string &base_url, const std::string &cookie,
-                 const std::string &user_code, bool approve = true) {
-  using VerifyRespIO = monad::IO<data::deviceauth::VerifyResp>;
+inline boost::asio::awaitable<monad::MyResult<data::deviceauth::VerifyResp>>
+device_verify_awaitable(client_async::HttpClientManager &mgr,
+                        const std::string &base_url, const std::string &cookie,
+                        const std::string &user_code, bool approve = true) {
+  using Result = monad::MyResult<data::deviceauth::VerifyResp>;
 
   std::string url = base_url + "/auth/device";
-  return http_io<PostJsonTag>(url)
-      .map([cookie, user_code, approve](auto ex) {
-        json::object body{{"action", "device_verify"},
-                          {"user_code", user_code},
-                          {"approve", approve}};
-        ex->setRequestJsonBody(std::move(body));
-        ex->request.set(http::field::cookie, cookie);
-        return ex;
-      })
-      .then(http_request_io<PostJsonTag>(mgr))
-      .then([](auto ex) {
-        return VerifyRespIO::from_result(
-            ex->template parseJsonDataResponse<data::deviceauth::VerifyResp>()
-        );
-      });
+  auto exchange_result =
+      certctrl::async_support::make_http_exchange<monad::PostJsonTag>(url);
+  if (exchange_result.is_err()) {
+    co_return Result::Err(std::move(exchange_result).error());
+  }
+  auto exchange = std::move(exchange_result).value();
+  exchange->setRequestJsonBody(json::object{{"action", "device_verify"},
+                                            {"user_code", user_code},
+                                            {"approve", approve}});
+  exchange->request.set(http::field::cookie, cookie);
+  auto request_result =
+      co_await certctrl::async_support::http_exchange_awaitable<
+          monad::PostJsonTag>(mgr, std::move(exchange));
+  if (request_result.is_err()) {
+    co_return Result::Err(std::move(request_result).error());
+  }
+  co_return std::move(request_result)
+      .value()
+      ->template parseJsonDataResponse<data::deviceauth::VerifyResp>();
 }
 
 // Register device with fingerprint
-inline monad::IO<json::object> device_register_io(
-    client_async::HttpClientManager &mgr,
-    const std::string &base_url,
-    const std::string &access_token,
-    int64_t timestamp) {
-  using RegisterIO = monad::IO<json::object>;
+inline boost::asio::awaitable<monad::MyResult<json::object>>
+device_register_awaitable(client_async::HttpClientManager &mgr,
+                          const std::string &base_url,
+                          const std::string &access_token, int64_t timestamp) {
+  using Result = monad::MyResult<json::object>;
 
   std::string url = base_url + "/auth/device";
-  return http_io<PostJsonTag>(url)
-      .map([access_token, timestamp](auto ex) {
-        ex->setRequestJsonBody(json::object{
-            {"action", "device_register"},
-            {"platform", "linux"},
-            {"model", "test_x86_64"},
-            {"app_version", "1.0.0-test"},
-            {"device_name", "Test Device " + std::to_string(timestamp)},
-            {"fp_version", 1}
-        });
-        ex->request.set(http::field::authorization, "Bearer " + access_token);
-        return ex;
-      })
-      .then(http_request_io<PostJsonTag>(mgr))
-      .then([](auto ex) {
-        return RegisterIO::from_result(
-            ex->template parseJsonDataResponse<json::object>()
-        );
-      });
+  auto exchange_result =
+      certctrl::async_support::make_http_exchange<monad::PostJsonTag>(url);
+  if (exchange_result.is_err()) {
+    co_return Result::Err(std::move(exchange_result).error());
+  }
+  auto exchange = std::move(exchange_result).value();
+  exchange->setRequestJsonBody(
+      json::object{{"action", "device_register"},
+                   {"platform", "linux"},
+                   {"model", "test_x86_64"},
+                   {"app_version", "1.0.0-test"},
+                   {"device_name", "Test Device " + std::to_string(timestamp)},
+                   {"fp_version", 1}});
+  exchange->request.set(http::field::authorization, "Bearer " + access_token);
+  auto request_result =
+      co_await certctrl::async_support::http_exchange_awaitable<
+          monad::PostJsonTag>(mgr, std::move(exchange));
+  if (request_result.is_err()) {
+    co_return Result::Err(std::move(request_result).error());
+  }
+  co_return std::move(request_result)
+      .value()
+      ->template parseJsonDataResponse<json::object>();
 }
 
 // Query user devices to verify registration
-inline monad::IO<json::array> list_user_devices_io(
-    client_async::HttpClientManager &mgr,
-    const std::string &base_url,
-    const std::string &cookie,
-    int64_t user_id) {
-  using DeviceListIO = monad::IO<json::array>;
+inline boost::asio::awaitable<monad::MyResult<json::array>>
+list_user_devices_awaitable(client_async::HttpClientManager &mgr,
+                            const std::string &base_url,
+                            const std::string &cookie, int64_t user_id) {
+  using Result = monad::MyResult<json::array>;
 
-  std::string url = base_url + "/apiv1/users/" + std::to_string(user_id) + "/devices";
-  return http_io<monad::GetStringTag>(url)
-      .map([cookie](auto ex) {
-        ex->request.set(http::field::cookie, cookie);
-        return ex;
-      })
-      .then(http_request_io<monad::GetStringTag>(mgr))
-      .then([](auto ex) {
-        return DeviceListIO::from_result(
-            ex->template parseJsonDataResponse<json::array>()
-        );
-      });
+  std::string url =
+      base_url + "/apiv1/users/" + std::to_string(user_id) + "/devices";
+  auto exchange_result =
+      certctrl::async_support::make_http_exchange<monad::GetStringTag>(url);
+  if (exchange_result.is_err()) {
+    co_return Result::Err(std::move(exchange_result).error());
+  }
+  auto exchange = std::move(exchange_result).value();
+  exchange->request.set(http::field::cookie, cookie);
+  auto request_result =
+      co_await certctrl::async_support::http_exchange_awaitable<
+          monad::GetStringTag>(mgr, std::move(exchange));
+  if (request_result.is_err()) {
+    co_return Result::Err(std::move(request_result).error());
+  }
+  co_return std::move(request_result)
+      .value()
+      ->template parseJsonDataResponse<json::array>();
 }
 
 } // namespace testutil

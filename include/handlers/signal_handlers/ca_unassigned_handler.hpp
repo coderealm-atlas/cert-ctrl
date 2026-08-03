@@ -1,8 +1,8 @@
 #pragma once
 
+#include "customio/console_output.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "handlers/signal_handlers/signal_handler_base.hpp"
-#include "customio/console_output.hpp"
 #include <boost/json.hpp>
 
 namespace certctrl {
@@ -16,17 +16,17 @@ private:
 public:
   CaUnassignedHandler(std::shared_ptr<InstallConfigManager> config_manager,
                       customio::ConsoleOutput &output_hub)
-      : config_manager_(std::move(config_manager)),
-        output_hub_(output_hub) {}
+      : config_manager_(std::move(config_manager)), output_hub_(output_hub) {}
 
   std::string signal_type() const override { return "ca.unassigned"; }
 
-  monad::IO<void> handle(const ::data::DeviceUpdateSignal &signal) override {
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_awaitable(const ::data::DeviceUpdateSignal &signal) override {
     if (!config_manager_) {
       output_hub_.logger().warning()
           << "CaUnassignedHandler missing InstallConfigManager; skipping signal"
           << std::endl;
-      return monad::IO<void>::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     auto typed = ::data::get_ca_unassigned(signal);
@@ -34,15 +34,15 @@ public:
       output_hub_.logger().warning()
           << "ca.unassigned signal missing ca_id: "
           << boost::json::serialize(signal.ref) << std::endl;
-      return monad::IO<void>::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     output_hub_.logger().info()
-        << "Processing ca.unassigned: "
-        << boost::json::serialize(signal.ref) << std::endl;
+        << "Processing ca.unassigned: " << boost::json::serialize(signal.ref)
+        << std::endl;
 
-    return config_manager_->handle_ca_unassignment(typed->ca_id,
-                                                   typed->ca_name);
+    co_return co_await config_manager_->handle_ca_unassignment(typed->ca_id,
+                                                               typed->ca_name);
   }
 };
 

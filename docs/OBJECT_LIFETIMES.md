@@ -27,14 +27,18 @@ This document records how the main runtime objects in `cert-ctrl` are created, w
 | `install_actions::CopyActionHandler` | `InstallConfigManager::apply_copy_actions` (stack) | Stack-allocated per call | Uses a shared `FunctionResourceMaterializer` for the duration of the copy pipeline. |
 | `install_actions::ImportCaActionHandler` | `InstallConfigManager::apply_import_ca_actions` | Stack allocation per call | Shares the same materializer pattern. |
 | `install_actions::ExecActionHandler` | Created after copy/import stages inside `InstallConfigManager` | Stack allocation per call | Runs exec items associated with either copy or import phases. |
-| `install_actions::FunctionResourceMaterializer` | Lambdas inside `apply_copy_actions` / `apply_import_ca_actions` | `std::shared_ptr` captured by async chain | Delegates materialization back into `InstallConfigManager`. |
-| `install_actions::FunctionExecEnvironmentResolver` | Same as above | `std::shared_ptr` captured by async chain | Resolves environment variables at exec time. |
-| `monad::IO` continuations (`then`, `catch_then`) | Inside handler and manager methods | Temporary state held by monad; lifetimes end when pipeline resolves | Ensure any captured objects are either value copies or `shared_ptr` to avoid dangling refs. |
+| `install_actions::FunctionResourceMaterializer` | Workflow setup inside `InstallWorkflowRunner` | Owned by the coroutine frame for the operation | Delegates materialization back into `InstallConfigManager`. |
+| `install_actions::FunctionExecEnvironmentResolver` | Same as above | Owned by the coroutine frame for the operation | Resolves environment variables at exec time. |
+| Boost.Asio coroutine frames | Handler, manager, and runner methods | Values live until the awaitable completes or is cancelled | Keep operation state as frame-owned values; retain shared owners only for genuinely long-lived operations. |
 
 ## Lifetimes & Ownership Guidelines
 - **Prefer DI singletons for cross-handler services.** `InstallConfigManager` is currently available both through DI and through manual construction. Aligning on one creation path avoids diverging state and makes ownership predictable.
 - **Handlers own their bespoke dependencies.** The `InstallConfigHandler`-specific manager should either be sourced from DI or clearly documented (as above) to make its private lifetime explicit.
-- **Async chains must never capture raw `this` unless the owner is managed by `shared_from_this()`.** Use `auto self = shared_from_this()` for objects that outlive the call stack (`InstallWorkflowRunner` already does this). Otherwise capture by value or use `std::weak_ptr` promotion patterns.
+- **Coroutines must not outlive raw dependencies.** Store operation data in the
+  coroutine frame and use `shared_from_this()` when an asynchronous operation
+  intentionally extends an object's lifetime. Use weak ownership for
+  self-rearming work that should stop when its external owner disappears.
 - **Factory helpers (`FunctionResourceMaterializer`, etc.) are intentionally short-lived.** Treat them as per-call utilities; they are safe to recreate on each invocation.
 
-Keeping this map up to date will prevent future lifetime regressions—especially around the async monad pipelines where accidental dangling captures are the easiest way to end up with the kind of hard-to-reproduce failures we are chasing right now.
+Keeping this map up to date prevents lifetime regressions around suspended
+coroutine frames, retained owners, and borrowed dependencies.

@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 
+#include <boost/asio/awaitable.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/log/sources/logger.hpp>
@@ -19,8 +20,8 @@
 #include "handlers/session_refresher.hpp"
 #include "http_client_manager.hpp"
 #include "io_context_manager.hpp"
-#include "io_monad.hpp"
 #include "resource_fetcher.hpp"
+#include "result_monad.hpp"
 
 namespace certctrl::install_actions {
 
@@ -29,37 +30,33 @@ class InstallResourceMaterializer
       public std::enable_shared_from_this<InstallResourceMaterializer> {
 public:
   InstallResourceMaterializer(
-      cjj365::IoContextManager &io_context_manager,       //
-      certctrl::ICertctrlConfigProvider &config_provider, //
-      customio::ConsoleOutput &output,                    //
-      IResourceFetcher &resource_fetcher,                 //
-      client_async::HttpClientManager &http_client,       //
+      cjj365::IoContextManager &io_context_manager,             //
+      certctrl::ICertctrlConfigProvider &config_provider,       //
+      customio::ConsoleOutput &output,                          //
+      IResourceFetcher &resource_fetcher,                       //
+      client_async::HttpClientManager &http_client,             //
       install_actions::IAccessTokenLoader &access_token_loader, //
-      IMaterializePasswordManager &password_manager,             //
+      IMaterializePasswordManager &password_manager,            //
       std::shared_ptr<certctrl::ISessionRefresher> session_refresher);
 
   ~InstallResourceMaterializer();
 
-  monad::IO<void> ensure_materialized(const dto::InstallItem &item) override;
+  boost::asio::awaitable<monad::MyResult<void>>
+  ensure_materialized(const dto::InstallItem &item) override;
 
 private:
   std::filesystem::path state_dir() const;
   std::filesystem::path resource_current_dir(const std::string &ob_type,
                                              std::int64_t ob_id) const;
 
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   ensure_resource_materialized_impl(const dto::InstallItem &item);
 
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   fetch_with_refresh(std::shared_ptr<MaterializationData> state,
                      bool attempted_refresh = false);
 
   std::filesystem::path runtime_state_dir() const;
-
-  boost::asio::io_context &ensure_io_context();
-  monad::IO<std::string> fetch_http_body(const std::string &url,
-                                         const std::string &token,
-                                         const char *context_label);
 
 private:
   std::filesystem::path runtime_dir_;

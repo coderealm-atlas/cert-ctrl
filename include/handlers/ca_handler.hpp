@@ -23,7 +23,7 @@ public:
             std::unique_ptr<InstallConfigManager> install_config_manager);
 
   std::string command() const override { return "ca"; }
-  monad::IO<void> start() override;
+  boost::asio::awaitable<monad::MyResult<void>> start_awaitable() override;
 
 private:
   struct ListOptions {
@@ -58,18 +58,18 @@ private:
   ListOptions parse_list_options(const std::string &action);
   ShowOptions parse_show_options(const std::string &action);
 
-  monad::IO<void> handle_list();
-  monad::IO<void> handle_show();
-  monad::IO<void> render_show(const dto::DeviceInstallConfigDto &config,
-                              std::int64_t ca_id,
-                              const ShowOptions &options);
+  boost::asio::awaitable<monad::MyResult<void>> handle_list_awaitable();
+  boost::asio::awaitable<monad::MyResult<void>> handle_show_awaitable();
+  monad::MyResult<void> render_show(const dto::DeviceInstallConfigDto &config,
+                                    std::int64_t ca_id,
+                                    const ShowOptions &options);
 
   std::vector<CaSummary>
   gather_cas(const dto::DeviceInstallConfigDto &config) const;
   CaArtifacts load_ca_artifacts(std::int64_t ca_id) const;
 
-  static std::string format_time(
-      const std::optional<std::chrono::system_clock::time_point> &tp);
+  static std::string
+  format_time(const std::optional<std::chrono::system_clock::time_point> &tp);
 
   cjj365::ConfigSources &config_sources_;
   CliCtx &cli_ctx_;

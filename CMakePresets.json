@@ -24,7 +24,7 @@
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp17",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake"
       },
       "environment": {
@@ -39,7 +39,7 @@
       "binaryDir": "${sourceDir}/build/openssl3-dynamic",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp17",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "USE_SYSTEM_OPENSSL": "ON",
         "BUILD_SHARED_LIBS": "ON",
@@ -65,7 +65,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "ENABLE_ASAN": "OFF",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp17",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_C_COMPILER_LAUNCHER": "ccache",
         "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
@@ -126,7 +126,7 @@
       "binaryDir": "${sourceDir}/build/release-compat",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp17",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-cpp20",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/external/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_CXX_FLAGS": "-O2 -DNDEBUG -fno-stack-protector",
         "CMAKE_C_FLAGS": "-O2 -DNDEBUG -fno-stack-protector",

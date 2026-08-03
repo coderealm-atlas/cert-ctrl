@@ -226,7 +226,8 @@ curl -X GET http://localhost:8080/auth/status
 
 ---
 ## 8. Backend Implementation Notes
-- Monadic IO (`IO<T>`) ensures non-blocking MySQL + Redis operations.
+- Native Boost.Asio awaitables provide non-blocking HTTP workflow operations;
+  results are propagated as `monad::MyResult<T>` values.
 - Registration sets initial state to INACTIVE (recent fix) unless explicitly overridden for admin/internal creation.
 - Email codes derived from key pattern: `<action>:<email>`.
 - Passwords hashed with OpenSSL helper (`hash_password_openssl`).

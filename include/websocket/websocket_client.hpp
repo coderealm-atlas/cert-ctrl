@@ -5,9 +5,10 @@
 #include "conf/websocket_config.hpp"
 #include "customio/console_output.hpp"
 #include "io_context_manager.hpp"
-#include <boost/interprocess/sync/file_lock.hpp>
+#include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/log/sources/severity_logger.hpp>
 #include <boost/log/trivial.hpp>
 
@@ -32,14 +33,14 @@ namespace certctrl {
 
 class WebsocketClient : public std::enable_shared_from_this<WebsocketClient> {
 public:
-  WebsocketClient(cjj365::IoContextManager &io_context_manager,
-                 IWebsocketConfigProvider &config_provider,
-                 certctrl::ICertctrlConfigProvider &certctrl_config_provider,
-                 customio::ConsoleOutput &output,
-                 cjj365::ConfigSources &config_sources,
-                 certctrl::IDeviceStateStore &state_store,
-                 std::shared_ptr<certctrl::InstallConfigManager> install_config_manager,
-                 std::shared_ptr<certctrl::ISessionRefresher> session_refresher);
+  WebsocketClient(
+      cjj365::IoContextManager &io_context_manager,
+      IWebsocketConfigProvider &config_provider,
+      certctrl::ICertctrlConfigProvider &certctrl_config_provider,
+      customio::ConsoleOutput &output, cjj365::ConfigSources &config_sources,
+      certctrl::IDeviceStateStore &state_store,
+      std::shared_ptr<certctrl::InstallConfigManager> install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher> session_refresher);
   ~WebsocketClient();
 
   void Start();
@@ -48,6 +49,9 @@ public:
 private:
   bool AcquireSingleInstanceLock();
   void LogConfiguration(const WebsocketConfig &config);
+  static boost::asio::awaitable<void>
+  RefreshAndStartSession(std::shared_ptr<WebsocketClient> self,
+                         WebsocketConfig config);
   void StartSession(WebsocketConfig config, bool allow_refresh);
   void HandleSessionClosed(bool should_retry);
   void HandleSessionConnected();

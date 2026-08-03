@@ -22,9 +22,9 @@
 #include "handlers/device_automation_handler.hpp"
 #include "http_client_config_provider.hpp"
 #include "http_client_manager.hpp"
-#include "misc_util.hpp"
-#include "simple_data.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "include/test_config_utils.hpp"
+#include "simple_data.hpp"
 
 namespace {
 namespace asio = boost::asio;
@@ -44,9 +44,9 @@ public:
   std::optional<std::string> get_refresh_token() const override {
     return std::nullopt;
   }
-  std::optional<std::string>
-  save_tokens(const std::optional<std::string> &, const std::optional<std::string> &,
-              std::optional<int>) override {
+  std::optional<std::string> save_tokens(const std::optional<std::string> &,
+                                         const std::optional<std::string> &,
+                                         std::optional<int>) override {
     return std::nullopt;
   }
   std::optional<std::string> clear_tokens() override { return std::nullopt; }
@@ -111,7 +111,8 @@ public:
     return std::nullopt;
   }
   std::optional<std::string>
-  set_imported_ca_name(std::int64_t, const std::optional<std::string> &) override {
+  set_imported_ca_name(std::int64_t,
+                       const std::optional<std::string> &) override {
     return std::nullopt;
   }
   std::optional<std::string> clear_imported_ca_name(std::int64_t) override {
@@ -119,11 +120,13 @@ public:
   }
 
   std::pair<bool, std::optional<std::string>>
-  try_acquire_refresh_lock(const std::string &, std::chrono::milliseconds) override {
+  try_acquire_refresh_lock(const std::string &,
+                           std::chrono::milliseconds) override {
     return {true, std::nullopt};
   }
 
-  std::optional<std::string> release_refresh_lock(const std::string &) override {
+  std::optional<std::string>
+  release_refresh_lock(const std::string &) override {
     return std::nullopt;
   }
 
@@ -185,8 +188,8 @@ public:
       [[maybe_unused]] auto connect_status = wake_sock.connect(
           tcp::endpoint(asio::ip::make_address("127.0.0.1"), port_), ec);
       if (!ec) {
-        const std::string req =
-            "GET /__shutdown__ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        const std::string req = "GET /__shutdown__ HTTP/1.1\r\nHost: "
+                                "127.0.0.1\r\nConnection: close\r\n\r\n";
         asio::write(wake_sock, asio::buffer(req), ec);
       }
       [[maybe_unused]] auto shutdown_status =
@@ -295,7 +298,8 @@ struct HandlerHarness {
     http_cfg = std::make_unique<cjj365::HttpclientConfigProviderFile>(
         *app_properties, *config_sources);
     ssl_ctx = std::make_unique<cjj365::ClientSSLContext>(*http_cfg);
-    http_mgr = std::make_unique<client_async::HttpClientManager>(*ssl_ctx, *http_cfg);
+    http_mgr =
+        std::make_unique<client_async::HttpClientManager>(*ssl_ctx, *http_cfg);
 
     cert_cfg = std::make_unique<certctrl::CertctrlConfigProviderFile>(
         *app_properties, *config_sources, *output_backend);
@@ -323,7 +327,8 @@ struct HandlerHarness {
   }
 };
 
-TEST(DeviceAutomationInstallConfigUpdate, AcceptsObjectPayloadWithCaPatchAndAfterUpdateScriptNull) {
+TEST(DeviceAutomationInstallConfigUpdate,
+     AcceptsObjectPayloadWithCaPatchAndAfterUpdateScriptNull) {
   TestInstallConfigUpdateServer server;
   HandlerHarness harness(server.base_url());
 
@@ -334,30 +339,25 @@ TEST(DeviceAutomationInstallConfigUpdate, AcceptsObjectPayloadWithCaPatchAndAfte
 
   po::variables_map vm;
   certctrl::CliParams params;
-  certctrl::CliCtx cli_ctx(std::move(vm),
-                           std::vector<std::string>{"device", "install-config-update"},
-                           std::vector<std::string>{"--apikey", "tok", "--payload", payload},
-                           std::move(params));
+  certctrl::CliCtx cli_ctx(
+      std::move(vm),
+      std::vector<std::string>{"device", "install-config-update"},
+      std::vector<std::string>{"--apikey", "tok", "--payload", payload},
+      std::move(params));
 
-  certctrl::DeviceAutomationHandler handler(cli_ctx, *harness.output, *harness.cert_cfg,
-                                            *harness.http_mgr, harness.state_store);
+  certctrl::DeviceAutomationHandler handler(
+      cli_ctx, *harness.output, *harness.cert_cfg, *harness.http_mgr,
+      harness.state_store);
 
-  misc::ThreadNotifier notifier(5000);
-  std::optional<monad::MyVoidResult> result;
-  handler.start().run([&](auto r) {
-    result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-
-  ASSERT_TRUE(result.has_value()) << "handler produced no result";
-  ASSERT_FALSE(result->is_err()) << result->error().what;
+  auto result = testinfra::run_result_awaitable(handler.start_awaitable());
+  ASSERT_FALSE(result.is_err()) << result.error().what;
 
   ASSERT_TRUE(server.wait_for_records(1, std::chrono::milliseconds(2000)));
   auto recs = server.records();
   ASSERT_EQ(recs.size(), 1u);
   EXPECT_EQ(recs[0].authorization, "Bearer tok");
-  EXPECT_NE(recs[0].target.find("/apiv1/me/install-config-update/dev-123"), std::string::npos);
+  EXPECT_NE(recs[0].target.find("/apiv1/me/install-config-update/dev-123"),
+            std::string::npos);
 
   json::value received = json::parse(recs[0].body);
   ASSERT_TRUE(received.is_object());
@@ -377,7 +377,8 @@ TEST(DeviceAutomationInstallConfigUpdate, AcceptsObjectPayloadWithCaPatchAndAfte
   EXPECT_FALSE(p0.contains("details"));
 }
 
-TEST(DeviceAutomationInstallConfigUpdate, RejectsCertScopedExecPatchWithoutSendingRequest) {
+TEST(DeviceAutomationInstallConfigUpdate,
+     RejectsCertScopedExecPatchWithoutSendingRequest) {
   TestInstallConfigUpdateServer server;
   HandlerHarness harness(server.base_url());
 
@@ -388,59 +389,50 @@ TEST(DeviceAutomationInstallConfigUpdate, RejectsCertScopedExecPatchWithoutSendi
 
   po::variables_map vm;
   certctrl::CliParams params;
-  certctrl::CliCtx cli_ctx(std::move(vm),
-                           std::vector<std::string>{"device", "install-config-update"},
-                           std::vector<std::string>{"--apikey", "tok", "--payload", payload},
-                           std::move(params));
+  certctrl::CliCtx cli_ctx(
+      std::move(vm),
+      std::vector<std::string>{"device", "install-config-update"},
+      std::vector<std::string>{"--apikey", "tok", "--payload", payload},
+      std::move(params));
 
-  certctrl::DeviceAutomationHandler handler(cli_ctx, *harness.output, *harness.cert_cfg,
-                                            *harness.http_mgr, harness.state_store);
+  certctrl::DeviceAutomationHandler handler(
+      cli_ctx, *harness.output, *harness.cert_cfg, *harness.http_mgr,
+      harness.state_store);
 
-  misc::ThreadNotifier notifier(5000);
-  std::optional<monad::MyVoidResult> result;
-  handler.start().run([&](auto r) {
-    result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-
-  ASSERT_TRUE(result.has_value()) << "handler produced no result";
-  ASSERT_TRUE(result->is_err()) << "expected cert-scoped exec payload to fail";
-  EXPECT_NE(result->error().what.find("must not set cmd/cmd_argv for cert resources"),
-            std::string::npos);
+  auto result = testinfra::run_result_awaitable(handler.start_awaitable());
+  ASSERT_TRUE(result.is_err()) << "expected cert-scoped exec payload to fail";
+  EXPECT_NE(
+      result.error().what.find("must not set cmd/cmd_argv for cert resources"),
+      std::string::npos);
 
   EXPECT_FALSE(server.wait_for_records(1, std::chrono::milliseconds(300)))
       << "expected no HTTP request to be sent";
 }
 
-TEST(DeviceAutomationInstallConfigUpdate, AcceptsObjectPayloadWithOnlyAfterUpdateScript) {
+TEST(DeviceAutomationInstallConfigUpdate,
+     AcceptsObjectPayloadWithOnlyAfterUpdateScript) {
   TestInstallConfigUpdateServer server;
   HandlerHarness harness(server.base_url());
 
   harness.state_store.device_public_id = std::string("dev-123");
 
-  const std::string payload = R"({"after_update_script":"@@@BEGIN posix.sh\nexit 0\n@@@END\n"})";
+  const std::string payload =
+      R"({"after_update_script":"@@@BEGIN posix.sh\nexit 0\n@@@END\n"})";
 
   po::variables_map vm;
   certctrl::CliParams params;
-  certctrl::CliCtx cli_ctx(std::move(vm),
-                           std::vector<std::string>{"device", "install-config-update"},
-                           std::vector<std::string>{"--apikey", "tok", "--payload", payload},
-                           std::move(params));
+  certctrl::CliCtx cli_ctx(
+      std::move(vm),
+      std::vector<std::string>{"device", "install-config-update"},
+      std::vector<std::string>{"--apikey", "tok", "--payload", payload},
+      std::move(params));
 
-  certctrl::DeviceAutomationHandler handler(cli_ctx, *harness.output, *harness.cert_cfg,
-                                            *harness.http_mgr, harness.state_store);
+  certctrl::DeviceAutomationHandler handler(
+      cli_ctx, *harness.output, *harness.cert_cfg, *harness.http_mgr,
+      harness.state_store);
 
-  misc::ThreadNotifier notifier(5000);
-  std::optional<monad::MyVoidResult> result;
-  handler.start().run([&](auto r) {
-    result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-
-  ASSERT_TRUE(result.has_value()) << "handler produced no result";
-  ASSERT_FALSE(result->is_err()) << result->error().what;
+  auto result = testinfra::run_result_awaitable(handler.start_awaitable());
+  ASSERT_FALSE(result.is_err()) << result.error().what;
 
   ASSERT_TRUE(server.wait_for_records(1, std::chrono::milliseconds(2000)));
   auto recs = server.records();
@@ -453,7 +445,8 @@ TEST(DeviceAutomationInstallConfigUpdate, AcceptsObjectPayloadWithOnlyAfterUpdat
   ASSERT_TRUE(obj.at("after_update_script").is_string());
 }
 
-TEST(DeviceAutomationInstallConfigUpdate, RejectsInvalidAfterUpdateScriptTypeWithoutSendingRequest) {
+TEST(DeviceAutomationInstallConfigUpdate,
+     RejectsInvalidAfterUpdateScriptTypeWithoutSendingRequest) {
   TestInstallConfigUpdateServer server;
   HandlerHarness harness(server.base_url());
 
@@ -463,24 +456,18 @@ TEST(DeviceAutomationInstallConfigUpdate, RejectsInvalidAfterUpdateScriptTypeWit
 
   po::variables_map vm;
   certctrl::CliParams params;
-  certctrl::CliCtx cli_ctx(std::move(vm),
-                           std::vector<std::string>{"device", "install-config-update"},
-                           std::vector<std::string>{"--apikey", "tok", "--payload", payload},
-                           std::move(params));
+  certctrl::CliCtx cli_ctx(
+      std::move(vm),
+      std::vector<std::string>{"device", "install-config-update"},
+      std::vector<std::string>{"--apikey", "tok", "--payload", payload},
+      std::move(params));
 
-  certctrl::DeviceAutomationHandler handler(cli_ctx, *harness.output, *harness.cert_cfg,
-                                            *harness.http_mgr, harness.state_store);
+  certctrl::DeviceAutomationHandler handler(
+      cli_ctx, *harness.output, *harness.cert_cfg, *harness.http_mgr,
+      harness.state_store);
 
-  misc::ThreadNotifier notifier(5000);
-  std::optional<monad::MyVoidResult> result;
-  handler.start().run([&](auto r) {
-    result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-
-  ASSERT_TRUE(result.has_value()) << "handler produced no result";
-  ASSERT_TRUE(result->is_err()) << "expected invalid payload to fail";
+  auto result = testinfra::run_result_awaitable(handler.start_awaitable());
+  ASSERT_TRUE(result.is_err()) << "expected invalid payload to fail";
 
   EXPECT_FALSE(server.wait_for_records(1, std::chrono::milliseconds(300)))
       << "expected no HTTP request to be sent";

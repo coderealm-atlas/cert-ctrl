@@ -1,92 +1,81 @@
-# Install Workflow Async Refactor Plan
+# Install Workflow Coroutine Architecture
 
-## 1. Background
-- **Current flow**: `InstallConfigManager` orchestrates copy/import/exec actions by instantiating handler classes (`CopyActionHandler`, `ImportCaActionHandler`, `ExecActionHandler`). Resource materialization happens through synchronous helpers exposed as `monad::IO<void>` wrappers.
-- **Pain points**: lifetime management via captures, limited visibility into pipeline state, mixed sync/async semantics (blocking filesystem and HTTP steps wrapped in IO), and difficult debugging of transient issues (e.g., `bad allocation`).
-- **Objective**: transition to an object-oriented runner that owns workflow state, enabling fully asynchronous orchestration without regressions.
+## Status
 
-## 2. Goals & Non-Goals
-### Goals
-1. Introduce an explicit workflow runner class (working name `InstallWorkflowRunner`) that encapsulates:
-   - configuration snapshot & filtering
-   - resource materialization
-   - action execution (copy/import/exec)
-   - error aggregation & reporting
-   - coordination between `customio::ConsoleOutput` (interactive/operator-facing logs) and the internal Boost.Log channel (`lg`) we currently use for diagnostics
-2. Preserve existing public behavior (CLI output, logging, retries) during the transition.
-3. Adopt consistent async semantics (monadic IO or Boost.Asio primitives) to remove hidden blocking paths.
-4. Improve diagnosability and testability via structured logging and injectable dependencies.
+The install workflow migration was completed on 2026-08-02. All
+project-owned production and test code now uses native Boost.Asio coroutines.
+No cert-ctrl code consumes the legacy `monad::IO<T>` callback API.
 
-### Non-Goals
-- Changing install-config schema or server APIs.
-- Replacing filesystem or trust-store implementations.
-- Rewriting monad infrastructure; the runner will consume existing APIs.
+The public asynchronous contract is:
 
-## 3. Target Architecture Overview
+```cpp
+boost::asio::awaitable<monad::MyResult<T>>
 ```
+
+`monad::MyResult<T>` remains the value-level success/error type. It is not an
+asynchronous execution abstraction.
+
+## Current Architecture
+
+```text
 InstallConfigApplyHandler
-    └─ shared_ptr<InstallWorkflowRunner>::start()
-            ├─ load staged config
-            ├─ ensure resources (async fetch + materialize)
-            ├─ run copy/import actions
-            └─ run exec actions & finalize
+    -> co_await InstallWorkflowRunner::run()
+        -> load and filter the staged configuration
+        -> co_await resource materialization
+        -> co_await copy/import actions
+        -> co_await exec actions
+        -> aggregate and return structured errors
 ```
-- `InstallWorkflowRunner` constructed with `InstallConfigManager&`, `customio::ConsoleOutput&`, target filters, and optional overrides.
-- Runner owns helper contexts (resource resolver, exec env resolver) and exposes async steps as member methods returning `monad::IO<void>`.
-- Handler classes in `install_actions` currently forward to the legacy implementations, which eases migration toward runner-owned logic.
 
-## 4. Migration Plan (Phased)
-### Phase A — Preparation (current sprint)
-- [ ] Document plan (this file) and socialize with team.
-- [ ] Add tracing hooks (DEBUG_PRINT) to critical paths to aid regression tracking.
-- [ ] Introduce skeleton `InstallWorkflowRunner` class (header/impl) with dependency wiring but no behavior change.
-- [ ] Update build/test harness to include new files.
+- `InstallWorkflowRunner` owns workflow state and keeps itself alive while its
+  coroutine is in flight.
+- `InstallConfigManager`, resource materializers, action handlers, polling,
+  websocket processing, and signal-triggered operations expose awaitables.
+- HTTP setup uses `certctrl::async_support::make_http_exchange`; completion is
+  awaited through `http_exchange_awaitable`.
+- Filesystem operations that remain synchronous are explicit. They are no
+  longer disguised as asynchronous callback wrappers.
+- Callers propagate errors by inspecting `monad::MyResult<T>` after `co_await`.
 
-### Phase B — Incremental Refactor
-1. **Context encapsulation**
-   - Move construction of `InstallActionContext` into runner.
-   - Wrap existing free-function calls inside runner member methods (no behavioral change yet).
-2. **Resource materialization**
-   - Convert `ensure_resource_materialized` usage to runner instance method, forwarding to `InstallConfigManager` initially.
-   - Prepare abstraction for async fetch (store outstanding futures/promise).
-3. **Async pipeline**
-   - Replace plain chained `then` calls with runner methods to enable shared lifetime via `shared_from_this()`.
-   - Ensure lambda captures use `auto self = shared_from_this();` pattern to keep runner alive.
-4. **CLI integration**
-   - Modify `InstallConfigApplyHandler::start()` to instantiate runner (`auto runner = InstallWorkflowRunner::create(...); return runner->start();`).
-   - Mirror changes in signal handlers (`apply_copy_actions_for_signal`).
+## Ownership And Cancellation
 
-### Phase C — Behavioral Enhancements
-- Introduce true async resource fetching (reuse existing HTTP IO primitives directly, avoid blocking waits).
-- Add cancellation hook to abort in-flight operations when shutdown triggers.
-- Refine logging (structured messages with workflow IDs).
+- A coroutine frame owns values captured for one operation.
+- Long-lived handlers acquire `shared_from_this()` only for the duration of an
+  active coroutine.
+- Polling loops observe their stop state between iterations and release their
+  retained owner when the coroutine unwinds.
+- HTTP timeout and cancellation behavior remains owned by the shared
+  `external/http_client` transport.
 
-### Phase D — Cleanup & Validation
-- Remove obsolete helper wrappers once runner owns the full flow.
-- Update tests to cover new class (unit tests mocking dependencies + integration tests).
-- Document new architecture in `docs/` and update developer onboarding notes.
+## Compatibility Boundary
 
-## 5. Testing Strategy
-- **Unit tests**: expand `tests/test_install_config_manager.cpp` or add dedicated tests for runner using stubbed HTTP/client dependencies.
-- **Integration**: existing CLI tests (`test_install_config_manager`, `test_updates_polling_handler`) run unchanged; add scenarios for async failure retries.
-- **Manual**: reproduce prior issues (`bad allocation`, empty destination) to ensure behavior matches expectations.
+`external/http_client` is a separately versioned shared component. It still
+contains compatibility APIs used by other repositories. cert-ctrl uses its
+native exchange/awaitable surface only. Removing the compatibility layer is a
+separate cross-repository migration and is not required by cert-ctrl.
 
-## 6. Risks & Mitigations
-- **Lifetime bugs**: shared_ptr self-ownership pattern ensures tasks complete before destruction.
-- **Regression in logging / CLI output**: maintain existing logging calls; add assertions in tests for critical messages.
-- **Threading complexity**: start with same monad IO patterns before introducing Boost.Asio executors to limit concurrent changes.
+## Validation
 
-## 7. Open Questions
-1. Should runner expose granular progress callbacks for UI/logging?
-2. Do we need cancellation semantics exposed to callers (e.g., user abort)?
-3. Can we share runner infrastructure with future install workflows (cert renewals, trust store updates)?
+The migration is covered by focused workflow, polling, websocket, login,
+device-registration, and helper tests. The full `debug-asan` suite passes
+105/105 registered tests; six environment-dependent real-server or platform
+tests report their expected skips.
 
-## 8. Next Actions (Short-Term)
-- [ ] Review and approve this plan.
-- [ ] Add skeleton runner class & register in build (no behavior change).
-- [ ] Draft design doc appendices for async patterns once runner is in place.
-- [ ] Schedule follow-up to revisit open questions.
+## Maintenance Rules
+
+1. New asynchronous cert-ctrl APIs return
+   `boost::asio::awaitable<monad::MyResult<T>>`.
+2. Do not add callback `.run(...)`, `.then(...)`, or `monad::IO<T>` chains to
+   project-owned code.
+3. Keep synchronous work explicit. Offload genuinely blocking work to an
+   appropriate executor when it becomes material.
+4. Add focused ASAN tests for cancellation, owner destruction, and error
+   propagation when extending a long-lived workflow.
 
 ---
-_Revision history_
-- **2025-10-30**: Initial draft (GitHub Copilot)
+
+Revision history:
+
+- 2025-10-30: Initial callback-to-runner migration plan.
+- 2026-08-02: Migration completed and document rewritten to describe the
+  coroutine-native implementation.

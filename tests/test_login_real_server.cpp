@@ -15,13 +15,15 @@
 #include "http_client_config_provider.hpp"
 #include "http_client_manager.hpp"
 #include "include/api_test_helper.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "include/login_helper.hpp"
 #include "login_helper.hpp"
 #include "misc_util.hpp"
 #include "test_injector.hpp"
 
-
-// $env:CERTCTRL_REAL_SERVER_TESTS='1';$env:CERT_CTRL_TEST_EMAIL='jianglibo@hotmail.com';$env:CERT_CTRL_TEST_PASSWORD='StrongPass1!'; ctest --build-config Debug -R RealServerLoginFixture.ApiKeyRegistersDevice --test-dir build/windows-debug/tests --output-on-failure
+// $env:CERTCTRL_REAL_SERVER_TESTS='1';$env:CERT_CTRL_TEST_EMAIL='jianglibo@hotmail.com';$env:CERT_CTRL_TEST_PASSWORD='StrongPass1!';
+// ctest --build-config Debug -R RealServerLoginFixture.ApiKeyRegistersDevice
+// --test-dir build/windows-debug/tests --output-on-failure
 
 namespace di = boost::di;
 namespace fs = std::filesystem;
@@ -51,7 +53,8 @@ protected:
 
   void SetUp() override {
     if (!real_server_tests_enabled()) {
-      GTEST_SKIP() << "Set CERTCTRL_REAL_SERVER_TESTS=1 to enable real server end-to-end tests.";
+      GTEST_SKIP() << "Set CERTCTRL_REAL_SERVER_TESTS=1 to enable real server "
+                      "end-to-end tests.";
     }
 
     // Minimal inline config provider using a temp directory config file pattern
@@ -87,56 +90,36 @@ protected:
     auto &inj = *real_inj;
 
     http_client_mgr_ = &inj.create<client_async::HttpClientManager &>();
-    std::optional<monad::Result<data::LoginSuccess, monad::Error>> login_r;
-    testutil::login_io(*http_client_mgr_, base_url_, testutil::login_email(),
-                       testutil::login_password())
-        .run([&](auto r) {
-          login_r = std::move(r);
-          notifier_.notify();
-        });
-    notifier_.waitForNotification();
-    ASSERT_FALSE(login_r->is_err()) << "login failed: " << login_r->error();
-    session_cookie_ = login_r->value().session_cookie;
+    auto login_r = testinfra::run_result_awaitable(testutil::login_awaitable(
+        *http_client_mgr_, base_url_, testutil::login_email(),
+        testutil::login_password()));
+    ASSERT_FALSE(login_r.is_err()) << "login failed: " << login_r.error();
+    session_cookie_ = login_r.value().session_cookie;
     ASSERT_FALSE(session_cookie_.empty()) << "missing session cookie";
-    user_id_ = login_r->value().user.id;
+    user_id_ = login_r.value().user.id;
     ASSERT_GT(user_id_, 0) << "login returned invalid user_id";
   }
   void TearDown() override {
     for (auto device_id : cleanup_device_ids_) {
-      misc::ThreadNotifier del_notifier(60000);
-      std::optional<monad::MyVoidResult> del_result;
-      testutil::delete_device_io(*http_client_mgr_, base_url_, session_cookie_,
-                                 user_id_, device_id)
-          .run([&](auto r) {
-            del_result = std::move(r);
-            del_notifier.notify();
-          });
-      del_notifier.waitForNotification();
-      if (!del_result || del_result->is_err()) {
+      auto del_result =
+          testinfra::run_result_awaitable(testutil::delete_device_awaitable(
+              *http_client_mgr_, base_url_, session_cookie_, user_id_,
+              device_id));
+      if (del_result.is_err()) {
         std::cerr << "Failed to delete test device id=" << device_id << ": "
-                  << (del_result ? del_result->error().what
-                                 : "delete_device_io produced no result")
-                  << std::endl;
+                  << del_result.error().what << std::endl;
       }
     }
     cleanup_device_ids_.clear();
 
     for (auto api_key_id : cleanup_api_key_ids_) {
-      misc::ThreadNotifier del_notifier(60000);
-      std::optional<monad::MyVoidResult> del_result;
-      testutil::delete_api_key_io(*http_client_mgr_, base_url_, session_cookie_,
-                                  user_id_, api_key_id)
-          .run([&](auto r) {
-            del_result = std::move(r);
-            del_notifier.notify();
-          });
-      del_notifier.waitForNotification();
-      if (!del_result || del_result->is_err()) {
-        std::cerr << "Failed to delete test API key id=" << api_key_id
-                  << ": "
-                  << (del_result ? del_result->error().what
-                                 : "delete_api_key_io produced no result")
-                  << std::endl;
+      auto del_result =
+          testinfra::run_result_awaitable(testutil::delete_api_key_awaitable(
+              *http_client_mgr_, base_url_, session_cookie_, user_id_,
+              api_key_id));
+      if (del_result.is_err()) {
+        std::cerr << "Failed to delete test API key id=" << api_key_id << ": "
+                  << del_result.error().what << std::endl;
       }
     }
     cleanup_api_key_ids_.clear();
@@ -145,17 +128,12 @@ protected:
 
 TEST_F(RealServerLoginFixture, LoginAndStatus) {
   std::string base = testutil::url_base();
-  std::optional<testutil::loginSuccessResult> r;
-  auto io = testutil::login_io(*http_client_mgr_, base, testutil::login_email(),
-                               testutil::login_password());
-  io.run([&](auto rr) {
-    r = std::move(rr);
-    notifier_.notify();
-  });
-  notifier_.waitForNotification();
-  ASSERT_FALSE(r->is_err()) << "Login failed: " << r->error();
-  ASSERT_FALSE(r->value().user.email.empty());
-  ASSERT_FALSE(r->value().session_cookie.empty());
+  auto result = testinfra::run_result_awaitable(testutil::login_awaitable(
+      *http_client_mgr_, base, testutil::login_email(),
+      testutil::login_password()));
+  ASSERT_FALSE(result.is_err()) << "Login failed: " << result.error();
+  ASSERT_FALSE(result.value().user.email.empty());
+  ASSERT_FALSE(result.value().session_cookie.empty());
 }
 
 TEST_F(RealServerLoginFixture, ApiKeyRegistersDevice) {
@@ -164,42 +142,26 @@ TEST_F(RealServerLoginFixture, ApiKeyRegistersDevice) {
   auto seconds = std::chrono::duration_cast<std::chrono::seconds>(now).count();
   options.name += "-" + std::to_string(seconds);
 
-  misc::ThreadNotifier api_key_notifier(60000);
-  std::optional<monad::MyResult<testutil::ApiKeyInfo>> api_key_result;
-  testutil::create_api_key_io(*http_client_mgr_, base_url_, session_cookie_,
-                              user_id_, options)
-      .run([&](auto r) {
-        api_key_result = std::move(r);
-        api_key_notifier.notify();
-      });
-  api_key_notifier.waitForNotification();
-  ASSERT_TRUE(api_key_result.has_value())
-      << "create_api_key_io produced no result";
-  ASSERT_FALSE(api_key_result->is_err())
-      << "create_api_key failed: " << api_key_result->error().what;
+  auto api_key_result =
+      testinfra::run_result_awaitable(testutil::create_api_key_awaitable(
+          *http_client_mgr_, base_url_, session_cookie_, user_id_, options));
+  ASSERT_FALSE(api_key_result.is_err())
+      << "create_api_key failed: " << api_key_result.error().what;
 
-  const auto api_key = api_key_result->value();
+  const auto api_key = api_key_result.value();
   cleanup_api_key_ids_.push_back(api_key.id);
   ASSERT_FALSE(api_key.token.empty()) << "API key token is empty";
 
   auto registration_request = testutil::make_device_registration_request();
 
-  misc::ThreadNotifier reg_notifier(60000);
-  std::optional<monad::MyResult<testutil::DeviceRegistrationResult>> reg_result;
-  testutil::register_device_with_apikey_io(*http_client_mgr_, base_url_,
-                                           user_id_, api_key.token,
-                                           registration_request)
-      .run([&](auto r) {
-        reg_result = std::move(r);
-        reg_notifier.notify();
-      });
-  reg_notifier.waitForNotification();
-  ASSERT_TRUE(reg_result.has_value())
-      << "register_device_with_apikey_io produced no result";
-  ASSERT_FALSE(reg_result->is_err())
-      << "register_device_with_apikey failed: " << reg_result->error().what;
+  auto reg_result = testinfra::run_result_awaitable(
+      testutil::register_device_with_apikey_awaitable(
+          *http_client_mgr_, base_url_, user_id_, api_key.token,
+          registration_request));
+  ASSERT_FALSE(reg_result.is_err())
+      << "register_device_with_apikey failed: " << reg_result.error().what;
 
-  const auto device_result = reg_result->value();
+  const auto device_result = reg_result.value();
   if (device_result.device_id.has_value()) {
     cleanup_device_ids_.push_back(*device_result.device_id);
   }
@@ -207,21 +169,13 @@ TEST_F(RealServerLoginFixture, ApiKeyRegistersDevice) {
   EXPECT_FALSE(device_result.access_token.empty())
       << "Device registration missing access token";
 
-  misc::ThreadNotifier list_notifier(60000);
-  std::optional<monad::MyResult<json::array>> list_result;
-  testutil::list_devices_io(*http_client_mgr_, base_url_, session_cookie_,
-                            user_id_)
-      .run([&](auto r) {
-        list_result = std::move(r);
-        list_notifier.notify();
-      });
-  list_notifier.waitForNotification();
-  ASSERT_TRUE(list_result.has_value())
-      << "list_devices_io produced no result";
-  ASSERT_FALSE(list_result->is_err())
-      << "list_devices failed: " << list_result->error().what;
+  auto list_result =
+      testinfra::run_result_awaitable(testutil::list_devices_awaitable(
+          *http_client_mgr_, base_url_, session_cookie_, user_id_));
+  ASSERT_FALSE(list_result.is_err())
+      << "list_devices failed: " << list_result.error().what;
 
-  const auto &devices = list_result->value();
+  const auto &devices = list_result.value();
   bool found = false;
   for (const auto &entry : devices) {
     if (!entry.is_object()) {

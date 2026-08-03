@@ -31,6 +31,7 @@
 #include "data/install_config_dto.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "http_client_manager.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "include/install_manager_harness.hpp"
 #include "install_config_fetcher.hpp"
 #include "io_monad.hpp"
@@ -416,7 +417,8 @@ struct MockInstallConfigFetcher
   MockInstallConfigFetcher(dto::DeviceInstallConfigDto cfg)
       : config(std::move(cfg)) {}
 
-  monad::IO<dto::DeviceInstallConfigDto> fetch_install_config(
+  boost::asio::awaitable<monad::MyResult<dto::DeviceInstallConfigDto>>
+  fetch_install_config(
       std::optional<std::string> access_token,
       std::optional<std::int64_t> expected_version,
       const std::optional<std::string> &expected_hash) override {
@@ -428,24 +430,25 @@ struct MockInstallConfigFetcher
     if (expected_hash) {
       copy.installs_hash = *expected_hash;
     }
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(copy);
+    co_return monad::MyResult<dto::DeviceInstallConfigDto>::Ok(std::move(copy));
   }
 };
 
 struct LambdaInstallConfigFetcher
     : public certctrl::install_actions::IDeviceInstallConfigFetcher {
-  using FetchFn = std::function<monad::IO<dto::DeviceInstallConfigDto>(
+  using FetchFn = std::function<monad::MyResult<dto::DeviceInstallConfigDto>(
       std::optional<std::string>, std::optional<std::int64_t>,
       const std::optional<std::string> &)>;
 
   explicit LambdaInstallConfigFetcher(FetchFn fn) : fn_(std::move(fn)) {}
 
-  monad::IO<dto::DeviceInstallConfigDto> fetch_install_config(
+  boost::asio::awaitable<monad::MyResult<dto::DeviceInstallConfigDto>>
+  fetch_install_config(
       std::optional<std::string> access_token,
       std::optional<std::int64_t> expected_version,
       const std::optional<std::string> &expected_hash) override {
-    return fn_(std::move(access_token), std::move(expected_version),
-               expected_hash);
+    co_return fn_(std::move(access_token), std::move(expected_version),
+                  expected_hash);
   }
 
 private:
@@ -495,7 +498,7 @@ futpyqmphkYC
       override_body = make_default_cert_payload();
     }
   }
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   fetch(std::optional<std::string> access_token,
         std::shared_ptr<certctrl::install_actions::MaterializationData>
             current_materialization) override {
@@ -505,7 +508,7 @@ futpyqmphkYC
       boost::system::error_code ec;
       auto parsed = boost::json::parse(override_body, ec);
       if (ec || !parsed.is_object()) {
-        return monad::IO<void>::fail(
+        co_return monad::MyResult<void>::Err(
             monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                               "Override payload for cert is not an object"));
       }
@@ -533,7 +536,7 @@ futpyqmphkYC
         state->detail_parsed = true;
       }
       if (state->detail_obj.empty()) {
-        return monad::IO<void>::fail(monad::make_error(
+        co_return monad::MyResult<void>::Err(monad::make_error(
             my_errors::GENERAL::UNEXPECTED_RESULT,
             "Override payload missing certificate detail object"));
       }
@@ -552,13 +555,13 @@ futpyqmphkYC
       }
       state->deploy_available = !state->deploy_obj.empty();
     }
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 };
 
 struct AlwaysFailingResourceFetcher
     : public certctrl::install_actions::IResourceFetcher {
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   fetch(std::optional<std::string> /*access_token*/,
         std::shared_ptr<certctrl::install_actions::MaterializationData>
         /*current_materialization*/) override {
@@ -566,7 +569,7 @@ struct AlwaysFailingResourceFetcher
                                  "CA fetch failed");
     err.response_status = 500;
     err.params["response_body_preview"] = "bad allocation";
-    return monad::IO<void>::fail(std::move(err));
+    co_return monad::MyResult<void>::Err(std::move(err));
   }
 };
 
@@ -580,22 +583,22 @@ struct ServerBackedResourceFetcher
         io_ctx, config, output, http_client);
   }
 
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   fetch(std::optional<std::string> access_token,
         std::shared_ptr<certctrl::install_actions::MaterializationData>
             current_materialization) override {
     if (!delegate_) {
-      return monad::IO<void>::fail(
+      co_return monad::MyResult<void>::Err(
           monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                             "ServerBackedResourceFetcher not bound"));
     }
     try {
-      return delegate_->fetch(std::move(access_token),
-                              std::move(current_materialization));
+      co_return co_await delegate_->fetch(std::move(access_token),
+                                          std::move(current_materialization));
     } catch (const std::exception &ex) {
       auto err =
           monad::make_error(my_errors::NETWORK::CONNECT_ERROR, ex.what());
-      return monad::IO<void>::fail(std::move(err));
+      co_return monad::MyResult<void>::Err(std::move(err));
     }
   }
 
@@ -678,13 +681,9 @@ TEST_F(InstallConfigManagerFixture, AppliesCopyActionsFullPlan) {
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, config.installs_hash)
-      .run([&](auto result) {
-        op_r = result;
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        config.installs_hash));
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok())
       << "ensure_config_version failed: " << op_r->error();
@@ -692,13 +691,9 @@ TEST_F(InstallConfigManagerFixture, AppliesCopyActionsFullPlan) {
   ASSERT_TRUE(plan);
   monad::MyVoidResult void_r;
 
-  harness_->install_manager()
-      .apply_copy_actions(*plan, std::nullopt, std::nullopt)
-      .run([&](auto result) {
-        void_r = result;
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  void_r = testinfra::run_result_awaitable(
+      harness_->install_manager().apply_copy_actions(*plan, std::nullopt,
+                                                     std::nullopt));
   ASSERT_TRUE(void_r.is_ok())
       << "apply_copy_actions failed: " << void_r.error();
 
@@ -757,13 +752,9 @@ TEST_F(InstallConfigManagerFixture, SkipsCopyActionsWithEmptyDestinations) {
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        op_r = result;
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(op_r.has_value());
   ASSERT_FALSE(op_r->is_err())
       << "Expected success but got error: " << op_r->error();
@@ -773,13 +764,9 @@ TEST_F(InstallConfigManagerFixture, SkipsCopyActionsWithEmptyDestinations) {
   auto dest_path = runtime_dir / "deploy" / "fullchain.pem";
 
   std::optional<monad::MyVoidResult> apply_r;
-  harness_->install_manager()
-      .apply_copy_actions(*plan, std::nullopt, std::nullopt)
-      .run([&](auto result) {
-        apply_r = result;
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  apply_r = testinfra::run_result_awaitable(
+      harness_->install_manager().apply_copy_actions(*plan, std::nullopt,
+                                                     std::nullopt));
   ASSERT_TRUE(apply_r.has_value());
   ASSERT_FALSE(apply_r->is_err())
       << "Expected success but got error: " << apply_r->error();
@@ -818,25 +805,17 @@ TEST_F(InstallConfigManagerFixture,
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       plan_result;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        plan_result = result;
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  plan_result = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(plan_result.has_value());
   ASSERT_TRUE(plan_result->is_ok()) << plan_result->error();
 
   auto signal = make_cert_updated_signal(target_cert);
 
   std::optional<monad::MyVoidResult> apply_r;
-  harness_->install_manager().apply_copy_actions_for_signal(signal).run(
-      [&](auto result) {
-        apply_r = result;
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  apply_r = testinfra::run_result_awaitable(
+      harness_->install_manager().apply_copy_actions_for_signal(signal));
   ASSERT_TRUE(apply_r.has_value());
   ASSERT_TRUE(apply_r->is_ok()) << apply_r->error();
 
@@ -879,25 +858,17 @@ TEST_F(InstallConfigManagerFixture,
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       plan_result;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        plan_result = result;
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  plan_result = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(plan_result.has_value());
   ASSERT_TRUE(plan_result->is_ok()) << plan_result->error();
 
   auto signal = make_cert_updated_signal(target_cert);
 
   std::optional<monad::MyVoidResult> apply_r;
-  harness_->install_manager().apply_copy_actions_for_signal(signal).run(
-      [&](auto result) {
-        apply_r = result;
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  apply_r = testinfra::run_result_awaitable(
+      harness_->install_manager().apply_copy_actions_for_signal(signal));
   ASSERT_TRUE(apply_r.has_value());
   ASSERT_TRUE(apply_r->is_ok()) << apply_r->error();
 
@@ -908,7 +879,6 @@ TEST_F(InstallConfigManagerFixture,
 }
 
 TEST_F(InstallConfigManagerFixture, CopyActionsAggregateFailures) {
-  misc::ThreadNotifier notifier;
   auto config_dir = make_temp_runtime_dir();
   auto runtime_dir = make_temp_runtime_dir();
 
@@ -928,7 +898,7 @@ TEST_F(InstallConfigManagerFixture, CopyActionsAggregateFailures) {
       [config](std::optional<std::string> /*access_token*/,
                std::optional<std::int64_t> expected_version,
                const std::optional<std::string> &expected_hash)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
+      -> monad::MyResult<dto::DeviceInstallConfigDto> {
     dto::DeviceInstallConfigDto copy = config;
     if (expected_version) {
       copy.version = *expected_version;
@@ -936,7 +906,7 @@ TEST_F(InstallConfigManagerFixture, CopyActionsAggregateFailures) {
     if (expected_hash) {
       copy.installs_hash = *expected_hash;
     }
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(copy));
+    return monad::MyResult<dto::DeviceInstallConfigDto>::Ok(std::move(copy));
   };
 
   createHarness(
@@ -946,16 +916,12 @@ TEST_F(InstallConfigManagerFixture, CopyActionsAggregateFailures) {
       std::make_unique<MockAccessTokenLoaderFixed>(std::nullopt));
 
   auto handler = harness_->copy_action_handler_factory();
-  std::optional<monad::MyVoidResult> apply_r;
-  handler->apply(config, std::nullopt, std::nullopt).run([&](auto result) {
-    apply_r = result;
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-  ASSERT_TRUE(apply_r.has_value());
-  ASSERT_TRUE(apply_r->is_err())
+  auto apply_r = testinfra::run_result_awaitable(
+      harness_->io_context_manager().ioc(),
+      handler->apply(config, std::nullopt, std::nullopt));
+  ASSERT_TRUE(apply_r.is_err())
       << "Expected aggregated failures but copy actions succeeded";
-  auto err = apply_r->error();
+  auto err = apply_r.error();
   EXPECT_EQ(err.code, my_errors::GENERAL::FILE_READ_WRITE);
   std::string_view message(err.what);
   EXPECT_NE(message.find("Missing deploy materials"), std::string_view::npos)
@@ -1006,19 +972,12 @@ TEST_F(InstallConfigManagerFixture, CopiesCaIntoOverrideDirectory) {
   // auto resource_factory = make_fixed_resource_factory(materializer);
   // certctrl::install_actions::ImportCaActionHandler handler(provider, output,
   //                                                          resource_factory);
-  misc::ThreadNotifier notifier(3000);
   auto handler = harness_->import_ca_handler_factory();
-  std::optional<monad::Error> apply_err;
-  handler->apply(config, std::nullopt, std::nullopt).run([&](auto result) {
-    if (!result.is_ok()) {
-      apply_err = result.error();
-    }
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-  if (apply_err) {
-    FAIL() << "apply_import_ca_actions failed: " << apply_err->what;
-  }
+  auto apply_result = testinfra::run_result_awaitable(
+      harness_->io_context_manager().ioc(),
+      handler->apply(config, std::nullopt, std::nullopt));
+  ASSERT_TRUE(apply_result.is_ok())
+      << "apply_import_ca_actions failed: " << apply_result.error().what;
 
   // Find any generated CA file in trust_dir and verify its contents
   std::vector<std::filesystem::path> crt_files;
@@ -1076,13 +1035,9 @@ TEST_F(InstallConfigManagerFixture, FailsCaImportWhenServerReturns500) {
                    .has_value());
 
   monad::MyVoidResult r;
-  harness_->install_manager()
-      .apply_import_ca_actions(config, std::nullopt, std::nullopt)
-      .run([&](auto result) {
-        r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  r = testinfra::run_result_awaitable(
+      harness_->install_manager().apply_import_ca_actions(config, std::nullopt,
+                                                          std::nullopt));
   EXPECT_TRUE(r.is_err())
       << "Expected CA import to fail when server returns 500";
 
@@ -1151,14 +1106,12 @@ TEST_F(InstallConfigManagerFixture, FiltersCopyActionsByResource) {
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        if (result.is_ok()) {
-          plan = result.value();
-        }
-        op_r = std::move(result);
-      });
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
+  if (op_r->is_ok()) {
+    plan = op_r->value();
+  }
 
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok());
@@ -1166,10 +1119,9 @@ TEST_F(InstallConfigManagerFixture, FiltersCopyActionsByResource) {
 
   // First apply only cert 123
   monad::MyVoidResult void_r;
-  harness_->install_manager()
-      .apply_copy_actions(*plan, std::string("cert"),
-                          static_cast<std::int64_t>(123))
-      .run([&](auto result) { void_r = std::move(result); });
+  void_r = testinfra::run_result_awaitable(
+      harness_->install_manager().apply_copy_actions(
+          *plan, std::string("cert"), static_cast<std::int64_t>(123)));
 
   ASSERT_TRUE(void_r.is_ok());
   EXPECT_TRUE(std::filesystem::exists(dest_a));
@@ -1177,14 +1129,9 @@ TEST_F(InstallConfigManagerFixture, FiltersCopyActionsByResource) {
   EXPECT_EQ(read_file(dest_a), "CHAIN123\n");
 
   // Now apply only cert 456
-  harness_->install_manager()
-      .apply_copy_actions(*plan, std::string("cert"),
-                          static_cast<std::int64_t>(456))
-      .run([&](auto result) {
-        void_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  void_r = testinfra::run_result_awaitable(
+      harness_->install_manager().apply_copy_actions(
+          *plan, std::string("cert"), static_cast<std::int64_t>(456)));
 
   ASSERT_TRUE(void_r.is_ok());
   EXPECT_TRUE(std::filesystem::exists(dest_b));
@@ -1250,13 +1197,9 @@ TEST_F(InstallConfigManagerFixture, HandlesMasterOnlyPlaintextBundle) {
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        op_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok())
       << "ensure_config_version failed: " << op_r->error();
@@ -1264,13 +1207,9 @@ TEST_F(InstallConfigManagerFixture, HandlesMasterOnlyPlaintextBundle) {
   ASSERT_TRUE(plan);
 
   std::optional<monad::MyVoidResult> apply_r;
-  harness_->install_manager()
-      .apply_copy_actions(*plan, std::nullopt, std::nullopt)
-      .run([&](auto result) {
-        apply_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  apply_r = testinfra::run_result_awaitable(
+      harness_->install_manager().apply_copy_actions(*plan, std::nullopt,
+                                                     std::nullopt));
   ASSERT_TRUE(apply_r.has_value());
   ASSERT_TRUE(apply_r->is_ok())
       << "apply_copy_actions failed: " << apply_r->error();
@@ -1358,13 +1297,9 @@ TEST_F(InstallConfigManagerFixture,
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        op_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok())
       << "ensure_config_version failed: " << op_r->error();
@@ -1373,13 +1308,9 @@ TEST_F(InstallConfigManagerFixture,
   ASSERT_TRUE(plan);
 
   std::optional<monad::MyVoidResult> apply_r;
-  harness_->install_manager()
-      .apply_copy_actions(*plan, std::nullopt, std::nullopt)
-      .run([&](auto result) {
-        apply_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  apply_r = testinfra::run_result_awaitable(
+      harness_->install_manager().apply_copy_actions(*plan, std::nullopt,
+                                                     std::nullopt));
   ASSERT_TRUE(apply_r.has_value());
   ASSERT_TRUE(apply_r->is_ok())
       << "apply_copy_actions failed: " << apply_r->error();
@@ -1439,7 +1370,7 @@ TEST_F(InstallConfigManagerFixture,
                             std::optional<std::string> /*access_token*/,
                             std::optional<std::int64_t> expected_version,
                             const std::optional<std::string> &expected_hash)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
+      -> monad::MyResult<dto::DeviceInstallConfigDto> {
     ++call_count;
     dto::DeviceInstallConfigDto copy = config;
     if (expected_version) {
@@ -1449,7 +1380,7 @@ TEST_F(InstallConfigManagerFixture,
     if (expected_hash) {
       copy.installs_hash = *expected_hash;
     }
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(copy));
+    return monad::MyResult<dto::DeviceInstallConfigDto>::Ok(std::move(copy));
   };
 
   createHarness(
@@ -1462,13 +1393,9 @@ TEST_F(InstallConfigManagerFixture,
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        op_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok());
   plan = op_r->value();
@@ -1497,11 +1424,11 @@ TEST_F(InstallConfigManagerFixture, PropagatesFetcherFailure) {
       [&call_count](std::optional<std::string> /*access_token*/,
                     std::optional<std::int64_t> /*expected_version*/,
                     const std::optional<std::string> & /*expected_hash*/)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
+      -> monad::MyResult<dto::DeviceInstallConfigDto> {
     ++call_count;
     auto err = monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                                  "install-config fetch returned stale version");
-    return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
+    return monad::MyResult<dto::DeviceInstallConfigDto>::Err(std::move(err));
   };
 
   createHarness(
@@ -1512,13 +1439,9 @@ TEST_F(InstallConfigManagerFixture, PropagatesFetcherFailure) {
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        op_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_err());
 
@@ -1549,21 +1472,21 @@ TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
        second_token](std::optional<std::string> access_token,
                      std::optional<std::int64_t> /*expected_version*/,
                      const std::optional<std::string> & /*expected_hash*/)
-      -> monad::IO<dto::DeviceInstallConfigDto> {
+      -> monad::MyResult<dto::DeviceInstallConfigDto> {
     const int call_index = fetch_call_count->fetch_add(1);
     if (call_index == 0) {
       *first_token = access_token.value_or("<missing>");
       auto err = monad::make_error(my_errors::NETWORK::READ_ERROR,
                                    "install-config fetch HTTP status 401");
       err.response_status = 401;
-      return monad::IO<dto::DeviceInstallConfigDto>::fail(std::move(err));
+      return monad::MyResult<dto::DeviceInstallConfigDto>::Err(std::move(err));
     }
 
     *second_token = access_token.value_or("<missing>");
     dto::DeviceInstallConfigDto cfg{};
     cfg.version = 77;
     cfg.user_device_id = 1234;
-    return monad::IO<dto::DeviceInstallConfigDto>::pure(std::move(cfg));
+    return monad::MyResult<dto::DeviceInstallConfigDto>::Ok(std::move(cfg));
   };
 
   createHarness(
@@ -1579,13 +1502,9 @@ TEST_F(InstallConfigManagerFixture, RefreshesAccessTokenOnUnauthorizedFetch) {
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(std::nullopt, std::nullopt)
-      .run([&](auto result) {
-        op_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(std::nullopt,
+                                                        std::nullopt));
 
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok())
@@ -1634,25 +1553,17 @@ TEST_F(InstallConfigManagerFixture,
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        op_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok()) << op_r->error();
 
   auto signal = make_cert_updated_signal(42);
   std::optional<monad::MyVoidResult> script_r;
-  harness_->install_manager()
-      .maybe_run_after_update_script_for_signal(signal)
-      .run([&](auto result) {
-        script_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  script_r = testinfra::run_result_awaitable(
+      harness_->install_manager().maybe_run_after_update_script_for_signal(
+          signal));
 
   ASSERT_TRUE(script_r.has_value());
   ASSERT_TRUE(script_r->is_ok()) << script_r->error();
@@ -1711,25 +1622,17 @@ TEST_F(InstallConfigManagerFixture,
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        op_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok()) << op_r->error();
 
   auto signal = make_cert_updated_signal(42);
   std::optional<monad::MyVoidResult> script_r;
-  harness_->install_manager()
-      .maybe_run_after_update_script_for_signal(signal)
-      .run([&](auto result) {
-        script_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  script_r = testinfra::run_result_awaitable(
+      harness_->install_manager().maybe_run_after_update_script_for_signal(
+          signal));
 
   ASSERT_TRUE(script_r.has_value());
   ASSERT_TRUE(script_r->is_ok()) << script_r->error();
@@ -1768,24 +1671,16 @@ TEST_F(InstallConfigManagerFixture,
   std::optional<
       monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
       op_r;
-  harness_->install_manager()
-      .ensure_config_version(config.version, std::nullopt)
-      .run([&](auto result) {
-        op_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  op_r = testinfra::run_result_awaitable(
+      harness_->install_manager().ensure_config_version(config.version,
+                                                        std::nullopt));
   ASSERT_TRUE(op_r.has_value());
   ASSERT_TRUE(op_r->is_ok()) << op_r->error();
 
   std::optional<monad::MyVoidResult> approve_r;
-  harness_->install_manager()
-      .approve_after_update_script_hash(*op_r->value())
-      .run([&](auto result) {
-        approve_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  approve_r = testinfra::run_result_awaitable(
+      harness_->install_manager().approve_after_update_script_hash(
+          *op_r->value()));
 
   ASSERT_TRUE(approve_r.has_value());
   ASSERT_TRUE(approve_r->is_ok()) << approve_r->error();
@@ -1830,13 +1725,9 @@ TEST_F(InstallConfigManagerFixture,
   ASSERT_TRUE(save_r.is_ok()) << save_r.error();
 
   std::optional<monad::MyVoidResult> persist_r;
-  harness_->install_manager()
-      .approve_and_persist_after_update_script(config)
-      .run([&](auto result) {
-        persist_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  persist_r = testinfra::run_result_awaitable(
+      harness_->install_manager().approve_and_persist_after_update_script(
+          config));
 
   ASSERT_TRUE(persist_r.has_value());
   ASSERT_TRUE(persist_r->is_ok()) << persist_r->error();
@@ -1879,12 +1770,8 @@ TEST_F(InstallConfigManagerFixture,
   ASSERT_TRUE(save_r.is_ok()) << save_r.error();
 
   std::optional<monad::MyVoidResult> approve_r;
-  harness_->install_manager().approve_after_update_script_hash(config).run(
-      [&](auto result) {
-        approve_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  approve_r = testinfra::run_result_awaitable(
+      harness_->install_manager().approve_after_update_script_hash(config));
 
   ASSERT_TRUE(approve_r.has_value());
   ASSERT_TRUE(approve_r->is_ok()) << approve_r->error();
@@ -1894,14 +1781,9 @@ TEST_F(InstallConfigManagerFixture,
 
   auto signal = make_install_updated_signal();
   std::optional<monad::MyVoidResult> script_r;
-  harness_->install_manager()
-      .maybe_run_after_update_script_for_signal(
-          config, signal, /*bypass_auto_apply_config_gate=*/true)
-      .run([&](auto result) {
-        script_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  script_r = testinfra::run_result_awaitable(
+      harness_->install_manager().maybe_run_after_update_script_for_signal(
+          config, signal, /*bypass_auto_apply_config_gate=*/true));
 
   ASSERT_TRUE(script_r.has_value());
   ASSERT_TRUE(script_r->is_ok()) << script_r->error();
@@ -1979,12 +1861,8 @@ TEST_F(InstallConfigManagerFixture,
   ASSERT_TRUE(save_r.is_ok()) << save_r.error();
 
   std::optional<monad::MyVoidResult> rearm_r;
-  harness_->install_manager().rearm_local_install_update_window().run(
-      [&](auto result) {
-        rearm_r = std::move(result);
-        notifier.notify();
-      });
-  notifier.waitForNotification();
+  rearm_r = testinfra::run_result_awaitable(
+      harness_->install_manager().rearm_local_install_update_window());
 
   ASSERT_TRUE(rearm_r.has_value());
   ASSERT_TRUE(rearm_r->is_ok()) << rearm_r->error();
@@ -2006,11 +1884,11 @@ TEST_F(InstallConfigManagerFixture,
   auto fetcher = std::make_unique<LambdaInstallConfigFetcher>(
       [&fetch_calls](std::optional<std::string>, std::optional<std::int64_t>,
                      const std::optional<std::string> &)
-          -> monad::IO<dto::DeviceInstallConfigDto> {
+          -> monad::MyResult<dto::DeviceInstallConfigDto> {
         ++fetch_calls;
         dto::DeviceInstallConfigDto cfg{};
         cfg.version = 42;
-        return monad::IO<dto::DeviceInstallConfigDto>::pure(cfg);
+        return monad::MyResult<dto::DeviceInstallConfigDto>::Ok(std::move(cfg));
       });
 
   createHarness(config_dir, runtime_dir, std::move(fetcher),
@@ -2028,11 +1906,8 @@ TEST_F(InstallConfigManagerFixture,
       << "stale";
 
   std::optional<monad::MyVoidResult> resync_r;
-  harness_->install_manager().full_resync_from_server().run([&](auto result) {
-    resync_r = std::move(result);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
+  resync_r = testinfra::run_result_awaitable(
+      harness_->install_manager().full_resync_from_server());
 
   ASSERT_TRUE(resync_r.has_value());
   ASSERT_TRUE(resync_r->is_ok()) << resync_r->error();

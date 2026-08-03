@@ -6,6 +6,8 @@
 #include <string>
 #include <unordered_map>
 
+#include <boost/asio/awaitable.hpp>
+
 #include "conf/certctrl_config.hpp"
 #include "customio/console_output.hpp"
 #include "data/data_shape.hpp"
@@ -20,8 +22,8 @@
 #include "http_client_manager.hpp"
 #include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
-#include "io_monad.hpp"
 #include "resource_fetcher.hpp"
+#include "result_monad.hpp"
 namespace certctrl {
 
 // Lifetime: usually injected as a Boost.DI singleton within the App injector.
@@ -55,34 +57,36 @@ public:
 
   std::optional<std::int64_t> local_version() const { return local_version_; }
 
-  monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
+  boost::asio::awaitable<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
   ensure_config_version(std::optional<std::int64_t> expected_version,
                         const std::optional<std::string> &expected_hash);
 
-  monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
+  boost::asio::awaitable<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
   ensure_cached_config();
 
   // Full refresh from remote followed by apply of copy and CA import actions.
   // Background/programmatic path: does not approve or materialize new
   // after_update_script content.
-  monad::IO<void> pull_and_apply_full();
+  boost::asio::awaitable<monad::MyResult<void>> pull_and_apply_full();
 
   // Strong convergence path used when the server reports a replay gap.
   // Clears derived local caches, refetches the latest install config, and
   // rebuilds certificate/CA materials from current server state.
-  monad::IO<void> full_resync_from_server();
+  boost::asio::awaitable<monad::MyResult<void>> full_resync_from_server();
 
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   apply_copy_actions(const dto::DeviceInstallConfigDto &config,
                      const std::optional<std::string> &target_ob_type,
                      std::optional<std::int64_t> target_ob_id);
 
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   apply_import_ca_actions(const dto::DeviceInstallConfigDto &config,
                           const std::optional<std::string> &target_ob_type,
                           std::optional<std::int64_t> target_ob_id);
 
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   apply_copy_actions_for_signal(const ::data::DeviceUpdateSignal &signal);
 
   // Best-effort execution of the centrally-managed after_update_script.
@@ -90,30 +94,35 @@ public:
   // - auto_apply_config gates plan/config update events, but is bypassed for
   //   cert/CA material events.
   // - Failures only log; never fail the caller.
-  monad::IO<void> maybe_run_after_update_script_for_signal(
+  boost::asio::awaitable<monad::MyResult<void>>
+  maybe_run_after_update_script_for_signal(
       const ::data::DeviceUpdateSignal &signal,
       bool bypass_auto_apply_config_gate = false);
-  monad::IO<void> maybe_run_after_update_script_for_signal(
+  boost::asio::awaitable<monad::MyResult<void>>
+  maybe_run_after_update_script_for_signal(
       const dto::DeviceInstallConfigDto &config,
       const ::data::DeviceUpdateSignal &signal,
       bool bypass_auto_apply_config_gate = false);
 
-  monad::IO<void> rearm_local_install_update_window();
+  boost::asio::awaitable<monad::MyResult<void>>
+  rearm_local_install_update_window();
 
   // Manual approval path: pin the staged after_update_script hash locally so
   // a reviewed script becomes trusted before manual apply proceeds.
-  monad::IO<void>
+  boost::asio::awaitable<monad::MyResult<void>>
   approve_after_update_script_hash(const dto::DeviceInstallConfigDto &config);
 
   // Manual CLI path: approve and write the staged after_update_script before
   // copy/import actions run, so apply-time commands see the new script file.
-  monad::IO<void> approve_and_persist_after_update_script(
+  boost::asio::awaitable<monad::MyResult<void>>
+  approve_and_persist_after_update_script(
       const dto::DeviceInstallConfigDto &config);
 
-  monad::IO<void> handle_ca_assignment(std::int64_t ca_id,
-                                       std::optional<std::string> ca_name);
-  monad::IO<void> handle_ca_unassignment(std::int64_t ca_id,
-                                         std::optional<std::string> ca_name);
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_ca_assignment(std::int64_t ca_id, std::optional<std::string> ca_name);
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_ca_unassignment(std::int64_t ca_id,
+                         std::optional<std::string> ca_name);
 
   std::shared_ptr<dto::DeviceInstallConfigDto> cached_config_snapshot();
 
@@ -123,18 +132,21 @@ public:
                                  std::int64_t ob_id);
 
 private:
-  monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
+  boost::asio::awaitable<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
   refresh_from_remote(std::optional<std::int64_t> expected_version,
                       const std::optional<std::string> &expected_hash);
 
-  monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
+  boost::asio::awaitable<
+      monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
   refresh_from_remote_with_retry(
       std::optional<std::int64_t> expected_version,
       const std::optional<std::string> &expected_hash, bool attempted_refresh);
 
   std::optional<dto::DeviceInstallConfigDto> load_from_disk();
 
-  monad::IO<void> persist_config(const dto::DeviceInstallConfigDto &config);
+  monad::MyResult<void>
+  persist_config(const dto::DeviceInstallConfigDto &config);
 
   //   std::optional<std::string> load_access_token() const;
 
@@ -153,7 +165,6 @@ private:
   std::filesystem::path runtime_dir_;
   certctrl::ICertctrlConfigProvider &config_provider_;
   customio::ConsoleOutput &output_;
-  client_async::HttpClientManager &http_client_;
   install_actions::IDeviceInstallConfigFetcher &config_fetcher_;
   certctrl::install_actions::ImportCaActionHandler::Factory
       import_ca_action_handler_factory_;
@@ -167,7 +178,6 @@ private:
   install_actions::ExecActionHandler::Factory exec_handler_factory_;
   install_actions::IExecEnvironmentResolver::Factory exec_env_resolver_factory_;
   certctrl::install_actions::CopyActionHandler::Factory copy_handler_factory_;
-  boost::asio::io_context &io_context_;
   install_actions::IAccessTokenLoader &access_token_loader_;
   install_actions::IMaterializePasswordManager &password_manager_;
   std::shared_ptr<ISessionRefresher> session_refresher_;

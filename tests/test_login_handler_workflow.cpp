@@ -22,9 +22,9 @@
 #include <random>
 #include <regex>
 #include <sstream>
-#include <system_error>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -35,6 +35,7 @@
 #include "handlers/login_handler.hpp"
 #include "http_client_config_provider.hpp"
 #include "http_client_manager.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "io_context_manager.hpp"
 #include "log_stream.hpp"
 #include "misc_util.hpp"
@@ -182,10 +183,9 @@ private:
     return jwt::create()
         .set_type("JWT")
         .set_payload_claim("sub", jwt::claim(sub))
-      .set_payload_claim(
-        "device_id",
-        jwt::claim(jwt::traits::kazuho_picojson::value_type(
-          static_cast<double>(device_id))))
+        .set_payload_claim("device_id",
+                           jwt::claim(jwt::traits::kazuho_picojson::value_type(
+                               static_cast<double>(device_id))))
         .sign(jwt::algorithm::hs256{"secret"});
   }
 
@@ -377,12 +377,11 @@ private:
 
   unsigned short port_{0};
   std::string device_code_{"device-code-xyz"};
-    std::string access_token_;
+  std::string access_token_;
   std::string refresh_token_;
   std::string registration_code_{"mock-registration-code"};
   std::string device_numeric_id_{"4242"};
-  std::string refreshed_access_token_{
-      issue_access_token("12345", 4242)};
+  std::string refreshed_access_token_{issue_access_token("12345", 4242)};
   std::string refreshed_refresh_token_{issue_refresh_token("12345-refresh")};
 };
 
@@ -416,9 +415,9 @@ protected:
     const auto runtime_dir = temp_dir.path / "runtime";
     reset_directory(runtime_dir);
     json::object app_json{{"auto_apply_config", false},
-                {"verbose", "info"},
-                {"url_base", "to_set"},
-                {"runtime_dir", runtime_dir.string()}};
+                          {"verbose", "info"},
+                          {"url_base", "to_set"},
+                          {"runtime_dir", runtime_dir.string()}};
     write_json_file(temp_dir.path / "application.json", app_json);
 
     json::object httpclient_json{{"threads_num", 1},
@@ -467,8 +466,8 @@ protected:
             .to<certctrl::CertctrlConfigProviderFile>()
             .in(di::singleton),
         di::bind<certctrl::IDeviceStateStore>()
-          .to<certctrl::SqliteDeviceStateStore>()
-          .in(di::singleton),
+            .to<certctrl::SqliteDeviceStateStore>()
+            .in(di::singleton),
         di::bind<cjj365::IIoContextManager>().to<cjj365::IoContextManager>().in(
             di::singleton));
     using InjT = decltype(injector);
@@ -495,10 +494,10 @@ protected:
       server_ = nullptr;
     }
 
-    // because io_context_manager_ and http_client_manager_ are singletons(aka static allocated),
-    // so you shouldn't stop them here in TearDown. or else other tests that use the same
-    // singletons will fail.
-    // if (http_client_manager_ != nullptr) {
+    // because io_context_manager_ and http_client_manager_ are singletons(aka
+    // static allocated), so you shouldn't stop them here in TearDown. or else
+    // other tests that use the same singletons will fail. if
+    // (http_client_manager_ != nullptr) {
     //   http_client_manager_->stop();
     //   http_client_manager_ = nullptr;
     // }
@@ -542,10 +541,20 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   misc::ThreadNotifier notifier(15000);
 
   std::optional<monad::MyVoidResult> start_result;
-  handler_->start().run([&](auto r) {
-    start_result = std::move(r);
-    notifier.notify();
-  });
+  asio::co_spawn(io_context_manager_->ioc(), handler_->start_awaitable(),
+                 [&](std::exception_ptr error, monad::MyVoidResult result) {
+                   if (error) {
+                     try {
+                       std::rethrow_exception(error);
+                     } catch (const std::exception &ex) {
+                       start_result =
+                           monad::MyVoidResult::Err(monad::Error{1, ex.what()});
+                     }
+                   } else {
+                     start_result = std::move(result);
+                   }
+                   notifier.notify();
+                 });
   notifier.waitForNotification();
   int start_calls = server_->start_calls();
   int poll_calls = server_->poll_calls();
@@ -562,14 +571,9 @@ TEST_F(LoginHandlerWorkflowTest, EndToEndDeviceRegistration) {
   EXPECT_EQ(server_->start_calls(), 1);
   EXPECT_TRUE(record->authorization.empty());
 
-  std::optional<monad::MyVoidResult> reg_result;
-  handler_->register_device().run([&](auto r) {
-    reg_result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-  ASSERT_TRUE(reg_result.has_value());
-  ASSERT_FALSE(reg_result->is_err()) << reg_result->error();
+  auto reg_result = testinfra::run_result_awaitable<void>(
+      io_context_manager_->ioc(), handler_->register_device_awaitable());
+  ASSERT_FALSE(reg_result.is_err()) << reg_result.error();
   EXPECT_EQ(server_->registration_calls(), 1);
 
   EXPECT_EQ(record->target, "/apiv1/device/registration");
@@ -617,14 +621,10 @@ TEST_F(LoginHandlerWorkflowTest, PollRetriesBeforeApproval) {
 
   misc::ThreadNotifier notifier(30000);
 
-  std::optional<monad::MyVoidResult> start_result;
-  handler_->start().run([&](auto r) {
-    start_result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-  ASSERT_TRUE(start_result.has_value());
-  ASSERT_FALSE(start_result->is_err()) << start_result->error();
+  auto start_result = testinfra::run_result_awaitable<void>(
+      io_context_manager_->ioc(), handler_->start_awaitable(),
+      std::chrono::seconds(30));
+  ASSERT_FALSE(start_result.is_err()) << start_result.error();
 
   EXPECT_GE(server_->poll_calls(), 4);
   auto record = server_->wait_for_registration(std::chrono::seconds(20));
@@ -633,14 +633,9 @@ TEST_F(LoginHandlerWorkflowTest, PollRetriesBeforeApproval) {
   EXPECT_EQ(server_->start_calls(), 1);
   EXPECT_TRUE(record->authorization.empty());
 
-  std::optional<monad::MyVoidResult> reg_result;
-  handler_->register_device().run([&](auto r) {
-    reg_result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-  ASSERT_TRUE(reg_result.has_value());
-  ASSERT_FALSE(reg_result->is_err()) << reg_result->error();
+  auto reg_result = testinfra::run_result_awaitable<void>(
+      io_context_manager_->ioc(), handler_->register_device_awaitable());
+  ASSERT_FALSE(reg_result.is_err()) << reg_result.error();
   EXPECT_EQ(server_->registration_calls(), 1);
 
   EXPECT_EQ(record->target, "/apiv1/device/registration");
@@ -658,19 +653,13 @@ TEST_F(LoginHandlerWorkflowTest, ReusesExistingValidTokens) {
           .sign(jwt::algorithm::hs256{"secret"});
   auto refresh_token = server_->refresh_token();
   ASSERT_NE(state_store_, nullptr);
-  ASSERT_FALSE(state_store_->save_tokens(access_token, refresh_token, 3600)
-                   .has_value());
+  ASSERT_FALSE(
+      state_store_->save_tokens(access_token, refresh_token, 3600).has_value());
 
   misc::ThreadNotifier notifier(5000);
-  std::optional<monad::MyVoidResult> start_result;
-  handler_->start().run([&](auto r) {
-    start_result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-
-  ASSERT_TRUE(start_result.has_value());
-  ASSERT_FALSE(start_result->is_err()) << start_result->error();
+  auto start_result = testinfra::run_result_awaitable<void>(
+      io_context_manager_->ioc(), handler_->start_awaitable());
+  ASSERT_FALSE(start_result.is_err()) << start_result.error();
   EXPECT_EQ(server_->start_calls(), 0);
   EXPECT_EQ(server_->poll_calls(), 0);
   EXPECT_EQ(server_->registration_calls(), 0);
@@ -687,16 +676,9 @@ TEST_F(LoginHandlerWorkflowTest, ReusesExistingValidTokens) {
   const char *env_refresh = std::getenv("DEVICE_REFRESH_TOKEN");
   EXPECT_TRUE(env_refresh == nullptr || std::string_view(env_refresh).empty());
 
-  misc::ThreadNotifier register_notifier(2000);
-  std::optional<monad::MyVoidResult> register_result;
-  handler_->register_device().run([&](auto r) {
-    register_result = std::move(r);
-    register_notifier.notify();
-  });
-  register_notifier.waitForNotification();
-
-  ASSERT_TRUE(register_result.has_value());
-  ASSERT_FALSE(register_result->is_err()) << register_result->error();
+  auto register_result = testinfra::run_result_awaitable<void>(
+      io_context_manager_->ioc(), handler_->register_device_awaitable());
+  ASSERT_FALSE(register_result.is_err()) << register_result.error();
   EXPECT_EQ(server_->registration_calls(), 0);
 }
 
@@ -710,9 +692,9 @@ TEST_F(LoginHandlerWorkflowTest, RefreshesUsingStoredRefreshToken) {
           .sign(jwt::algorithm::hs256{"secret"});
   auto stored_refresh = server_->refresh_token();
   ASSERT_NE(state_store_, nullptr);
-  ASSERT_FALSE(state_store_
-                   ->save_tokens(expired_access, stored_refresh, std::nullopt)
-                   .has_value());
+  ASSERT_FALSE(
+      state_store_->save_tokens(expired_access, stored_refresh, std::nullopt)
+          .has_value());
 
   auto refreshed_access =
       jwt::create()
@@ -726,15 +708,9 @@ TEST_F(LoginHandlerWorkflowTest, RefreshesUsingStoredRefreshToken) {
   server_->set_refresh_response_tokens(refreshed_access, refreshed_refresh);
 
   misc::ThreadNotifier notifier(5000);
-  std::optional<monad::MyVoidResult> start_result;
-  handler_->start().run([&](auto r) {
-    start_result = std::move(r);
-    notifier.notify();
-  });
-  notifier.waitForNotification();
-
-  ASSERT_TRUE(start_result.has_value());
-  ASSERT_FALSE(start_result->is_err()) << start_result->error();
+  auto start_result = testinfra::run_result_awaitable<void>(
+      io_context_manager_->ioc(), handler_->start_awaitable());
+  ASSERT_FALSE(start_result.is_err()) << start_result.error();
   EXPECT_EQ(server_->start_calls(), 0);
   EXPECT_EQ(server_->poll_calls(), 0);
   EXPECT_EQ(server_->registration_calls(), 0);
@@ -752,16 +728,9 @@ TEST_F(LoginHandlerWorkflowTest, RefreshesUsingStoredRefreshToken) {
   EXPECT_EQ(*stored, refreshed_access);
   EXPECT_EQ(*refreshed, refreshed_refresh);
 
-  misc::ThreadNotifier register_notifier(2000);
-  std::optional<monad::MyVoidResult> register_result;
-  handler_->register_device().run([&](auto r) {
-    register_result = std::move(r);
-    register_notifier.notify();
-  });
-  register_notifier.waitForNotification();
-
-  ASSERT_TRUE(register_result.has_value());
-  ASSERT_FALSE(register_result->is_err()) << register_result->error();
+  auto register_result = testinfra::run_result_awaitable<void>(
+      io_context_manager_->ioc(), handler_->register_device_awaitable());
+  ASSERT_FALSE(register_result.is_err()) << register_result.error();
   EXPECT_EQ(server_->registration_calls(), 0);
 }
 

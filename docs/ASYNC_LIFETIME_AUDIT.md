@@ -28,8 +28,12 @@ A follow-up review was requested after fixing the AddressSanitizer leak uncovere
 - Polling loop finishes once a terminal status is observed, freeing captured lambdas.
 
 ### 4. `certctrl::UpdatesPollingHandler`
-- `poll_loop` captures `shared_from_this()` to keep the handler alive during in-flight async work. Once `keep_running` is cleared the chain returns an already-resolved `IO<void>` and no additional callbacks are scheduled, so the shared pointer releases.
-- Recommendation: document that callers must toggle `keep_running` (or reset the handler) to break the loop; otherwise the handler intentionally stays alive. A weak capture was considered but would require additional guards to avoid dereferencing a destroyed handler.
+- `poll_loop` is a native Boost.Asio coroutine. Its coroutine frame retains a
+  `shared_ptr` obtained from `shared_from_this()` while an iteration is in
+  flight.
+- Once `keep_running` is cleared, the loop exits, the coroutine frame unwinds,
+  and its retained owner is released. Callers must stop the loop during
+  shutdown; an active polling operation intentionally keeps the handler alive.
 
 ### 5. `client_async::HttpSession` & pooled variants
 - Each async operation captures `shared_from_this()` to keep the session alive until completion. Operations propagate errors to a completion handler that either releases or recycles the session. Timers cancel outstanding work when they expire.
@@ -43,10 +47,13 @@ A follow-up review was requested after fixing the AddressSanitizer leak uncovere
 - Apart from `IoContextManager`, no destructors log via objects they do not own. `CliCtx` still prints a debug message via the macro-based `DEBUG_PRINT`, which writes to `stderr` and is independent of custom outputs.
 
 ## Validation
-- Rebuilt the AddressSanitizer preset and re-ran the workflow integration test to cover the previously failing path. No leaks or invalid accesses reported.
-- Checked that no other tests in the ASAN suite reference the updates polling handler (test is currently disabled/not registered).
+- Rebuilt the AddressSanitizer preset and ran the complete registered suite.
+  All 105 tests pass, with six expected environment-dependent skips.
+- Focused polling and workflow tests cover normal completion, errors, and stop
+  behavior.
 
 ## Recommendations & Follow-ups
 - **Documentation:** Capture these ownership expectations in component comments—especially for handlers meant to stay alive until a manual stop.
-- **Broader Testing:** If an ASAN-targeted test for `UpdatesPollingHandler` becomes available, incorporate it into CI to cover long-poll paths.
+- **Broader Testing:** Keep the ASAN polling tests in CI and extend them when
+  cancellation behavior changes.
 - **Future Refactors:** When adding new async utilities, prefer weak captures for self-rearming timers (unless the workflow demands a persistent background component) and avoid destructor logging unless the logging sink lifetime is guaranteed.

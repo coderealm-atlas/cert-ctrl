@@ -1,8 +1,8 @@
 #pragma once
 
+#include "customio/console_output.hpp"
 #include "handlers/install_config_manager.hpp"
 #include "handlers/signal_handlers/signal_handler_base.hpp"
-#include "customio/console_output.hpp"
 #include <boost/json.hpp>
 
 namespace certctrl {
@@ -14,46 +14,43 @@ namespace signal_handlers {
  */
 class InstallUpdatedHandler : public ISignalHandler {
 private:
-    std::shared_ptr<InstallConfigManager> config_manager_;
-    customio::ConsoleOutput& output_hub_;
-    
+  std::shared_ptr<InstallConfigManager> config_manager_;
+  customio::ConsoleOutput &output_hub_;
+
 public:
-    InstallUpdatedHandler(
-        std::shared_ptr<InstallConfigManager> config_manager,
-        customio::ConsoleOutput& output_hub)
-        : config_manager_(std::move(config_manager))
-        , output_hub_(output_hub) {}
-    
-    std::string signal_type() const override {
-        return "install.updated";
+  InstallUpdatedHandler(std::shared_ptr<InstallConfigManager> config_manager,
+                        customio::ConsoleOutput &output_hub)
+      : config_manager_(std::move(config_manager)), output_hub_(output_hub) {}
+
+  std::string signal_type() const override { return "install.updated"; }
+
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_awaitable(const ::data::DeviceUpdateSignal &signal) override {
+    if (!config_manager_) {
+      output_hub_.logger().warning() << "InstallUpdatedHandler missing "
+                                        "InstallConfigManager; skipping signal"
+                                     << std::endl;
+      co_return monad::MyResult<void>::Ok();
     }
-    
-    monad::IO<void> handle(const ::data::DeviceUpdateSignal& signal) override {
-        if (!config_manager_) {
-            output_hub_.logger().warning()
-                << "InstallUpdatedHandler missing InstallConfigManager; skipping signal"
-                << std::endl;
-            return monad::IO<void>::pure();
-        }
-        output_hub_.logger().info()
-            << "Processing install.updated: "
-            << boost::json::serialize(signal.ref) << std::endl;
-        return config_manager_->apply_copy_actions_for_signal(signal);
+    output_hub_.logger().info()
+        << "Processing install.updated: " << boost::json::serialize(signal.ref)
+        << std::endl;
+    co_return co_await config_manager_->apply_copy_actions_for_signal(signal);
+  }
+
+  bool should_process(const ::data::DeviceUpdateSignal &signal) const override {
+    if (!config_manager_) {
+      return false;
     }
-    
-    bool should_process(const ::data::DeviceUpdateSignal& signal) const override {
-        if (!config_manager_) {
-            return false;
-        }
-        auto typed = ::data::get_install_updated(signal);
-        if (typed) {
-            auto local = config_manager_->local_version();
-            if (local && typed->version <= *local) {
-                return false;
-            }
-        }
-        return true;
+    auto typed = ::data::get_install_updated(signal);
+    if (typed) {
+      auto local = config_manager_->local_version();
+      if (local && typed->version <= *local) {
+        return false;
+      }
     }
+    return true;
+  }
 };
 
 } // namespace signal_handlers

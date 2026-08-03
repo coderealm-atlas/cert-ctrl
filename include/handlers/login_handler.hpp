@@ -10,20 +10,20 @@
 #include <unistd.h>
 #endif
 
+#include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/program_options.hpp>
-#include <iostream>
-#include <string>
-#include <filesystem>
 #include <chrono>
+#include <filesystem>
+#include <iostream>
 #include <optional>
+#include <string>
 
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
 #include "handlers/i_handler.hpp"
 #include "io_context_manager.hpp"
-#include "io_monad.hpp"
 #include "my_error_codes.hpp"
 #include "simple_data.hpp"
 #include "state/device_state_store.hpp"
@@ -76,8 +76,7 @@ public:
                customio::ConsoleOutput &output_hub,
                client_async::HttpClientManager &http_client,
                IDeviceStateStore &state_store)
-      : ioc_(io_context_manager.ioc()),
-        config_sources_(config_sources),
+      : ioc_(io_context_manager.ioc()), config_sources_(config_sources),
         certctrl_config_provider_(certctrl_config_provider),
         http_client_(http_client), state_store_(state_store),
         output_hub_(output_hub), cli_ctx_(cli_ctx),
@@ -94,14 +93,15 @@ public:
     }
 
     boost::program_options::options_description create_opts("Login Options");
-    create_opts.add_options()
-        ("force",
-         po::bool_switch(&options_.force)->default_value(false),
-         "Force device re-authorization; clears cached session tokens before login.")
-        ("apikey", po::value<std::string>(),
-         "Direct device registration using an API key; skips the device authorization flow.")
-        ("entropy", po::value<std::string>(),
-         "Additional entropy mixed into device fingerprint on first registration; ignored when a stored device id exists.");
+    create_opts.add_options()(
+        "force", po::bool_switch(&options_.force)->default_value(false),
+        "Force device re-authorization; clears cached session tokens before "
+        "login.")("apikey", po::value<std::string>(),
+                  "Direct device registration using an API key; skips the "
+                  "device authorization flow.")(
+        "entropy", po::value<std::string>(),
+        "Additional entropy mixed into device fingerprint on first "
+        "registration; ignored when a stored device id exists.");
     opt_desc_.add(create_opts);
     po::parsed_options parsed = po::command_line_parser(cli_ctx_.unrecognized)
                                     .options(opt_desc_)
@@ -131,32 +131,27 @@ public:
     return oss.str();
   }
 
-  monad::IO<void> show_usage(const std::string &msg = "") {
-    if (!msg.empty()) {
-      output_hub_.logger().error() << msg << std::endl;
-    }
-    return monad::IO<void>::fail(
-        monad::make_error(my_errors::GENERAL::SHOW_OPT_DESC,
-                          print_opt_desc()));
-  }
-
-  monad::IO<void> start() override;
-  monad::IO<void> poll();
-  monad::IO<void> register_device();
-  monad::IO<void> register_device_with_api_key(const std::string &api_key);
-
-  monad::IO<::data::deviceauth::StartResp> start_device_authorization();
-  monad::IO<::data::deviceauth::PollResp> poll_device_once();
+  boost::asio::awaitable<monad::MyResult<void>> start_awaitable() override;
+  boost::asio::awaitable<monad::MyResult<::data::deviceauth::StartResp>>
+  start_device_authorization_awaitable();
+  boost::asio::awaitable<monad::MyResult<::data::deviceauth::PollResp>>
+  poll_device_once_awaitable();
+  boost::asio::awaitable<monad::MyResult<void>> poll_awaitable();
+  boost::asio::awaitable<monad::MyResult<void>> register_device_awaitable();
+  boost::asio::awaitable<monad::MyResult<void>>
+  register_device_with_api_key_awaitable(std::string api_key);
 
 private:
   void clear_cached_session();
-  monad::IO<bool> reuse_existing_session_if_possible();
-  monad::IO<bool>
-  refresh_session_with_token(const std::string &refresh_token);
+  boost::asio::awaitable<monad::MyResult<bool>>
+  reuse_existing_session_if_possible_awaitable();
+  boost::asio::awaitable<monad::MyResult<bool>>
+  refresh_session_with_token_awaitable(std::string refresh_token);
   std::optional<std::filesystem::path> resolve_runtime_dir() const;
   static bool is_access_token_valid(const std::string &token,
                                     std::chrono::seconds skew);
-  monad::IO<void> perform_device_registration(
+  boost::asio::awaitable<monad::MyResult<void>>
+  perform_device_registration_awaitable(
       DeviceRegistrationRequestConfig config,
       ::data::deviceauth::PollResp *poll_state);
 };

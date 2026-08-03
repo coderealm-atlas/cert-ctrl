@@ -1,5 +1,7 @@
 #include "handlers/expiry_guard.hpp"
 
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
 #include <boost/log/sources/record_ostream.hpp>
 #include <boost/log/sources/severity_logger.hpp>
 #include <boost/log/trivial.hpp>
@@ -126,8 +128,8 @@ void ExpiryGuard::Start() {
     const int interval =
         (cfg.interval_seconds > 0) ? cfg.interval_seconds : 3600;
     BOOST_LOG_SEV(self->lg_, boost::log::trivial::info)
-      << "ExpiryGuard enabled (interval_seconds=" << interval
-      << ", cooldown_seconds=" << cfg.cooldown_seconds << ")";
+        << "ExpiryGuard enabled (interval_seconds=" << interval
+        << ", cooldown_seconds=" << cfg.cooldown_seconds << ")";
 
     self->ScheduleNext(std::chrono::seconds(1));
   });
@@ -347,7 +349,8 @@ ExpiryGuard::ScanResult ExpiryGuard::ScanCachedCertificates() {
   const auto cert_ids = GetCachedCertIds();
   if (cert_ids.empty()) {
     BOOST_LOG_SEV(lg_, boost::log::trivial::debug)
-        << "ExpiryGuard: no cached cert ids (install_config.json missing or empty)";
+        << "ExpiryGuard: no cached cert ids (install_config.json missing or "
+           "empty)";
     return result;
   }
 
@@ -434,22 +437,33 @@ void ExpiryGuard::TriggerForceUpdate(const ScanResult &scan) {
         << "ExpiryGuard: reason: " << r;
   }
 
-  auto self = shared_from_this();
+  boost::asio::co_spawn(
+      strand_,
+      RunForceUpdate(shared_from_this(), std::chrono::seconds(interval)),
+      boost::asio::detached);
+}
 
-  // Full pull+apply using InstallConfigManager pipeline (no shell invocation).
-  install_manager_->pull_and_apply_full()
-      .catch_then([self](monad::Error err) -> monad::IO<void> {
-        BOOST_LOG_SEV(self->lg_, boost::log::trivial::error)
-            << "ExpiryGuard: force update failed: code=" << err.code
-            << " status=" << err.response_status << " what=" << err.what;
-        return monad::IO<void>::pure();
-      })
-      .run([self, interval](auto) {
-        boost::asio::dispatch(self->strand_, [self, interval]() {
-          self->tick_inflight_ = false;
-          self->ScheduleNext(std::chrono::seconds(interval));
-        });
-      });
+boost::asio::awaitable<void>
+ExpiryGuard::RunForceUpdate(std::shared_ptr<ExpiryGuard> self,
+                            std::chrono::seconds interval) {
+  try {
+    auto result = co_await self->install_manager_->pull_and_apply_full();
+    if (result.is_err()) {
+      const auto &error = result.error();
+      BOOST_LOG_SEV(self->lg_, boost::log::trivial::error)
+          << "ExpiryGuard: force update failed: code=" << error.code
+          << " status=" << error.response_status << " what=" << error.what;
+    }
+  } catch (const std::exception &ex) {
+    BOOST_LOG_SEV(self->lg_, boost::log::trivial::error)
+        << "ExpiryGuard coroutine failed: " << ex.what();
+  } catch (...) {
+    BOOST_LOG_SEV(self->lg_, boost::log::trivial::error)
+        << "ExpiryGuard coroutine failed with an unknown exception";
+  }
+
+  self->tick_inflight_ = false;
+  self->ScheduleNext(interval);
 }
 
 } // namespace certctrl

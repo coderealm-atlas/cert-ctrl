@@ -149,9 +149,7 @@ InfoHandler::InfoHandler(cjj365::ConfigSources &config_sources,
       certctrl_config_provider_(config_provider), output_hub_(output_hub),
       cli_ctx_(cli_ctx), state_store_(state_store) {}
 
-monad::IO<void> InfoHandler::start() {
-  using VoidIO = monad::IO<void>;
-
+boost::asio::awaitable<monad::MyResult<void>> InfoHandler::start_awaitable() {
   auto &printer = output_hub_.printer();
   printer.green() << "cert-ctrl environment summary" << std::endl;
 
@@ -229,15 +227,14 @@ monad::IO<void> InfoHandler::start() {
     if (had_existing_id) {
       output_hub_.logger().warning()
           << "Ignoring malformed device_public_id stored in SQLite; "
-          << "rewriting derived identifier."
-          << std::endl;
+          << "rewriting derived identifier." << std::endl;
     }
     stored_device_id.reset();
 
     const std::optional<std::string> id_payload(public_id);
     const std::optional<std::string> fingerprint_payload(fingerprint);
     if (auto err = state_store_.save_device_identity(id_payload,
-                             fingerprint_payload)) {
+                                                     fingerprint_payload)) {
       output_hub_.logger().warning()
           << "Failed to persist device_public_id to SQLite: " << *err
           << std::endl;
@@ -340,7 +337,7 @@ monad::IO<void> InfoHandler::start() {
     }
   }
 
-  return VoidIO::pure();
+  co_return monad::MyResult<void>::Ok();
 }
 
 } // namespace certctrl

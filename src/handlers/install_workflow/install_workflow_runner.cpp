@@ -1,8 +1,5 @@
 #include "handlers/install_workflow/install_workflow_runner.hpp"
 
-#include "customio/console_output.hpp"
-#include "handlers/install_config_manager.hpp"
-
 namespace certctrl {
 
 InstallWorkflowRunner::InstallWorkflowRunner(
@@ -10,50 +7,50 @@ InstallWorkflowRunner::InstallWorkflowRunner(
     customio::ConsoleOutput &output)
     : manager_(std::move(manager)), output_(output) {}
 
-monad::IO<void> InstallWorkflowRunner::start(const Options &options) {
-  using ReturnIO = monad::IO<void>;
+boost::asio::awaitable<monad::MyResult<void>>
+InstallWorkflowRunner::start_awaitable(const Options &options) {
+  output_.logger().info() << "Fetching latest install-config before apply"
+                          << std::endl;
 
-  return ReturnIO::pure().then([this, options]() -> ReturnIO {
-    output_.logger().info()
-        << "Fetching latest install-config before apply" << std::endl;
+  auto config_result =
+      co_await manager_->ensure_config_version(std::nullopt, std::nullopt);
+  if (config_result.is_err()) {
+    co_return monad::MyResult<void>::Err(config_result.error());
+  }
+  auto config = std::move(config_result).value();
+  if (!config) {
+    output_.logger().warning()
+        << "install-config fetch returned no payload" << std::endl;
+    co_return monad::MyResult<void>::Ok();
+  }
 
-    return manager_->ensure_config_version(std::nullopt, std::nullopt)
-        .then(
-            [this, options](
-                std::shared_ptr<const dto::DeviceInstallConfigDto> config_ptr) {
-              if (!config_ptr) {
-                output_.logger().warning()
-                    << "install-config fetch returned no payload" << std::endl;
-                return ReturnIO::pure();
-              }
+  const auto version = config->version;
+  output_.logger().info() << "Applying install-config version " << version
+                          << std::endl;
 
-              auto version = config_ptr->version;
-              output_.logger().info()
-                  << "Applying install-config version " << version << std::endl;
+  auto rearm_result = co_await manager_->rearm_local_install_update_window();
+  if (rearm_result.is_err()) {
+    co_return rearm_result;
+  }
+  auto approval_result =
+      co_await manager_->approve_and_persist_after_update_script(*config);
+  if (approval_result.is_err()) {
+    co_return approval_result;
+  }
+  auto copy_result = co_await manager_->apply_copy_actions(
+      *config, options.target_ob_type, options.target_ob_id);
+  if (copy_result.is_err()) {
+    co_return copy_result;
+  }
+  auto import_result = co_await manager_->apply_import_ca_actions(
+      *config, options.target_ob_type, options.target_ob_id);
+  if (import_result.is_err()) {
+    co_return import_result;
+  }
 
-              return manager_->rearm_local_install_update_window()
-                  .then([this, config_ptr]() {
-                    return manager_->approve_and_persist_after_update_script(
-                        *config_ptr);
-                  })
-                  .then([this, config_ptr, options]() {
-                    return manager_->apply_copy_actions(*config_ptr,
-                                                        options.target_ob_type,
-                                                        options.target_ob_id);
-                  })
-                  .then([this, config_ptr, options]() {
-                    return manager_->apply_import_ca_actions(
-                        *config_ptr, options.target_ob_type,
-                        options.target_ob_id);
-                  })
-                  .then([this, version]() {
-                    output_.logger().info()
-                        << "Installed configuration version " << version
-                        << " successfully." << std::endl;
-                    return monad::IO<void>::pure();
-                  });
-            });
-  });
+  output_.logger().info() << "Installed configuration version " << version
+                          << " successfully." << std::endl;
+  co_return monad::MyResult<void>::Ok();
 }
 
 } // namespace certctrl

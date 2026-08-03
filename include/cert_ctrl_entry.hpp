@@ -10,6 +10,9 @@
 
 #include <fmt/format.h>
 
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+
 #include "boost/di.hpp"
 #include "certctrl_common.hpp"
 #include "conf/certctrl_config.hpp"
@@ -36,9 +39,9 @@
 #include "handlers/login_handler.hpp"
 #include "handlers/session_refresher.hpp"
 // #include "handlers/short_poll_runner.hpp"
+#include "handlers/expiry_guard.hpp"
 #include "handlers/update_handler.hpp"
 #include "handlers/updates_polling_handler.hpp"
-#include "handlers/expiry_guard.hpp"
 #include "http_client_manager.hpp"
 #include "install_config_fetcher.hpp"
 #include "io_context_manager.hpp"
@@ -47,8 +50,8 @@
 #include "my_error_codes.hpp"
 #include "resource_fetcher.hpp"
 #include "state/device_state_store.hpp"
-#include "websocket/websocket_client.hpp"
 #include "version.h"
+#include "websocket/websocket_client.hpp"
 
 #ifdef to
 #error "macro to defined"
@@ -120,6 +123,106 @@ class App : public std::enable_shared_from_this<App<AppTag>> {
   std::shared_ptr<certctrl::WebsocketClient> websocket_client_;
   std::shared_ptr<certctrl::ExpiryGuard> expiry_guard_;
 
+  static boost::asio::awaitable<void> complete_dispatched_handler(
+      std::shared_ptr<App> self,
+      boost::asio::awaitable<monad::MyResult<void>> operation) {
+    try {
+      auto result = co_await std::move(operation);
+      if (result.is_err()) {
+        self->print_error(result.error());
+      } else {
+        self->output_hub_->logger().debug()
+            << "Handler completed successfully." << std::endl;
+      }
+    } catch (const std::exception &ex) {
+      self->print_error(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          std::string{"Handler coroutine failed: "} + ex.what()));
+    } catch (...) {
+      self->print_error(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "Handler coroutine failed with an unknown exception"));
+    }
+    self->blocker_.stop();
+  }
+
+  static boost::asio::awaitable<monad::MyResult<void>>
+  execute_default_update_workflow(
+      std::shared_ptr<App> self,
+      std::shared_ptr<certctrl::AgentUpdateChecker> update_checker,
+      std::shared_ptr<certctrl::UpdatesPollingHandler> updates_handler,
+      bool websocket_enabled, bool has_session) {
+    auto update_result =
+        co_await update_checker->run_once_awaitable(MYAPP_VERSION);
+    if (update_result.is_err()) {
+      self->output_hub_->logger().warning()
+          << "Agent update check failed: " << update_result.error().what
+          << std::endl;
+    }
+
+    if (websocket_enabled) {
+      self->output_hub_->logger().info()
+          << "WebSocket is enabled; skipping HTTP device updates polling."
+          << std::endl;
+      if (!has_session) {
+        self->output_hub_->logger().warning()
+            << "Skipping agent version notify because no cached session "
+               "tokens were found. Run 'cert-ctrl login' to authenticate "
+               "this device."
+            << std::endl;
+        co_return monad::MyResult<void>::Ok();
+      }
+      co_return co_await updates_handler->report_agent_version_once_awaitable();
+    }
+
+    if (!has_session) {
+      self->output_hub_->logger().warning()
+          << "Skipping device updates poll because no cached session tokens "
+             "were found. Run 'cert-ctrl login' to authenticate this device."
+          << std::endl;
+      co_return monad::MyResult<void>::Ok();
+    }
+
+    co_return co_await updates_handler->start_awaitable();
+  }
+
+  static boost::asio::awaitable<void> complete_default_update_workflow(
+      std::shared_ptr<App> self,
+      std::shared_ptr<certctrl::AgentUpdateChecker> update_checker,
+      std::shared_ptr<certctrl::UpdatesPollingHandler> updates_handler,
+      bool websocket_enabled, bool has_session) {
+    try {
+      auto result = co_await execute_default_update_workflow(
+          self, std::move(update_checker), std::move(updates_handler),
+          websocket_enabled, has_session);
+      if (result.is_err()) {
+        self->print_error(result.error());
+      } else if (self->cli_ctx_.params.keep_running) {
+        if (websocket_enabled) {
+          self->info("WebSocket mode active.");
+        } else {
+          self->info("Default updates polling loop active.");
+        }
+      } else {
+        self->info("Default update workflow completed.");
+      }
+    } catch (const std::exception &ex) {
+      self->print_error(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          std::string{"Default update workflow failed: "} + ex.what()));
+    } catch (...) {
+      self->print_error(monad::make_error(
+          my_errors::GENERAL::UNEXPECTED_RESULT,
+          "Default update workflow failed with an unknown exception"));
+    }
+
+    // In keep-running mode shutdown is governed by the signal handler. In
+    // WebSocket mode the update workflow only performs a one-shot notify.
+    if (!self->cli_ctx_.params.keep_running) {
+      self->blocker_.stop();
+    }
+  }
+
 public:
   App(cjj365::ConfigSources &config_sources, certctrl::CliCtx &cli_ctx)
       : config_sources_(config_sources), cli_ctx_(cli_ctx),
@@ -153,50 +256,7 @@ public:
           di::bind<certctrl::CaHandler>().in(di::unique),
           di::bind<certctrl::InstallConfigApplyHandler>().in(di::unique),
           di::bind<certctrl::DeviceAutomationHandler>().in(di::unique),
-          di::bind<certctrl::WebsocketClient>().in(di::singleton),
-          di::bind<certctrl::IHandlerFactory>().to(
-              [](const auto &inj) -> certctrl::IHandlerFactory & {
-                static certctrl::HandlerFactoryImpl factory(
-                    [&inj](const std::string &subcmd)
-                        -> std::shared_ptr<certctrl::IHandler> {
-                      if (subcmd == "conf") {
-                        return inj.template create<
-                            std::shared_ptr<certctrl::ConfHandler>>();
-                      } else if (subcmd == "install-config") {
-                        return inj.template create<
-                            std::shared_ptr<certctrl::InstallConfigHandler>>();
-                      } else if (subcmd == "login") {
-                        return inj.template create<
-                            std::shared_ptr<certctrl::LoginHandler>>();
-                      } else if (subcmd == "update") {
-                        return inj.template create<
-                            std::shared_ptr<certctrl::UpdateHandler>>();
-                      } else if (subcmd == "updates" ||
-                                 subcmd == "updates-polling") {
-                        return inj.template create<
-                            std::shared_ptr<certctrl::UpdatesPollingHandler>>();
-                      } else if (subcmd == "certificates") {
-                        return inj.template create<
-                            std::shared_ptr<certctrl::CertificatesHandler>>();
-                      } else if (subcmd == "info") {
-                        return inj.template create<
-                            std::shared_ptr<certctrl::InfoHandler>>();
-                      } else if (subcmd == "ca" || subcmd == "cas") {
-                        return inj.template create<
-                            std::shared_ptr<certctrl::CaHandler>>();
-                      } else if (subcmd == "install") {
-                        return inj.template create<std::shared_ptr<
-                            certctrl::InstallConfigApplyHandler>>();
-                      } else if (subcmd == "device") {
-                        return inj.template create<std::shared_ptr<
-                            certctrl::DeviceAutomationHandler>>();
-                      } else {
-                        throw std::runtime_error("Unsupported subcommand: " +
-                                                 subcmd);
-                      }
-                    });
-                return factory;
-              }));
+          di::bind<certctrl::WebsocketClient>().in(di::singleton));
     };
 
     auto injector = di::make_injector(
@@ -206,7 +266,7 @@ public:
         di::bind<certctrl::ICertctrlConfigProvider>()
             .to<certctrl::CertctrlConfigProviderFile>(),
         di::bind<certctrl::IWebsocketConfigProvider>()
-          .to<certctrl::WebsocketConfigProviderFile>(),
+            .to<certctrl::WebsocketConfigProviderFile>(),
         di::bind<cjj365::IHttpclientConfigProvider>()
             .to<cjj365::HttpclientConfigProviderFile>(),
         di::bind<certctrl::install_actions::IAccessTokenLoader>()
@@ -274,6 +334,7 @@ public:
             .in(di::singleton),
         di::bind<certctrl::ExpiryGuard>().in(di::singleton),
         di::bind<customio::IOutput>().to(output_hub),
+        di::bind<customio::ConsoleOutput>().in(di::singleton),
         di::bind<certctrl::CliCtx>().to(cli_ctx_));
     // Register all handlers for aggregate injection; DI will convert to
     // vector<unique_ptr<IHandler>>
@@ -286,10 +347,11 @@ public:
     certctrl_config_ =
         &injector.template create<certctrl::ICertctrlConfigProvider &>().get();
     websocket_config_ =
-      &injector.template create<certctrl::IWebsocketConfigProvider &>().get();
-    
+        &injector.template create<certctrl::IWebsocketConfigProvider &>().get();
+
     // auto short_poll_runner =
-    //     injector.template create<std::shared_ptr<certctrl::ShortPollRunner>>();
+    //     injector.template
+    //     create<std::shared_ptr<certctrl::ShortPollRunner>>();
     // short_poll_runner->start();
 
     io_context_manager_ =
@@ -389,30 +451,74 @@ public:
     if (websocket_config_) {
       if (websocket_config_->enabled) {
         output_hub_->logger().info()
-            << "WebSocket client enabled via websocket_config.json" << std::endl;
-      } else {
-        output_hub_->logger().debug()
-            << "WebSocket client disabled (set config_dir/websocket_config.json "
-               "enabled=true to activate)"
+            << "WebSocket client enabled via websocket_config.json"
             << std::endl;
+      } else {
+        output_hub_->logger().debug() << "WebSocket client disabled (set "
+                                         "config_dir/websocket_config.json "
+                                         "enabled=true to activate)"
+                                      << std::endl;
       }
     }
 
-    // Use dispatcher injected with all handlers (as
-    // vector<unique_ptr<IHandler>>)
-    auto &dispatcher =
-        injector.template create<certctrl::HandlerDispatcher &>();
+    // Keep the injector-backed creator local. A static factory would retain a
+    // reference to DI's provider argument after that argument's lifetime ends.
+    certctrl::HandlerFactoryImpl handler_factory([&injector](
+                                                     const std::string &subcmd)
+                                                     -> std::shared_ptr<
+                                                         certctrl::IHandler> {
+      if (subcmd == "conf") {
+        return injector
+            .template create<std::shared_ptr<certctrl::ConfHandler>>();
+      }
+      if (subcmd == "install-config") {
+        return injector
+            .template create<std::shared_ptr<certctrl::InstallConfigHandler>>();
+      }
+      if (subcmd == "login") {
+        return injector
+            .template create<std::shared_ptr<certctrl::LoginHandler>>();
+      }
+      if (subcmd == "update") {
+        return injector
+            .template create<std::shared_ptr<certctrl::UpdateHandler>>();
+      }
+      if (subcmd == "updates" || subcmd == "updates-polling") {
+        return injector.template create<
+            std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+      }
+      if (subcmd == "certificates") {
+        return injector
+            .template create<std::shared_ptr<certctrl::CertificatesHandler>>();
+      }
+      if (subcmd == "info") {
+        return injector
+            .template create<std::shared_ptr<certctrl::InfoHandler>>();
+      }
+      if (subcmd == "ca" || subcmd == "cas") {
+        return injector.template create<std::shared_ptr<certctrl::CaHandler>>();
+      }
+      if (subcmd == "install") {
+        return injector.template create<
+            std::shared_ptr<certctrl::InstallConfigApplyHandler>>();
+      }
+      if (subcmd == "device") {
+        return injector.template create<
+            std::shared_ptr<certctrl::DeviceAutomationHandler>>();
+      }
+      throw std::runtime_error("Unsupported subcommand: " + subcmd);
+    });
+    certctrl::HandlerDispatcher dispatcher(output_hub, handler_factory);
 
-    bool dispatched =
-        dispatcher.dispatch_run(cli_ctx_.params.subcmd, [self](auto r) {
-          if (r.is_err()) {
-            self->print_error(r.error());
-          } else {
-            self->output_hub_->logger().debug()
-                << "Handler completed successfully." << std::endl;
-          }
-          return self->blocker_.stop();
-        });
+    auto dispatched_operation =
+        dispatcher.dispatch_awaitable(cli_ctx_.params.subcmd);
+    const bool dispatched = dispatched_operation.has_value();
+    if (dispatched) {
+      boost::asio::co_spawn(
+          io_context_manager_->ioc(),
+          complete_dispatched_handler(self, std::move(*dispatched_operation)),
+          boost::asio::detached);
+    }
 
     if (!dispatched) {
       if (cli_ctx_.params.subcmd.empty()) {
@@ -420,11 +526,11 @@ public:
             << "No subcommand provided; running default update workflow."
             << std::endl;
 
-        const bool websocket_enabled = (websocket_config_ && websocket_config_->enabled);
+        const bool websocket_enabled =
+            (websocket_config_ && websocket_config_->enabled);
         if (websocket_enabled && !websocket_client_) {
-          websocket_client_ =
-              injector
-                  .template create<std::shared_ptr<certctrl::WebsocketClient>>();
+          websocket_client_ = injector.template create<
+              std::shared_ptr<certctrl::WebsocketClient>>();
           websocket_client_->Start();
         }
 
@@ -437,68 +543,17 @@ public:
         auto cached_refresh = state_store.get_refresh_token();
         const bool has_session = (cached_access && !cached_access->empty()) ||
                                  (cached_refresh && !cached_refresh->empty());
-
-        auto workflow =
-            update_checker->run_once(MYAPP_VERSION)
-                .catch_then([self, update_checker](monad::Error err) {
-                  self->output_hub_->logger().warning()
-                      << "Agent update check failed: " << err.what << std::endl;
-                  return monad::IO<void>::pure();
-                })
-                .then([self, &injector, websocket_enabled,
-                       has_session]() -> monad::IO<void> {
-                  if (websocket_enabled) {
-                    self->output_hub_->logger().info()
-                        << "WebSocket is enabled; skipping HTTP device updates polling."
-                        << std::endl;
-                    if (!has_session) {
-                      self->output_hub_->logger().warning()
-                          << "Skipping agent version notify because no cached "
-                             "session tokens were found. Run 'cert-ctrl login' "
-                             "to authenticate this device."
-                          << std::endl;
-                      return monad::IO<void>::pure();
-                    }
-
-                    auto updates_handler = injector.template create<
-                        std::shared_ptr<certctrl::UpdatesPollingHandler>>();
-                    return updates_handler->report_agent_version_once();
-                  }
-                  if (!has_session) {
-                    self->output_hub_->logger().warning()
-                        << "Skipping device updates poll because no cached "
-                           "session tokens were found. Run 'cert-ctrl login' "
-                           "to authenticate this device."
-                        << std::endl;
-                    return monad::IO<void>::pure();
-                  }
-                  auto updates_handler = injector.template create<
-                      std::shared_ptr<certctrl::UpdatesPollingHandler>>();
-                  return updates_handler->start();
-                });
-
-        workflow.run([self, update_checker](auto r) {
-          if (r.is_err()) {
-            self->print_error(r.error());
-          } else {
-            if (self->cli_ctx_.params.keep_running) {
-              if (self->websocket_config_ && self->websocket_config_->enabled) {
-                self->info("WebSocket mode active.");
-              } else {
-                self->info("Default updates polling loop active.");
-              }
-            } else {
-              self->info("Default update workflow completed.");
-            }
-          }
-
-          // In keep-running mode the app lifetime is governed by the signal
-          // handler / shutdown request. Stopping the blocker here would exit
-          // immediately in WebSocket mode (which only does a one-shot notify).
-          if (!self->cli_ctx_.params.keep_running) {
-            self->blocker_.stop();
-          }
-        });
+        std::shared_ptr<certctrl::UpdatesPollingHandler> updates_handler;
+        if (has_session) {
+          updates_handler = injector.template create<
+              std::shared_ptr<certctrl::UpdatesPollingHandler>>();
+        }
+        boost::asio::co_spawn(
+            io_context_manager_->ioc(),
+            complete_default_update_workflow(self, std::move(update_checker),
+                                             std::move(updates_handler),
+                                             websocket_enabled, has_session),
+            boost::asio::detached);
       } else if (cli_ctx_.params.keep_running) {
         output_hub_->logger().info()
             << "Running in keep running mode." << std::endl;
@@ -513,7 +568,7 @@ public:
         // }
         output_hub_->logger().error()
             << "No valid subcommand provided. Available: "
-          << " install-config, login, certificates, ca, info, device, updates"
+            << " install-config, login, certificates, ca, info, device, updates"
             << "." << std::endl;
         return shutdown();
       }

@@ -61,6 +61,9 @@ private:
   void PersistCooldown(std::chrono::system_clock::time_point now);
 
   void TriggerForceUpdate(const ScanResult &scan);
+  static boost::asio::awaitable<void>
+  RunForceUpdate(std::shared_ptr<ExpiryGuard> self,
+                 std::chrono::seconds interval);
 
   std::filesystem::path state_file_path() const;
 

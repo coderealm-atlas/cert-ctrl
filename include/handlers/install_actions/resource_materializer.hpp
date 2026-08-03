@@ -3,8 +3,10 @@
 #include <functional>
 #include <memory>
 
+#include <boost/asio/awaitable.hpp>
+
 #include "data/install_config_dto.hpp"
-#include "io_monad.hpp"
+#include "result_monad.hpp"
 
 namespace certctrl::install_actions {
 
@@ -14,7 +16,8 @@ public:
   using Factory = std::function<Ptr()>;
 
   virtual ~IResourceMaterializer() = default;
-  virtual monad::IO<void> ensure_materialized(const dto::InstallItem &item) = 0;
+  virtual boost::asio::awaitable<monad::MyResult<void>>
+  ensure_materialized(const dto::InstallItem &item) = 0;
 };
 
 } // namespace certctrl::install_actions

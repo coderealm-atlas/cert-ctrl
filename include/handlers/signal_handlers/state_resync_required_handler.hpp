@@ -21,17 +21,19 @@ private:
   customio::ConsoleOutput &output_hub_;
 
 public:
-  StateResyncRequiredHandler(std::shared_ptr<InstallConfigManager> config_manager,
-                             certctrl::IDeviceStateStore &state_store,
-                             customio::ConsoleOutput &output_hub)
+  StateResyncRequiredHandler(
+      std::shared_ptr<InstallConfigManager> config_manager,
+      certctrl::IDeviceStateStore &state_store,
+      customio::ConsoleOutput &output_hub)
       : config_manager_(std::move(config_manager)), state_store_(state_store),
         output_hub_(output_hub) {}
 
   std::string signal_type() const override { return "state.resync_required"; }
 
-  monad::IO<void> handle(const ::data::DeviceUpdateSignal &signal) override {
+  boost::asio::awaitable<monad::MyResult<void>>
+  handle_awaitable(const ::data::DeviceUpdateSignal &signal) override {
     if (!config_manager_) {
-      return monad::IO<void>::fail(monad::make_error(
+      co_return monad::MyResult<void>::Err(monad::make_error(
           my_errors::GENERAL::UNEXPECTED_RESULT,
           "state.resync_required received without InstallConfigManager"));
     }
@@ -49,23 +51,23 @@ public:
 
     output_hub_.logger().warning()
         << "Processing state.resync_required reason=" << reason
-        << (earliest_id.empty() ? std::string{} : " earliest_retained_id=" + earliest_id)
+        << (earliest_id.empty() ? std::string{}
+                                : " earliest_retained_id=" + earliest_id)
         << std::endl;
 
     if (auto err = state_store_.save_updates_cursor(std::nullopt)) {
-      return monad::IO<void>::fail(
-          monad::make_error(my_errors::GENERAL::DELETE_FAILED,
-                            "failed to clear polling cursor before full resync: " +
-                                *err));
+      co_return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::GENERAL::DELETE_FAILED,
+          "failed to clear polling cursor before full resync: " + *err));
     }
     if (auto err = state_store_.save_websocket_resume_token(std::nullopt)) {
-      return monad::IO<void>::fail(
-          monad::make_error(my_errors::GENERAL::DELETE_FAILED,
-                            "failed to clear websocket resume token before full resync: " +
-                                *err));
+      co_return monad::MyResult<void>::Err(monad::make_error(
+          my_errors::GENERAL::DELETE_FAILED,
+          "failed to clear websocket resume token before full resync: " +
+              *err));
     }
 
-    return config_manager_->full_resync_from_server();
+    co_return co_await config_manager_->full_resync_from_server();
   }
 };
 

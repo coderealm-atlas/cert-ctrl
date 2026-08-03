@@ -17,16 +17,17 @@
 
 namespace certctrl {
 
-class CertificatesHandler : public IHandler,
-                            public std::enable_shared_from_this<CertificatesHandler> {
+class CertificatesHandler
+    : public IHandler,
+      public std::enable_shared_from_this<CertificatesHandler> {
 public:
-  CertificatesHandler(cjj365::ConfigSources &config_sources,
-                      CliCtx &cli_ctx,
-                      customio::ConsoleOutput &output,
-                      std::unique_ptr<InstallConfigManager> install_config_manager);
+  CertificatesHandler(
+      cjj365::ConfigSources &config_sources, CliCtx &cli_ctx,
+      customio::ConsoleOutput &output,
+      std::unique_ptr<InstallConfigManager> install_config_manager);
 
   std::string command() const override { return "certificates"; }
-  monad::IO<void> start() override;
+  boost::asio::awaitable<monad::MyResult<void>> start_awaitable() override;
 
 private:
   struct ListOptions {
@@ -64,18 +65,17 @@ private:
   ListOptions parse_list_options(const std::string &action);
   ShowOptions parse_show_options(const std::string &action);
 
-  monad::IO<void> handle_list();
-  monad::IO<void> handle_show();
+  boost::asio::awaitable<monad::MyResult<void>> handle_list_awaitable();
+  boost::asio::awaitable<monad::MyResult<void>> handle_show_awaitable();
 
-  monad::IO<void> render_show(const dto::DeviceInstallConfigDto &config,
-                              std::int64_t cert_id,
-                              const ShowOptions &options);
+  monad::MyResult<void> render_show(const dto::DeviceInstallConfigDto &config,
+                                    std::int64_t cert_id,
+                                    const ShowOptions &options);
 
   std::vector<CertificateSummary>
   gather_certificates(const dto::DeviceInstallConfigDto &config) const;
 
-  CertificateArtifacts
-  load_certificate_artifacts(std::int64_t cert_id) const;
+  CertificateArtifacts load_certificate_artifacts(std::int64_t cert_id) const;
 
   static std::string
   format_time(const std::optional<std::chrono::system_clock::time_point> &tp);

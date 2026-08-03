@@ -19,10 +19,10 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <optional>
-#include <filesystem>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -31,8 +31,9 @@
 #include "conf/certctrl_config.hpp"
 #include "conf/websocket_config.hpp"
 #include "customio/console_output.hpp"
-#include "ioc_manager_config_provider.hpp"
+#include "include/awaitable_test_helper.hpp"
 #include "io_context_manager.hpp"
+#include "ioc_manager_config_provider.hpp"
 #include "result_monad.hpp"
 #include "simple_data.hpp"
 #include "state/device_state_store.hpp"
@@ -52,7 +53,7 @@ using tcp = net::ip::tcp;
 namespace {
 
 class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
- public:
+public:
   std::optional<std::string> get_access_token() const override {
     return access_token_;
   }
@@ -81,9 +82,9 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
   std::optional<std::string> get_device_fingerprint_hex() const override {
     return device_fingerprint_hex_;
   }
-  std::optional<std::string>
-  save_device_identity(const std::optional<std::string> &device_public_id,
-                       const std::optional<std::string> &fingerprint_hex) override {
+  std::optional<std::string> save_device_identity(
+      const std::optional<std::string> &device_public_id,
+      const std::optional<std::string> &fingerprint_hex) override {
     device_public_id_ = device_public_id;
     device_fingerprint_hex_ = fingerprint_hex;
     return std::nullopt;
@@ -140,17 +141,17 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
     return std::nullopt;
   }
 
-  std::optional<std::string> get_imported_ca_name(
-      std::int64_t ca_id) const override {
+  std::optional<std::string>
+  get_imported_ca_name(std::int64_t ca_id) const override {
     if (auto it = imported_ca_names_.find(ca_id);
         it != imported_ca_names_.end()) {
       return it->second;
     }
     return std::nullopt;
   }
-  std::optional<std::string>
-  set_imported_ca_name(std::int64_t ca_id,
-                       const std::optional<std::string> &canonical_name) override {
+  std::optional<std::string> set_imported_ca_name(
+      std::int64_t ca_id,
+      const std::optional<std::string> &canonical_name) override {
     if (canonical_name) {
       imported_ca_names_[ca_id] = *canonical_name;
     } else {
@@ -158,22 +159,25 @@ class InMemoryDeviceStateStore : public certctrl::IDeviceStateStore {
     }
     return std::nullopt;
   }
-  std::optional<std::string> clear_imported_ca_name(std::int64_t ca_id) override {
+  std::optional<std::string>
+  clear_imported_ca_name(std::int64_t ca_id) override {
     imported_ca_names_.erase(ca_id);
     return std::nullopt;
   }
 
   std::pair<bool, std::optional<std::string>>
-  try_acquire_refresh_lock(const std::string &, std::chrono::milliseconds) override {
+  try_acquire_refresh_lock(const std::string &,
+                           std::chrono::milliseconds) override {
     return {true, std::nullopt};
   }
-  std::optional<std::string> release_refresh_lock(const std::string &) override {
+  std::optional<std::string>
+  release_refresh_lock(const std::string &) override {
     return std::nullopt;
   }
 
   bool available() const override { return true; }
 
- private:
+private:
   std::optional<std::string> access_token_;
   std::optional<std::string> refresh_token_;
   std::optional<int> expires_in_;
@@ -260,30 +264,34 @@ static const char kTestServerKeyPem[] =
     "2dhlPdOSE4nKCxX+9b83mA==\n"
     "-----END PRIVATE KEY-----\n";
 
-static std::string TestServerCertPem() { return std::string(kTestServerCertPem); }
+static std::string TestServerCertPem() {
+  return std::string(kTestServerCertPem);
+}
 static std::string TestServerKeyPem() { return std::string(kTestServerKeyPem); }
 
 void LoadServerCertificate(ssl::context &ctx) {
   ctx.set_options(ssl::context::default_workarounds | ssl::context::no_sslv2 |
                   ssl::context::single_dh_use);
-  ctx.use_certificate_chain(net::buffer(kTestServerCertPem, sizeof(kTestServerCertPem)));
+  ctx.use_certificate_chain(
+      net::buffer(kTestServerCertPem, sizeof(kTestServerCertPem)));
   ctx.use_private_key(net::buffer(kTestServerKeyPem, sizeof(kTestServerKeyPem)),
                       ssl::context::file_format::pem);
 }
 
 class TestIocConfigProvider : public cjj365::IIocConfigProvider {
- public:
+public:
   explicit TestIocConfigProvider(int threads = 1)
       : config_(threads, "websocket-ioc-test") {}
 
   const cjj365::IocConfig &get() const override { return config_; }
 
- private:
+private:
   cjj365::IocConfig config_;
 };
 
-class StaticWebsocketConfigProvider : public certctrl::IWebsocketConfigProvider {
- public:
+class StaticWebsocketConfigProvider
+    : public certctrl::IWebsocketConfigProvider {
+public:
   explicit StaticWebsocketConfigProvider(certctrl::WebsocketConfig cfg)
       : config_(std::move(cfg)) {}
 
@@ -294,28 +302,29 @@ class StaticWebsocketConfigProvider : public certctrl::IWebsocketConfigProvider 
     return monad::MyVoidResult::Ok();
   }
 
-  monad::MyVoidResult save_replace(const boost::json::object &content) override {
+  monad::MyVoidResult
+  save_replace(const boost::json::object &content) override {
     saved_replace_ = content;
     return monad::MyVoidResult::Ok();
   }
 
   const boost::json::object &saved_replace() const { return saved_replace_; }
 
- private:
+private:
   certctrl::WebsocketConfig config_;
   boost::json::object saved_replace_;
 };
 
 class StaticCertctrlConfigProvider : public certctrl::ICertctrlConfigProvider {
- public:
+public:
   explicit StaticCertctrlConfigProvider(certctrl::CertctrlConfig cfg = {})
       : config_(std::move(cfg)) {}
 
   const certctrl::CertctrlConfig &get() const override { return config_; }
   certctrl::CertctrlConfig &get() override { return config_; }
 
-  monad::MyVoidResult refresh_install_update_grace_window(
-      bool enable_flags) override {
+  monad::MyVoidResult
+  refresh_install_update_grace_window(bool enable_flags) override {
     if (enable_flags) {
       config_.auto_apply_config = true;
       config_.auto_allow_after_update_script_hash = true;
@@ -332,7 +341,8 @@ class StaticCertctrlConfigProvider : public certctrl::ICertctrlConfigProvider {
     return monad::MyVoidResult::Ok();
   }
 
-  monad::MyVoidResult save_replace(const boost::json::object &content) override {
+  monad::MyVoidResult
+  save_replace(const boost::json::object &content) override {
     saved_.clear();
     for (const auto &kv : content) {
       saved_[kv.key()] = kv.value();
@@ -342,7 +352,7 @@ class StaticCertctrlConfigProvider : public certctrl::ICertctrlConfigProvider {
 
   const boost::json::object &saved() const { return saved_; }
 
- private:
+private:
   certctrl::CertctrlConfig config_;
   boost::json::object saved_;
 };
@@ -355,7 +365,7 @@ struct RecordedRequest {
 };
 
 class TestLocalHttpServer {
- public:
+public:
   enum class Mode { Respond, Hang };
 
   TestLocalHttpServer(unsigned short port, Mode mode = Mode::Respond)
@@ -392,7 +402,8 @@ class TestLocalHttpServer {
     hang_duration_ = duration;
   }
 
-  std::optional<RecordedRequest> WaitForRequest(std::chrono::milliseconds timeout) {
+  std::optional<RecordedRequest>
+  WaitForRequest(std::chrono::milliseconds timeout) {
     std::unique_lock<std::mutex> lock(record_mutex_);
     if (!record_cv_.wait_for(lock, timeout,
                              [this]() { return !recorded_.empty(); })) {
@@ -408,7 +419,7 @@ class TestLocalHttpServer {
     return recorded_.size();
   }
 
- private:
+private:
   void Run() {
     try {
       net::io_context ioc;
@@ -471,7 +482,7 @@ class TestLocalHttpServer {
     tcp::socket socket(ioc);
     beast::error_code ec;
     auto connected =
-      socket.connect({net::ip::make_address("127.0.0.1"), port_}, ec);
+        socket.connect({net::ip::make_address("127.0.0.1"), port_}, ec);
     (void)connected;
   }
 
@@ -493,17 +504,19 @@ class TestLocalHttpServer {
 };
 
 class FakeWebsocketServer {
- public:
-  FakeWebsocketServer(unsigned short port, std::vector<certctrl::WebsocketRequest> requests,
-                   std::size_t expected_responses = 0)
-      : port_(port),
-        requests_(std::move(requests)),
+public:
+  FakeWebsocketServer(unsigned short port,
+                      std::vector<certctrl::WebsocketRequest> requests,
+                      std::size_t expected_responses = 0)
+      : port_(port), requests_(std::move(requests)),
         expected_responses_(expected_responses ? expected_responses
                                                : requests_.size()) {}
 
   ~FakeWebsocketServer() { Join(); }
 
-  void Start() { server_thread_ = std::thread([this]() { Run(); }); }
+  void Start() {
+    server_thread_ = std::thread([this]() { Run(); });
+  }
 
   void Join() {
     if (server_thread_.joinable()) {
@@ -511,8 +524,8 @@ class FakeWebsocketServer {
     }
   }
 
-  std::vector<certctrl::WebsocketResponse> WaitForResponses(
-      std::chrono::milliseconds timeout) {
+  std::vector<certctrl::WebsocketResponse>
+  WaitForResponses(std::chrono::milliseconds timeout) {
     std::unique_lock<std::mutex> lock(response_mutex_);
     response_cv_.wait_for(lock, timeout, [this]() {
       return responses_.size() >= expected_responses_ || failed_;
@@ -524,7 +537,8 @@ class FakeWebsocketServer {
     extra_messages_ = std::move(messages);
   }
 
-  void set_deferred_messages_after_hello_ack(std::vector<json::value> messages) {
+  void
+  set_deferred_messages_after_hello_ack(std::vector<json::value> messages) {
     deferred_messages_after_hello_ack_ = std::move(messages);
   }
 
@@ -535,22 +549,23 @@ class FakeWebsocketServer {
   std::vector<json::value> WaitForMessages(std::chrono::milliseconds timeout) {
     std::unique_lock<std::mutex> lock(response_mutex_);
     response_cv_.wait_for(lock, timeout, [this]() {
-      return (expected_messages_ > 0 && messages_.size() >= expected_messages_) ||
-             (expected_responses_ > 0 && responses_.size() >= expected_responses_) ||
+      return (expected_messages_ > 0 &&
+              messages_.size() >= expected_messages_) ||
+             (expected_responses_ > 0 &&
+              responses_.size() >= expected_responses_) ||
              failed_;
     });
     return messages_;
   }
 
- private:
+private:
   template <typename Ws, typename Message>
   void SendJson(Ws &ws, const Message &message) {
     auto payload = json::serialize(json::value_from(message));
     ws.write(net::buffer(payload));
   }
 
-  template <typename Ws>
-  void SendJsonValue(Ws &ws, const json::value &value) {
+  template <typename Ws> void SendJsonValue(Ws &ws, const json::value &value) {
     auto payload = json::serialize(value);
     ws.write(net::buffer(payload));
   }
@@ -561,15 +576,15 @@ class FakeWebsocketServer {
       tcp::acceptor acceptor(ioc, {net::ip::make_address("127.0.0.1"), port_});
       tcp::socket socket(ioc);
       acceptor.accept(socket);
-          ssl::context ssl_ctx(ssl::context::tls_server);
-          LoadServerCertificate(ssl_ctx);
-          beast::tcp_stream beast_stream(std::move(socket));
-          ssl::stream<beast::tcp_stream> ssl_stream(std::move(beast_stream),
-                              ssl_ctx);
-          websocket::stream<ssl::stream<beast::tcp_stream>> ws(
-            std::move(ssl_stream));
-          ws.next_layer().handshake(ssl::stream_base::server);
-        ws.accept();
+      ssl::context ssl_ctx(ssl::context::tls_server);
+      LoadServerCertificate(ssl_ctx);
+      beast::tcp_stream beast_stream(std::move(socket));
+      ssl::stream<beast::tcp_stream> ssl_stream(std::move(beast_stream),
+                                                ssl_ctx);
+      websocket::stream<ssl::stream<beast::tcp_stream>> ws(
+          std::move(ssl_stream));
+      ws.next_layer().handshake(ssl::stream_base::server);
+      ws.accept();
       ws.text(true);
 
       certctrl::WebsocketHello hello;
@@ -584,8 +599,10 @@ class FakeWebsocketServer {
       }
 
       beast::flat_buffer buffer;
-      while ((expected_responses_ > 0 && responses_.size() < expected_responses_) ||
-             (expected_messages_ > 0 && messages_.size() < expected_messages_)) {
+      while (
+          (expected_responses_ > 0 &&
+           responses_.size() < expected_responses_) ||
+          (expected_messages_ > 0 && messages_.size() < expected_messages_)) {
         buffer.consume(buffer.size());
         beast::error_code ec;
         ws.read(buffer, ec);
@@ -667,7 +684,7 @@ class FakeWebsocketServer {
 };
 
 certctrl::WebsocketConfig MakeBaseConfig(unsigned short websocket_port,
-                                      unsigned short local_port) {
+                                         unsigned short local_port) {
   certctrl::WebsocketConfig cfg;
   cfg.enabled = true;
   cfg.verify_tls = false;
@@ -700,10 +717,9 @@ certctrl::WebsocketRequest MakeRequest(std::string id, std::string path) {
 std::string MakeTestJwtWithDeviceId(std::int64_t device_id) {
   return jwt::create()
       .set_type("JWT")
-    .set_payload_claim(
-      "device_id",
-      jwt::claim(jwt::traits::kazuho_picojson::value_type(
-        static_cast<double>(device_id))))
+      .set_payload_claim("device_id",
+                         jwt::claim(jwt::traits::kazuho_picojson::value_type(
+                             static_cast<double>(device_id))))
       .set_expires_at(std::chrono::system_clock::now() + std::chrono::hours(24))
       .sign(jwt::algorithm::none{});
 }
@@ -733,11 +749,10 @@ TEST(WebsocketClientIntegrationTest, ForwardsWebhookEndToEnd) {
   InMemoryDeviceStateStore state_store;
   state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
   std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
-  certctrl::WebsocketClient client(io_manager, config_provider,
-                                  certctrl_config_provider, console,
-                                  TestConfigSources(), state_store,
-                                  install_config_manager,
-                                  std::shared_ptr<certctrl::ISessionRefresher>{});
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
   client.Start();
 
   auto recorded = local_server.WaitForRequest(3s);
@@ -784,11 +799,10 @@ TEST(WebsocketClientIntegrationTest, ReportsTimeoutWhenLocalEndpointHangs) {
   InMemoryDeviceStateStore state_store;
   state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
   std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
-  certctrl::WebsocketClient client(io_manager, config_provider,
-                                  certctrl_config_provider, console,
-                                  TestConfigSources(), state_store,
-                                  install_config_manager,
-                                  std::shared_ptr<certctrl::ISessionRefresher>{});
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
   client.Start();
 
   auto recorded = local_server.WaitForRequest(3s);
@@ -805,74 +819,76 @@ TEST(WebsocketClientIntegrationTest, ReportsTimeoutWhenLocalEndpointHangs) {
   local_server.Stop();
 }
 
-  TEST(WebsocketClientIntegrationTest, RoutesMatchStrippedButFallbackKeepsIngressPrefix) {
-    const auto websocket_port = PickFreePort();
-    const auto local_port = PickFreePort();
+TEST(WebsocketClientIntegrationTest,
+     RoutesMatchStrippedButFallbackKeepsIngressPrefix) {
+  const auto websocket_port = PickFreePort();
+  const auto local_port = PickFreePort();
 
-    TestLocalHttpServer local_server(local_port);
-    local_server.set_response(http::status::ok, "ok");
-    local_server.Start();
+  TestLocalHttpServer local_server(local_port);
+  local_server.set_response(http::status::ok, "ok");
+  local_server.Start();
 
-    std::vector<certctrl::WebsocketRequest> requests;
-    requests.emplace_back(
+  std::vector<certctrl::WebsocketRequest> requests;
+  requests.emplace_back(
       MakeRequest("req-route", "/hooks/integration-test/stripe/any/depth?x=1"));
-    requests.emplace_back(
+  requests.emplace_back(
       MakeRequest("req-fallback", "/hooks/integration-test/unmatched?y=2"));
-    FakeWebsocketServer websocket_server(websocket_port, requests);
-    websocket_server.Start();
+  FakeWebsocketServer websocket_server(websocket_port, requests);
+  websocket_server.Start();
 
-    auto cfg = MakeBaseConfig(websocket_port, local_port);
-    cfg.tunnel.local_base_url =
+  auto cfg = MakeBaseConfig(websocket_port, local_port);
+  cfg.tunnel.local_base_url =
       "http://127.0.0.1:" + std::to_string(local_port) + "/fallback";
 
-    certctrl::WebsocketConfig::RouteRule rule;
-    rule.match_prefix = "/stripe";
-    rule.local_base_url =
+  certctrl::WebsocketConfig::RouteRule rule;
+  rule.match_prefix = "/stripe";
+  rule.local_base_url =
       "http://127.0.0.1:" + std::to_string(local_port) + "/routed";
-    rule.rewrite_prefix = "";
-    cfg.tunnel.routes.push_back(std::move(rule));
+  rule.rewrite_prefix = "";
+  cfg.tunnel.routes.push_back(std::move(rule));
 
-    StaticWebsocketConfigProvider config_provider(cfg);
-    StaticCertctrlConfigProvider certctrl_config_provider;
-    TestIocConfigProvider ioc_provider(1);
-    customio::ConsoleOutputWithColor logger(5);
-    customio::ConsoleOutput console(logger);
-    cjj365::IoContextManager io_manager(ioc_provider, logger);
-    InMemoryDeviceStateStore state_store;
-        state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
-    std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
-    certctrl::WebsocketClient client(io_manager, config_provider,
-            certctrl_config_provider, console,
-                    TestConfigSources(), state_store,
-            install_config_manager,
-            std::shared_ptr<certctrl::ISessionRefresher>{});
-    client.Start();
+  StaticWebsocketConfigProvider config_provider(cfg);
+  StaticCertctrlConfigProvider certctrl_config_provider;
+  TestIocConfigProvider ioc_provider(1);
+  customio::ConsoleOutputWithColor logger(5);
+  customio::ConsoleOutput console(logger);
+  cjj365::IoContextManager io_manager(ioc_provider, logger);
+  InMemoryDeviceStateStore state_store;
+  state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
+  std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
+  client.Start();
 
-    auto rec1 = local_server.WaitForRequest(3s);
-    ASSERT_TRUE(rec1.has_value()) << "first local webhook missing";
-    auto rec2 = local_server.WaitForRequest(3s);
-    ASSERT_TRUE(rec2.has_value()) << "second local webhook missing";
+  auto rec1 = local_server.WaitForRequest(3s);
+  ASSERT_TRUE(rec1.has_value()) << "first local webhook missing";
+  auto rec2 = local_server.WaitForRequest(3s);
+  ASSERT_TRUE(rec2.has_value()) << "second local webhook missing";
 
-    const std::string t1 = rec1->target;
-    const std::string t2 = rec2->target;
+  const std::string t1 = rec1->target;
+  const std::string t2 = rec2->target;
 
-    const bool saw_routed =
+  const bool saw_routed =
       (t1 == "/routed/any/depth?x=1") || (t2 == "/routed/any/depth?x=1");
-    const bool saw_fallback = (t1 == "/fallback/hooks/integration-test/unmatched?y=2") ||
-                (t2 == "/fallback/hooks/integration-test/unmatched?y=2");
+  const bool saw_fallback =
+      (t1 == "/fallback/hooks/integration-test/unmatched?y=2") ||
+      (t2 == "/fallback/hooks/integration-test/unmatched?y=2");
 
-    EXPECT_TRUE(saw_routed) << "did not observe routed target";
-    EXPECT_TRUE(saw_fallback) << "did not observe fallback target";
+  EXPECT_TRUE(saw_routed) << "did not observe routed target";
+  EXPECT_TRUE(saw_fallback) << "did not observe fallback target";
 
-    auto responses = websocket_server.WaitForResponses(5s);
-    ASSERT_EQ(responses.size(), 2u);
+  auto responses = websocket_server.WaitForResponses(5s);
+  ASSERT_EQ(responses.size(), 2u);
 
-    client.Stop();
-    websocket_server.Join();
-    local_server.Stop();
-  }
+  client.Stop();
+  websocket_server.Join();
+  local_server.Stop();
+}
 
-TEST(WebsocketClientIntegrationTest, SendsHelloAckAndUpdatesAckWithResumeToken) {
+TEST(WebsocketClientIntegrationTest,
+     SendsHelloAckAndUpdatesAckWithResumeToken) {
   const auto websocket_port = PickFreePort();
   const auto local_port = PickFreePort();
 
@@ -884,8 +900,8 @@ TEST(WebsocketClientIntegrationTest, SendsHelloAckAndUpdatesAckWithResumeToken) 
   signal.id = "upd-1";
   signal.resume_token = "rt-1";
   signal.payload = json::object{{"type", "install.updated"},
-                               {"ts_ms", 1736900123421},
-                               {"ref", json::object{}}};
+                                {"ts_ms", 1736900123421},
+                                {"ref", json::object{}}};
   websocket_server.set_extra_messages({json::value_from(signal)});
   websocket_server.set_expected_message_count(2);
   websocket_server.Start();
@@ -901,11 +917,10 @@ TEST(WebsocketClientIntegrationTest, SendsHelloAckAndUpdatesAckWithResumeToken) 
   InMemoryDeviceStateStore state_store;
   state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
   std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
-  certctrl::WebsocketClient client(io_manager, config_provider,
-                                  certctrl_config_provider, console,
-                                  TestConfigSources(), state_store,
-                                  install_config_manager,
-                                  std::shared_ptr<certctrl::ISessionRefresher>{});
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
   client.Start();
 
   auto messages = websocket_server.WaitForMessages(5s);
@@ -956,7 +971,8 @@ TEST(WebsocketClientIntegrationTest, SendsHelloAckAndUpdatesAckWithResumeToken) 
   websocket_server.Join();
 }
 
-TEST(WebsocketClientIntegrationTest, SendsHelloAckWithStoredResumeTokenAndPersistsNewToken) {
+TEST(WebsocketClientIntegrationTest,
+     SendsHelloAckWithStoredResumeTokenAndPersistsNewToken) {
   const auto websocket_port = PickFreePort();
   const auto local_port = PickFreePort();
 
@@ -969,9 +985,10 @@ TEST(WebsocketClientIntegrationTest, SendsHelloAckWithStoredResumeTokenAndPersis
   signal.id = "upd-2";
   signal.resume_token = "rt-2";
   signal.payload = json::object{{"type", "install.updated"},
-                               {"ts_ms", 1736900123422},
-                               {"ref", json::object{}}};
-  websocket_server.set_deferred_messages_after_hello_ack({json::value_from(signal)});
+                                {"ts_ms", 1736900123422},
+                                {"ref", json::object{}}};
+  websocket_server.set_deferred_messages_after_hello_ack(
+      {json::value_from(signal)});
   websocket_server.Start();
 
   auto cfg = MakeBaseConfig(websocket_port, local_port);
@@ -986,11 +1003,10 @@ TEST(WebsocketClientIntegrationTest, SendsHelloAckWithStoredResumeTokenAndPersis
   state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
   ASSERT_FALSE(state_store.save_websocket_resume_token(std::string("rt-seed")));
   std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
-  certctrl::WebsocketClient client(io_manager, config_provider,
-                                  certctrl_config_provider, console,
-                                  TestConfigSources(), state_store,
-                                  install_config_manager,
-                                  std::shared_ptr<certctrl::ISessionRefresher>{});
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
   client.Start();
 
   const auto messages = websocket_server.WaitForMessages(5s);
@@ -1003,7 +1019,8 @@ TEST(WebsocketClientIntegrationTest, SendsHelloAckWithStoredResumeTokenAndPersis
       continue;
     }
     const auto *type_field = obj->if_contains("type");
-    if (!type_field || !type_field->is_string() || type_field->as_string() != "event") {
+    if (!type_field || !type_field->is_string() ||
+        type_field->as_string() != "event") {
       continue;
     }
     const auto *name_field = obj->if_contains("name");
@@ -1038,7 +1055,8 @@ TEST(WebsocketClientIntegrationTest, SendsHelloAckWithStoredResumeTokenAndPersis
   EXPECT_TRUE(saw_hello_ack) << "did not observe lifecycle.hello_ack";
   EXPECT_TRUE(saw_updates_ack) << "did not observe updates.ack";
 
-  EXPECT_EQ(state_store.get_websocket_resume_token(), std::optional<std::string>("rt-2"));
+  EXPECT_EQ(state_store.get_websocket_resume_token(),
+            std::optional<std::string>("rt-2"));
 
   client.Stop();
   websocket_server.Join();
@@ -1056,14 +1074,17 @@ TEST(WebsocketClientIntegrationTest, AppliesConfigUpdatedReplaceAndAcks) {
   signal.name = "updates.signal";
   signal.id = "cfg-1";
   signal.resume_token = "rt-cfg-1";
-  signal.payload = json::object{{"type", "config.updated"},
-                               {"ts_ms", 1736900123999},
-                               {"ref",
-                                json::object{{"replace",
-                                              json::array{json::object{{"file", "application"},
-                                                                       {"content", json::object{{"auto_apply_config", true},
-                                                                                                {"verbose", "debug"}}}}}}}}};
-  websocket_server.set_deferred_messages_after_hello_ack({json::value_from(signal)});
+  signal.payload = json::object{
+      {"type", "config.updated"},
+      {"ts_ms", 1736900123999},
+      {"ref",
+       json::object{{"replace",
+                     json::array{json::object{
+                         {"file", "application"},
+                         {"content", json::object{{"auto_apply_config", true},
+                                                  {"verbose", "debug"}}}}}}}}};
+  websocket_server.set_deferred_messages_after_hello_ack(
+      {json::value_from(signal)});
   websocket_server.Start();
 
   auto cfg = MakeBaseConfig(websocket_port, local_port);
@@ -1083,11 +1104,10 @@ TEST(WebsocketClientIntegrationTest, AppliesConfigUpdatedReplaceAndAcks) {
   state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
   std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
 
-  certctrl::WebsocketClient client(io_manager, config_provider,
-                                  certctrl_config_provider, console,
-                                  TestConfigSources(), state_store,
-                                  install_config_manager,
-                                  std::shared_ptr<certctrl::ISessionRefresher>{});
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
   client.Start();
 
   auto messages = websocket_server.WaitForMessages(5s);
@@ -1099,7 +1119,8 @@ TEST(WebsocketClientIntegrationTest, AppliesConfigUpdatedReplaceAndAcks) {
       continue;
     }
     const auto *type_field = obj->if_contains("type");
-    if (!type_field || !type_field->is_string() || type_field->as_string() != "event") {
+    if (!type_field || !type_field->is_string() ||
+        type_field->as_string() != "event") {
       continue;
     }
     const auto *name_field = obj->if_contains("name");
@@ -1118,14 +1139,16 @@ TEST(WebsocketClientIntegrationTest, AppliesConfigUpdatedReplaceAndAcks) {
   EXPECT_EQ(state_store.get_websocket_resume_token().value_or(""), "rt-cfg-1");
   EXPECT_FALSE(certctrl_config_provider.get().auto_apply_config);
   EXPECT_EQ(certctrl_config_provider.get().verbose, "debug");
-  EXPECT_FALSE(certctrl_config_provider.saved().if_contains("auto_apply_config"));
+  EXPECT_FALSE(
+      certctrl_config_provider.saved().if_contains("auto_apply_config"));
   EXPECT_TRUE(certctrl_config_provider.saved().if_contains("verbose"));
 
   client.Stop();
   websocket_server.Join();
 }
 
-TEST(WebsocketClientIntegrationTest, AcksMultipleUpdateSignalsAndPersistsLatestResumeToken) {
+TEST(WebsocketClientIntegrationTest,
+     AcksMultipleUpdateSignalsAndPersistsLatestResumeToken) {
   const auto websocket_port = PickFreePort();
   const auto local_port = PickFreePort();
 
@@ -1164,11 +1187,10 @@ TEST(WebsocketClientIntegrationTest, AcksMultipleUpdateSignalsAndPersistsLatestR
   InMemoryDeviceStateStore state_store;
   state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
   std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
-  certctrl::WebsocketClient client(io_manager, config_provider,
-                                  certctrl_config_provider, console,
-                                  TestConfigSources(), state_store,
-                                  install_config_manager,
-                                  std::shared_ptr<certctrl::ISessionRefresher>{});
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
   client.Start();
 
   auto messages = websocket_server.WaitForMessages(5s);
@@ -1182,7 +1204,8 @@ TEST(WebsocketClientIntegrationTest, AcksMultipleUpdateSignalsAndPersistsLatestR
       continue;
     }
     const auto *type_field = obj->if_contains("type");
-    if (!type_field || !type_field->is_string() || type_field->as_string() != "event") {
+    if (!type_field || !type_field->is_string() ||
+        type_field->as_string() != "event") {
       continue;
     }
     const auto *name_field = obj->if_contains("name");
@@ -1217,7 +1240,8 @@ TEST(WebsocketClientIntegrationTest, AcksMultipleUpdateSignalsAndPersistsLatestR
   websocket_server.Join();
 }
 
-TEST(ConfigUpdatedHandlerTest, AppliesWebsocketReplacePersistsSnapshotAndCallsCallback) {
+TEST(ConfigUpdatedHandlerTest,
+     AppliesWebsocketReplacePersistsSnapshotAndCallsCallback) {
   certctrl::CertctrlConfig base;
   StaticCertctrlConfigProvider certctrl_config_provider(base);
 
@@ -1230,34 +1254,32 @@ TEST(ConfigUpdatedHandlerTest, AppliesWebsocketReplacePersistsSnapshotAndCallsCa
   int callback_calls = 0;
   auto on_ws_updated = [&]() { callback_calls++; };
 
-    certctrl::signal_handlers::ConfigUpdatedHandler handler(
-    certctrl_config_provider, console, &websocket_config_provider,
-    on_ws_updated);
+  certctrl::signal_handlers::ConfigUpdatedHandler handler(
+      certctrl_config_provider, console, &websocket_config_provider,
+      on_ws_updated);
 
-    json::object websocket_content;
-    websocket_content["enabled"] = true;
-    websocket_content["verify_tls"] = false;
-    websocket_content["remote_endpoint"] = "wss://127.0.0.1:443/api/websocket";
-    json::object tunnel;
-    tunnel["local_base_url"] = "http://127.0.0.1:8080/hooks";
-    tunnel["header_allowlist"] = json::array{"content-type"};
-    tunnel["routes"] = json::array{json::object{{"match_prefix", "/stripe"}}};
-    websocket_content["tunnel"] = std::move(tunnel);
+  json::object websocket_content;
+  websocket_content["enabled"] = true;
+  websocket_content["verify_tls"] = false;
+  websocket_content["remote_endpoint"] = "wss://127.0.0.1:443/api/websocket";
+  json::object tunnel;
+  tunnel["local_base_url"] = "http://127.0.0.1:8080/hooks";
+  tunnel["header_allowlist"] = json::array{"content-type"};
+  tunnel["routes"] = json::array{json::object{{"match_prefix", "/stripe"}}};
+  websocket_content["tunnel"] = std::move(tunnel);
 
-    ::data::DeviceUpdateSignal signal;
+  ::data::DeviceUpdateSignal signal;
   signal.type = "config.updated";
   signal.ts_ms = 1736900123999;
-    signal.ref = json::object{{
-      "replace",
-      json::array{json::object{{"file", "websocket"},
-                   {"content", std::move(websocket_content)}}}}};
+  signal.ref = json::object{
+      {"replace",
+       json::array{json::object{{"file", "websocket"},
+                                {"content", std::move(websocket_content)}}}}};
 
-    using IOResult = decltype(handler.handle(signal))::IOResult;
-    std::optional<IOResult> result;
-    handler.handle(signal).run([&](auto r) { result = std::move(r); });
+  auto result =
+      testinfra::run_result_awaitable<void>(handler.handle_awaitable(signal));
 
-  ASSERT_TRUE(result.has_value());
-  EXPECT_TRUE(result->is_ok()) << "handler should succeed";
+  EXPECT_TRUE(result.is_ok()) << "handler should succeed";
   EXPECT_EQ(callback_calls, 1);
   EXPECT_TRUE(websocket_config_provider.saved_replace().if_contains("enabled"));
   EXPECT_TRUE(websocket_config_provider.get().enabled);
@@ -1270,22 +1292,21 @@ TEST(ConfigUpdatedHandlerTest, RejectsRefSetCompletely) {
   customio::ConsoleOutput console(logger);
 
   certctrl::signal_handlers::ConfigUpdatedHandler handler(
-    certctrl_config_provider, console, nullptr);
+      certctrl_config_provider, console, nullptr);
 
   ::data::DeviceUpdateSignal signal;
   signal.type = "config.updated";
   signal.ts_ms = 1736900123999;
   signal.ref = json::object{{"set", json::object{{"auto_apply_config", true}}}};
 
-  using IOResult = decltype(handler.handle(signal))::IOResult;
-  std::optional<IOResult> result;
-  handler.handle(signal).run([&](auto r) { result = std::move(r); });
+  auto result =
+      testinfra::run_result_awaitable<void>(handler.handle_awaitable(signal));
 
-  ASSERT_TRUE(result.has_value());
-  EXPECT_TRUE(result->is_err());
+  EXPECT_TRUE(result.is_err());
 }
 
-TEST(WebsocketClientIntegrationTest, AcksUnknownUpdateSignalAndPersistsResumeToken) {
+TEST(WebsocketClientIntegrationTest,
+     AcksUnknownUpdateSignalAndPersistsResumeToken) {
   const auto websocket_port = PickFreePort();
   const auto local_port = PickFreePort();
 
@@ -1298,8 +1319,8 @@ TEST(WebsocketClientIntegrationTest, AcksUnknownUpdateSignalAndPersistsResumeTok
   signal.id = "upd-unknown";
   signal.resume_token = "rt-unknown";
   signal.payload = json::object{{"type", "future.unknown.signal"},
-                               {"ts_ms", 1736900123999},
-                               {"ref", json::object{}}};
+                                {"ts_ms", 1736900123999},
+                                {"ref", json::object{}}};
   websocket_server.set_deferred_messages_after_hello_ack(
       {json::value_from(signal)});
   websocket_server.Start();
@@ -1315,11 +1336,10 @@ TEST(WebsocketClientIntegrationTest, AcksUnknownUpdateSignalAndPersistsResumeTok
   InMemoryDeviceStateStore state_store;
   state_store.save_tokens(MakeTestJwtWithDeviceId(1), std::nullopt);
   std::shared_ptr<certctrl::InstallConfigManager> install_config_manager;
-  certctrl::WebsocketClient client(io_manager, config_provider,
-                                  certctrl_config_provider, console,
-                                  TestConfigSources(), state_store,
-                                  install_config_manager,
-                                  std::shared_ptr<certctrl::ISessionRefresher>{});
+  certctrl::WebsocketClient client(
+      io_manager, config_provider, certctrl_config_provider, console,
+      TestConfigSources(), state_store, install_config_manager,
+      std::shared_ptr<certctrl::ISessionRefresher>{});
   client.Start();
 
   auto messages = websocket_server.WaitForMessages(5s);
@@ -1382,19 +1402,18 @@ TEST(WebsocketClientIntegrationTest,
   signal.payload = json::object{
       {"type", "acme.tlsalpn01.start"},
       {"ts_ms", 1736900125001},
-      {"ref",
-       json::object{{"challenge_id", "ch-bad"},
-                    {"domain", "example.com"},
-                    {"token", "tok"},
-                    {"key_authorization", "tok.thumb"},
-                    {"listen",
-                     json::object{{"bind", "127.0.0.1"},
-                                  {"port", "not-a-number"}}},
-                    {"certificate",
-                     json::object{{"cert_pem", TestServerCertPem()},
-                                  {"key_pem", TestServerKeyPem()}}}}}};
+      {"ref", json::object{{"challenge_id", "ch-bad"},
+                           {"domain", "example.com"},
+                           {"token", "tok"},
+                           {"key_authorization", "tok.thumb"},
+                           {"listen", json::object{{"bind", "127.0.0.1"},
+                                                   {"port", "not-a-number"}}},
+                           {"certificate",
+                            json::object{{"cert_pem", TestServerCertPem()},
+                                         {"key_pem", TestServerKeyPem()}}}}}};
 
-  websocket_server.set_deferred_messages_after_hello_ack({json::value_from(signal)});
+  websocket_server.set_deferred_messages_after_hello_ack(
+      {json::value_from(signal)});
   websocket_server.Start();
 
   auto cfg = MakeBaseConfig(websocket_port, local_port);
@@ -1419,24 +1438,24 @@ TEST(WebsocketClientIntegrationTest,
   const auto messages = websocket_server.WaitForMessages(1500ms);
 
   bool saw_updates_ack_for_bad = false;
-  for (const auto& msg : messages) {
-    const auto* obj = msg.if_object();
+  for (const auto &msg : messages) {
+    const auto *obj = msg.if_object();
     if (!obj) {
       continue;
     }
-    const auto* type_field = obj->if_contains("type");
+    const auto *type_field = obj->if_contains("type");
     if (!type_field || !type_field->is_string() ||
         type_field->as_string() != "event") {
       continue;
     }
-    const auto* name_field = obj->if_contains("name");
+    const auto *name_field = obj->if_contains("name");
     if (!name_field || !name_field->is_string()) {
       continue;
     }
     if (std::string(name_field->as_string().c_str()) != "updates.ack") {
       continue;
     }
-    const auto* id_field = obj->if_contains("id");
+    const auto *id_field = obj->if_contains("id");
     if (id_field && id_field->is_string() &&
         std::string(id_field->as_string().c_str()) == "acme-bad") {
       saw_updates_ack_for_bad = true;
@@ -1453,7 +1472,8 @@ TEST(WebsocketClientIntegrationTest,
   websocket_server.Join();
 }
 
-TEST(WebsocketClientIntegrationTest, AcksTlsAlpn01ChallengeAndPersistsResumeToken) {
+TEST(WebsocketClientIntegrationTest,
+     AcksTlsAlpn01ChallengeAndPersistsResumeToken) {
   const auto websocket_port = PickFreePort();
   const auto local_port = PickFreePort();
 
@@ -1469,18 +1489,18 @@ TEST(WebsocketClientIntegrationTest, AcksTlsAlpn01ChallengeAndPersistsResumeToke
       {"type", "acme.tlsalpn01.start"},
       {"ts_ms", 1736900125002},
       {"ref",
-       json::object{{"challenge_id", "ch-1"},
-                    {"domain", "example.com"},
-                    {"token", "tok"},
-                    {"key_authorization", "tok.thumb"},
-                    {"ttl_seconds", 1},
-                    {"listen",
-                     json::object{{"bind", "127.0.0.1"}, {"port", 0}}},
-                    {"certificate",
-                     json::object{{"cert_pem", TestServerCertPem()},
-                                  {"key_pem", TestServerKeyPem()}}}}}};
+       json::object{
+           {"challenge_id", "ch-1"},
+           {"domain", "example.com"},
+           {"token", "tok"},
+           {"key_authorization", "tok.thumb"},
+           {"ttl_seconds", 1},
+           {"listen", json::object{{"bind", "127.0.0.1"}, {"port", 0}}},
+           {"certificate", json::object{{"cert_pem", TestServerCertPem()},
+                                        {"key_pem", TestServerKeyPem()}}}}}};
 
-  websocket_server.set_deferred_messages_after_hello_ack({json::value_from(signal)});
+  websocket_server.set_deferred_messages_after_hello_ack(
+      {json::value_from(signal)});
   websocket_server.Start();
 
   auto cfg = MakeBaseConfig(websocket_port, local_port);
@@ -1504,17 +1524,17 @@ TEST(WebsocketClientIntegrationTest, AcksTlsAlpn01ChallengeAndPersistsResumeToke
   const auto messages = websocket_server.WaitForMessages(1500ms);
 
   bool saw_updates_ack = false;
-  for (const auto& msg : messages) {
-    const auto* obj = msg.if_object();
+  for (const auto &msg : messages) {
+    const auto *obj = msg.if_object();
     if (!obj) {
       continue;
     }
-    const auto* type_field = obj->if_contains("type");
+    const auto *type_field = obj->if_contains("type");
     if (!type_field || !type_field->is_string() ||
         type_field->as_string() != "event") {
       continue;
     }
-    const auto* name_field = obj->if_contains("name");
+    const auto *name_field = obj->if_contains("name");
     if (!name_field || !name_field->is_string()) {
       continue;
     }
@@ -1522,8 +1542,8 @@ TEST(WebsocketClientIntegrationTest, AcksTlsAlpn01ChallengeAndPersistsResumeToke
       continue;
     }
 
-    const auto* id_field = obj->if_contains("id");
-    const auto* token_field = obj->if_contains("resume_token");
+    const auto *id_field = obj->if_contains("id");
+    const auto *token_field = obj->if_contains("resume_token");
     if (!id_field || !id_field->is_string() || !token_field ||
         !token_field->is_string()) {
       continue;

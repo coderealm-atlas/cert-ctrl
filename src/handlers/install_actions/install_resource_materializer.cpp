@@ -23,7 +23,6 @@
 #include <fmt/format.h>
 
 #include "base64.h"
-#include "http_client_monad.hpp"
 #include "my_error_codes.hpp"
 #include "openssl/crypt_util.hpp"
 #include "openssl/openssl_raii.hpp"
@@ -482,8 +481,8 @@ InstallResourceMaterializer::InstallResourceMaterializer(
     IResourceFetcher &resource_fetcher,                 //
     client_async::HttpClientManager &http_client,       //
     install_actions::IAccessTokenLoader &access_token_loader,
-  IMaterializePasswordManager &password_manager,
-  std::shared_ptr<certctrl::ISessionRefresher> session_refresher)
+    IMaterializePasswordManager &password_manager,
+    std::shared_ptr<certctrl::ISessionRefresher> session_refresher)
     : config_provider_(config_provider), output_(output),
       resource_fetcher_(resource_fetcher), http_client_(http_client),
       io_context_(io_context_manager.ioc()),
@@ -526,9 +525,9 @@ InstallResourceMaterializer::~InstallResourceMaterializer() {}
 //   bundle_forget_ = std::move(forget);
 // }
 
-monad::IO<void>
+boost::asio::awaitable<monad::MyResult<void>>
 InstallResourceMaterializer::ensure_materialized(const dto::InstallItem &item) {
-  return ensure_resource_materialized_impl(item);
+  co_return co_await ensure_resource_materialized_impl(item);
 }
 
 std::filesystem::path InstallResourceMaterializer::state_dir() const {
@@ -551,12 +550,13 @@ InstallResourceMaterializer::resource_current_dir(const std::string &ob_type,
   return resource_root;
 }
 
-monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallResourceMaterializer::ensure_resource_materialized_impl(
     const dto::InstallItem &item) {
   using namespace std::chrono_literals;
 
   if (!item.ob_type || !item.ob_id) {
-    return monad::IO<void>::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                           "Resource reference missing ob_type/ob_id"));
   }
@@ -570,7 +570,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
   state->current_dir = resource_current_dir(state->ob_type, state->ob_id);
 
   if (runtime_dir_.empty()) {
-    return monad::IO<void>::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                           "Runtime directory is not configured"));
   }
@@ -599,7 +599,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
   }
 
   if (all_present) {
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   // auto parse_enveloped_object =
@@ -660,10 +660,13 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
   };
 
   auto self = shared_from_this();
-  auto pipeline = fetch_with_refresh(state);
+  auto fetch_result = co_await fetch_with_refresh(state);
+  if (fetch_result.is_err()) {
+    co_return fetch_result;
+  }
 
-  pipeline = pipeline.then([self, state, get_string_field, extract_pem,
-                            decode_base64_string]() {
+  auto materialize_result = [self, state, get_string_field, extract_pem,
+                             decode_base64_string]() -> monad::MyResult<void> {
     self->output_.logger().debug()
         << "Materializing resources for " << state->ob_type << '/'
         << state->ob_id << std::endl;
@@ -697,7 +700,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
             if (!fallback_error.empty()) {
               message += "; detail fallback: " + fallback_error;
             }
-            return monad::IO<void>::fail(monad::make_error(
+            return monad::MyResult<void>::Err(monad::make_error(
                 my_errors::GENERAL::UNEXPECTED_RESULT, std::move(message)));
           }
 
@@ -721,7 +724,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
           }
 
           if (!cert_source || cert_source->empty()) {
-            return monad::IO<void>::fail(monad::make_error(
+            return monad::MyResult<void>::Err(monad::make_error(
                 my_errors::GENERAL::UNEXPECTED_RESULT,
                 fmt::format(
                     "Certificate detail missing PEM payload for cert {}",
@@ -794,7 +797,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
               auto pkey = cjj365::opensslutil::load_private_key(
                   *private_key_pem, false);
               if (!pkey) {
-                return monad::IO<void>::fail(monad::make_error(
+                return monad::MyResult<void>::Err(monad::make_error(
                     my_errors::GENERAL::UNEXPECTED_RESULT,
                     "Failed to load private key for PKCS#12 generation"));
               }
@@ -831,7 +834,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
               self->password_manager_.remember(state->ob_type, state->ob_id,
                                                pfx_password);
             } catch (const std::exception &ex) {
-              return monad::IO<void>::fail(monad::make_error(
+              return monad::MyResult<void>::Err(monad::make_error(
                   my_errors::GENERAL::UNEXPECTED_RESULT,
                   fmt::format("Failed to create PKCS#12 bundle: {}",
                               ex.what())));
@@ -904,7 +907,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
               }
               oss << missing[i];
             }
-            return monad::IO<void>::fail(monad::make_error(
+            return monad::MyResult<void>::Err(monad::make_error(
                 my_errors::GENERAL::UNEXPECTED_RESULT, oss.str()));
           }
 
@@ -980,7 +983,7 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
               << "ensure_resource_materialized complete ob_type="
               << state->ob_type << " ob_id=" << state->ob_id;
         } else {
-          return monad::IO<void>::fail(monad::make_error(
+          return monad::MyResult<void>::Err(monad::make_error(
               my_errors::GENERAL::INVALID_ARGUMENT,
               fmt::format("Unsupported ob_type '{}'", state->ob_type)));
         }
@@ -989,69 +992,73 @@ monad::IO<void> InstallResourceMaterializer::ensure_resource_materialized_impl(
       BOOST_LOG_SEV(self->lg, trivial::error)
           << "Failed to write resource materials ob_type=" << state->ob_type
           << " ob_id=" << state->ob_id << " error=" << e.what();
-      return monad::IO<void>::fail(
+      return monad::MyResult<void>::Err(
           monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, e.what()));
     }
 
-    return monad::IO<void>::pure();
-  });
+    return monad::MyResult<void>::Ok();
+  }();
 
-  return pipeline;
+  co_return materialize_result;
 }
 
-monad::IO<void> InstallResourceMaterializer::fetch_with_refresh(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallResourceMaterializer::fetch_with_refresh(
     std::shared_ptr<MaterializationData> state, bool attempted_refresh) {
-  auto self = shared_from_this();
-
-  self->output_.logger().debug()
-      << "Starting fetch for " << state->ob_type << '/' << state->ob_id
-      << " attempted_refresh=" << (attempted_refresh ? "true" : "false")
-      << std::endl;
+  output_.logger().debug() << "Starting fetch for " << state->ob_type << '/'
+                           << state->ob_id << " attempted_refresh="
+                           << (attempted_refresh ? "true" : "false")
+                           << std::endl;
 
   auto access_token = access_token_loader_.load_token();
   const bool token_missing = !access_token || access_token->empty();
 
-  return resource_fetcher_.fetch(access_token, state)
-      .catch_then([self, state, attempted_refresh, token_missing](
-                      monad::Error err) {
-        self->output_.logger().warning()
-            << "Fetch failed for " << state->ob_type << '/' << state->ob_id
-            << " status=" << err.response_status
-            << " code=" << err.code << " what=" << err.what << std::endl;
-        const bool is_auth_error =
-            err.response_status == 401 || err.response_status == 403;
-        const bool token_unavailable_error =
-            err.code == my_errors::GENERAL::INVALID_ARGUMENT &&
-            err.what.find("Device access token unavailable") !=
-                std::string::npos;
+  auto fetch_result =
+      co_await resource_fetcher_.fetch(std::move(access_token), state);
+  if (fetch_result.is_ok()) {
+    co_return fetch_result;
+  }
 
-        const bool should_retry_with_refresh =
-            !attempted_refresh && (is_auth_error ||
-                                   (token_missing && token_unavailable_error));
+  auto err = fetch_result.error();
+  output_.logger().warning()
+      << "Fetch failed for " << state->ob_type << '/' << state->ob_id
+      << " status=" << err.response_status << " code=" << err.code
+      << " what=" << err.what << std::endl;
+  const bool is_auth_error =
+      err.response_status == 401 || err.response_status == 403;
+  const bool token_unavailable_error =
+      err.code == my_errors::GENERAL::INVALID_ARGUMENT &&
+      err.what.find("Device access token unavailable") != std::string::npos;
+  const bool should_retry_with_refresh =
+      !attempted_refresh &&
+      (is_auth_error || (token_missing && token_unavailable_error));
 
-        if (!should_retry_with_refresh) {
-          if (is_auth_error) {
-            err.what += " (device session refresh already attempted)";
-          }
-          return monad::IO<void>::fail(std::move(err));
-        }
+  if (!should_retry_with_refresh) {
+    if (is_auth_error) {
+      err.what += " (device session refresh already attempted)";
+    }
+    co_return monad::MyResult<void>::Err(std::move(err));
+  }
 
-        if (!self->session_refresher_) {
-          return monad::IO<void>::fail(monad::make_error(
-              my_errors::GENERAL::UNEXPECTED_RESULT,
-              "Session refresher unavailable; rerun cert-ctrl login."));
-        }
+  if (!session_refresher_) {
+    co_return monad::MyResult<void>::Err(monad::make_error(
+        my_errors::GENERAL::UNEXPECTED_RESULT,
+        "Session refresher unavailable; rerun cert-ctrl login."));
+  }
 
-        self->output_.logger().warning()
-            << "Resource fetch retry triggered by authentication failure for "
-            << state->ob_type << '/' << state->ob_id << std::endl;
+  output_.logger().warning()
+      << "Resource fetch retry triggered by authentication failure for "
+      << state->ob_type << '/' << state->ob_id << std::endl;
 
-          auto reason = fmt::format("resource fetch {} {}", state->ob_type,
-                    state->ob_id);
+  auto reason =
+      fmt::format("resource fetch {} {}", state->ob_type, state->ob_id);
+  auto refresh_result =
+      co_await session_refresher_->refresh_awaitable(std::move(reason));
+  if (refresh_result.is_err()) {
+    co_return refresh_result;
+  }
 
-        return self->session_refresher_->refresh(std::move(reason))
-            .then([self, state]() { return self->fetch_with_refresh(state, true); });
-      });
+  co_return co_await fetch_with_refresh(std::move(state), true);
 }
 
 std::filesystem::path InstallResourceMaterializer::runtime_state_dir() const {
@@ -1059,118 +1066,6 @@ std::filesystem::path InstallResourceMaterializer::runtime_state_dir() const {
     return {};
   }
   return runtime_dir_ / "state";
-}
-
-// boost::asio::io_context &InstallResourceMaterializer::ensure_io_context() {
-//   if (!io_context_) {
-//     owned_io_context_ = std::make_unique<boost::asio::io_context>();
-//     owned_io_work_guard_ = std::make_unique<boost::asio::executor_work_guard<
-//         boost::asio::io_context::executor_type>>(
-//         boost::asio::make_work_guard(*owned_io_context_));
-//     io_context_ = owned_io_context_.get();
-//     owned_io_thread_ = std::thread([ctx = io_context_]() {
-//       if (!ctx) {
-//         return;
-//       }
-//       ctx->run();
-//     });
-//   }
-//   return *io_context_;
-// }
-
-monad::IO<std::string>
-InstallResourceMaterializer::fetch_http_body(const std::string &url,
-                                             const std::string &token,
-                                             const char *context_label) {
-  using monad::GetStringTag;
-  using monad::http_io;
-  using monad::http_request_io;
-  using ExchangePtr = monad::ExchangePtrFor<GetStringTag>;
-
-  namespace http = boost::beast::http;
-
-  constexpr int kMaxAttempts = 12;
-  constexpr std::chrono::seconds kRetryBaseDelay{3};
-
-  auto attempt_counter = std::make_shared<int>(0);
-
-  auto fetch_once =
-      http_io<GetStringTag>(url)
-          .map([this, attempt_counter, token, url, context_label, kMaxAttempts](auto ex) {
-            const int current_attempt = ++(*attempt_counter);
-            BOOST_LOG_SEV(lg, trivial::trace)
-                << "fetch_http_body attempt " << current_attempt << '/'
-                << kMaxAttempts << " for url=" << url
-                << " context=" << context_label;
-            ex->request.set(http::field::authorization,
-                            std::string("Bearer ") + token);
-            return ex;
-          })
-          .then(http_request_io<GetStringTag>(http_client_))
-          .then([this, url, context_label,
-                 attempt_counter](ExchangePtr ex) -> monad::IO<std::string> {
-            if (!ex->response.has_value()) {
-              BOOST_LOG_SEV(lg, trivial::warning)
-                  << "fetch_http_body received empty response for url=" << url
-                  << " context=" << context_label;
-              return monad::IO<std::string>::fail(
-                  monad::make_error(my_errors::NETWORK::READ_ERROR,
-                                    "No response while fetching resource"));
-            }
-
-            int status = ex->response->result_int();
-            std::string body = ex->response->body();
-
-            const bool wrap_pending =
-              (status == 409 && body.find("WRAP_PENDING") != std::string::npos);
-
-            if (status == 200) {
-              BOOST_LOG_SEV(lg, trivial::trace)
-                  << "fetch_http_body succeeded for url=" << url
-                  << " context=" << context_label
-                  << " (status=200, bytes=" << body.size() << ')';
-              return monad::IO<std::string>::pure(std::move(body));
-            }
-
-            auto err = monad::make_error(
-                my_errors::NETWORK::READ_ERROR,
-                wrap_pending ? fmt::format("Resource fetch HTTP {} WRAP_PENDING",
-                                           status)
-                             : fmt::format("Resource fetch HTTP {}", status));
-            err.response_status = status;
-            err.params["response_body_preview"] = body.substr(0, 512);
-
-            if (status == 503 || wrap_pending) {
-              BOOST_LOG_SEV(lg, trivial::warning)
-                  << "fetch_http_body retry for url=" << url
-                  << " context=" << context_label
-                  << " attempt=" << *attempt_counter;
-            } else {
-              BOOST_LOG_SEV(lg, trivial::warning)
-                  << "fetch_http_body aborting status=" << status
-                  << " url=" << url << " context=" << context_label;
-            }
-
-            return monad::IO<std::string>::fail(std::move(err));
-          });
-
-  auto should_retry = [attempt_counter, kMaxAttempts](const monad::Error &err) {
-    if (*attempt_counter >= kMaxAttempts) {
-      return false;
-    }
-    if (err.response_status == 503) {
-      return true;
-    }
-    if (err.response_status == 409 &&
-        err.what.find("WRAP_PENDING") != std::string::npos) {
-      return true;
-    }
-    return false;
-  };
-
-  return std::move(fetch_once)
-      .retry_exponential_if(kMaxAttempts, kRetryBaseDelay, io_context_,
-                            should_retry);
 }
 
 } // namespace certctrl::install_actions

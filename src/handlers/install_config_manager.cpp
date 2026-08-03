@@ -1367,17 +1367,18 @@ InstallConfigManager::InstallConfigManager(
     std::shared_ptr<ISessionRefresher> session_refresher)
     : runtime_dir_(config_provider.get().runtime_dir),
       config_provider_(config_provider), output_(output),
-      http_client_(http_client),
       resource_materializer_factory_(std::move(resource_materializer_factory)),
       import_ca_action_handler_factory_(
           std::move(import_ca_action_handler_factory)),
       exec_handler_factory_(std::move(exec_handler_factory)),
       exec_env_resolver_factory_(std::move(exec_env_resolver_factory)),
       copy_handler_factory_(std::move(copy_handler_factory)),
-      config_fetcher_(config_fetcher), io_context_(io_context_manager.ioc()),
+      config_fetcher_(config_fetcher),
       access_token_loader_(access_token_loader),
       password_manager_(password_manager),
       session_refresher_(std::move(session_refresher)) {
+  (void)io_context_manager;
+  (void)http_client;
   if (!runtime_dir_.empty()) {
     try {
       std::filesystem::create_directories(state_dir());
@@ -1472,57 +1473,63 @@ InstallConfigManager::cached_config_snapshot() {
   return cached_config_;
 }
 
-monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
+boost::asio::awaitable<
+    monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
 InstallConfigManager::ensure_cached_config() {
-  using ReturnIO =
-      monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>;
   if (cached_config_) {
-    return ReturnIO::pure(cached_config_);
+    co_return monad::MyResult<
+        std::shared_ptr<const dto::DeviceInstallConfigDto>>::Ok(cached_config_);
   }
 
   if (auto disk_config = load_from_disk()) {
     cached_config_ = std::make_shared<dto::DeviceInstallConfigDto>(
         std::move(disk_config.value()));
     local_version_ = cached_config_->version;
-    return ReturnIO::pure(cached_config_);
+    co_return monad::MyResult<
+        std::shared_ptr<const dto::DeviceInstallConfigDto>>::Ok(cached_config_);
   }
 
-  return refresh_from_remote(std::nullopt, std::nullopt);
+  co_return co_await refresh_from_remote(std::nullopt, std::nullopt);
 }
 
-monad::IO<void> InstallConfigManager::pull_and_apply_full() {
-  using ReturnIO = monad::IO<void>;
-  return ensure_config_version(std::nullopt, std::nullopt)
-      .then([this](std::shared_ptr<const dto::DeviceInstallConfigDto> cfg_ptr)
-                -> ReturnIO {
-        if (!cfg_ptr) {
-          output_.logger().warning()
-              << "install-config pull returned no payload" << std::endl;
-          return ReturnIO::pure();
-        }
-        return apply_copy_actions(*cfg_ptr, std::nullopt, std::nullopt)
-            .then([this, cfg_ptr]() {
-              return apply_import_ca_actions(*cfg_ptr, std::nullopt,
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::pull_and_apply_full() {
+  auto config_result =
+      co_await ensure_config_version(std::nullopt, std::nullopt);
+  if (config_result.is_err()) {
+    co_return monad::MyResult<void>::Err(std::move(config_result).error());
+  }
+
+  auto config = std::move(config_result).value();
+  if (!config) {
+    output_.logger().warning()
+        << "install-config pull returned no payload" << std::endl;
+    co_return monad::MyResult<void>::Ok();
+  }
+
+  auto copy_result =
+      co_await apply_copy_actions(*config, std::nullopt, std::nullopt);
+  if (copy_result.is_err()) {
+    co_return copy_result;
+  }
+  co_return co_await apply_import_ca_actions(*config, std::nullopt,
                                              std::nullopt);
-            });
-      });
 }
 
-monad::IO<void> InstallConfigManager::full_resync_from_server() {
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::full_resync_from_server() {
   output_.logger().warning()
       << "Performing full state resync from current server snapshot"
       << std::endl;
   invalidate_all_caches();
-  return pull_and_apply_full();
+  co_return co_await pull_and_apply_full();
 }
 
-monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
+boost::asio::awaitable<
+    monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
 InstallConfigManager::ensure_config_version(
     std::optional<std::int64_t> expected_version,
     const std::optional<std::string> &expected_hash) {
-  using ReturnIO =
-      monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>;
-
   // Ensure cache is loaded from disk if available
   if (!cached_config_) {
     if (auto disk_config = load_from_disk()) {
@@ -1536,95 +1543,99 @@ InstallConfigManager::ensure_config_version(
       *local_version_ >= *expected_version) {
     // Already current (or newer)
     if (cached_config_) {
-      return ReturnIO::pure(cached_config_);
+      co_return monad::
+          MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>::Ok(
+              cached_config_);
     }
     // Local version satisfied but config missing (should not happen).
-    return refresh_from_remote(expected_version, expected_hash);
+    co_return co_await refresh_from_remote(expected_version, expected_hash);
   }
 
-  return refresh_from_remote(expected_version, expected_hash);
+  co_return co_await refresh_from_remote(expected_version, expected_hash);
 }
 
-monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
+boost::asio::awaitable<
+    monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
 InstallConfigManager::refresh_from_remote(
     std::optional<std::int64_t> expected_version,
     const std::optional<std::string> &expected_hash) {
-  using ReturnIO =
-      monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>;
-  using namespace monad;
-
-  return refresh_from_remote_with_retry(expected_version, expected_hash,
-                                        /*attempted_refresh=*/false);
+  co_return co_await refresh_from_remote_with_retry(
+      expected_version, expected_hash, /*attempted_refresh=*/false);
 }
 
-monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>
+boost::asio::awaitable<
+    monad::MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>>
 InstallConfigManager::refresh_from_remote_with_retry(
     std::optional<std::int64_t> expected_version,
     const std::optional<std::string> &expected_hash, bool attempted_refresh) {
-  using ReturnIO =
-      monad::IO<std::shared_ptr<const dto::DeviceInstallConfigDto>>;
-  using namespace monad;
-
   auto token_opt = access_token_loader_.load_token();
   const bool token_missing = !token_opt || token_opt->empty();
 
-  return config_fetcher_
-      .fetch_install_config(token_opt, expected_version, expected_hash)
-      .then([this](dto::DeviceInstallConfigDto config) -> ReturnIO {
-        return persist_config(std::move(config)).then([this]() -> ReturnIO {
-          if (!cached_config_) {
-            output_.logger().error()
-                << "refresh_from_remote completed without cached_config_"
-                << std::endl;
-          }
-          return ReturnIO::pure(cached_config_);
-        });
-      })
-      .catch_then([this, expected_version, expected_hash, attempted_refresh,
-                   token_missing](monad::Error err) -> ReturnIO {
-        const bool is_auth_error =
-            err.response_status == 401 || err.response_status == 403;
-        const bool token_unavailable_error =
-            err.code == my_errors::GENERAL::INVALID_ARGUMENT &&
-            err.what.find("Device access token unavailable") !=
-                std::string::npos;
+  auto fetch_result = co_await config_fetcher_.fetch_install_config(
+      std::move(token_opt), expected_version, expected_hash);
+  if (fetch_result.is_ok()) {
+    auto persist_result = persist_config(std::move(fetch_result).value());
+    if (persist_result.is_err()) {
+      co_return monad::
+          MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>::Err(
+              std::move(persist_result).error());
+    }
+    if (!cached_config_) {
+      output_.logger().error()
+          << "refresh_from_remote completed without cached_config_"
+          << std::endl;
+    }
+    co_return monad::MyResult<
+        std::shared_ptr<const dto::DeviceInstallConfigDto>>::Ok(cached_config_);
+  }
 
-        const bool should_retry_with_refresh =
-            !attempted_refresh &&
-            (is_auth_error || (token_missing && token_unavailable_error));
+  auto err = std::move(fetch_result).error();
+  const bool is_auth_error =
+      err.response_status == 401 || err.response_status == 403;
+  const bool token_unavailable_error =
+      err.code == my_errors::GENERAL::INVALID_ARGUMENT &&
+      err.what.find("Device access token unavailable") != std::string::npos;
+  const bool should_retry_with_refresh =
+      !attempted_refresh &&
+      (is_auth_error || (token_missing && token_unavailable_error));
 
-        if (!should_retry_with_refresh) {
-          if (is_auth_error) {
-            err.what += " (device session refresh already attempted)";
-          }
-          return ReturnIO::fail(std::move(err));
-        }
+  if (!should_retry_with_refresh) {
+    if (is_auth_error) {
+      err.what += " (device session refresh already attempted)";
+    }
+    co_return monad::
+        MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>::Err(
+            std::move(err));
+  }
 
-        if (!session_refresher_) {
-          return ReturnIO::fail(monad::make_error(
-              my_errors::GENERAL::UNEXPECTED_RESULT,
-              "Session refresher unavailable; rerun cert-ctrl login."));
-        }
+  if (!session_refresher_) {
+    co_return monad::
+        MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>::Err(
+            monad::make_error(
+                my_errors::GENERAL::UNEXPECTED_RESULT,
+                "Session refresher unavailable; rerun cert-ctrl login."));
+  }
 
-        output_.logger().warning() << "install-config fetch authentication "
-                                      "failure; attempting session refresh"
-                                   << std::endl;
+  output_.logger().warning() << "install-config fetch authentication failure; "
+                                "attempting session refresh"
+                             << std::endl;
 
-        std::string reason = "install-config fetch auth failure";
-        if (err.response_status > 0) {
-          reason =
-              fmt::format("install-config fetch HTTP {}", err.response_status);
-        } else if (token_missing && token_unavailable_error) {
-          reason = "install-config fetch missing access token";
-        }
+  std::string reason = "install-config fetch auth failure";
+  if (err.response_status > 0) {
+    reason = fmt::format("install-config fetch HTTP {}", err.response_status);
+  } else if (token_missing && token_unavailable_error) {
+    reason = "install-config fetch missing access token";
+  }
 
-        return session_refresher_->refresh(std::move(reason))
-            .then([this, expected_version, expected_hash]() -> ReturnIO {
-              return refresh_from_remote_with_retry(expected_version,
-                                                    expected_hash,
-                                                    /*attempted_refresh=*/true);
-            });
-      });
+  auto refresh_result =
+      co_await session_refresher_->refresh_awaitable(std::move(reason));
+  if (refresh_result.is_err()) {
+    co_return monad::
+        MyResult<std::shared_ptr<const dto::DeviceInstallConfigDto>>::Err(
+            std::move(refresh_result).error());
+  }
+  co_return co_await refresh_from_remote_with_retry(
+      expected_version, expected_hash, /*attempted_refresh=*/true);
 }
 
 std::optional<dto::DeviceInstallConfigDto>
@@ -1651,9 +1662,8 @@ InstallConfigManager::load_from_disk() {
   }
 }
 
-monad::IO<void> InstallConfigManager::persist_config(
+monad::MyResult<void> InstallConfigManager::persist_config(
     const dto::DeviceInstallConfigDto &config) {
-  using ReturnIO = monad::IO<void>;
   try {
     std::filesystem::create_directories(state_dir());
 
@@ -1705,9 +1715,9 @@ monad::IO<void> InstallConfigManager::persist_config(
         << " version=" << cached_config_->version << std::endl;
     local_version_ = sanitized.version;
 
-    return ReturnIO::pure();
+    return monad::MyResult<void>::Ok();
   } catch (const std::exception &e) {
-    return ReturnIO::fail(
+    return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::FILE_READ_WRITE, e.what()));
   }
 }
@@ -1740,60 +1750,70 @@ InstallConfigManager::resource_current_dir(const std::string &ob_type,
   return resource_root;
 }
 
-monad::IO<void> InstallConfigManager::apply_copy_actions(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::apply_copy_actions(
     const dto::DeviceInstallConfigDto &config,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
-
   auto copy_handler = copy_handler_factory_();
   if (!copy_handler) {
-    return monad::IO<void>::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                           "CopyActionHandler factory returned null"));
   }
-  // First perform copy actions
-  return copy_handler->apply(config, target_ob_type, target_ob_id)
-      .then([this, copy_handler, &config, target_ob_type, target_ob_id]() {
-        (void)copy_handler;
-        BOOST_LOG_SEV(lg, trivial::trace)
-            << "apply_copy_actions exec stage start target_ob_type="
-            << (target_ob_type ? *target_ob_type : std::string("<none>"))
-            << " target_ob_id="
-            << (target_ob_id ? std::to_string(*target_ob_id) : "<none>");
-        // After copy actions, always run exec items (cmd/cmd_argv) that may be
-        // present regardless of item.type. Limit exec targets to the same
-        // target_ob_type/target_ob_id when specified.
-        std::optional<std::vector<std::string>> allowed_types = std::nullopt;
-        if (target_ob_type) {
-          allowed_types = std::vector<std::string>{*target_ob_type};
-        }
 
-        auto exec_handler = exec_handler_factory_();
-        return exec_handler->apply(config, allowed_types);
-      })
-      .catch_then([this, copy_handler](monad::Error err) {
-        (void)copy_handler;
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "apply_copy_actions encountered error code=" << err.code
-            << " status=" << err.response_status << " what=" << err.what
-            << " params=" << boost::json::serialize(err.params);
-        return monad::IO<void>::fail(std::move(err));
-      });
+  auto copy_result =
+      co_await copy_handler->apply(config, target_ob_type, target_ob_id);
+  if (copy_result.is_err()) {
+    const auto &err = copy_result.error();
+    BOOST_LOG_SEV(lg, trivial::error)
+        << "apply_copy_actions encountered error code=" << err.code
+        << " status=" << err.response_status << " what=" << err.what
+        << " params=" << boost::json::serialize(err.params);
+    co_return copy_result;
+  }
+
+  BOOST_LOG_SEV(lg, trivial::trace)
+      << "apply_copy_actions exec stage start target_ob_type="
+      << (target_ob_type ? *target_ob_type : std::string("<none>"))
+      << " target_ob_id="
+      << (target_ob_id ? std::to_string(*target_ob_id) : "<none>");
+  std::optional<std::vector<std::string>> allowed_types = std::nullopt;
+  if (target_ob_type) {
+    allowed_types = std::vector<std::string>{*target_ob_type};
+  }
+
+  auto exec_handler = exec_handler_factory_();
+  if (!exec_handler) {
+    co_return monad::MyResult<void>::Err(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                          "ExecActionHandler factory returned null"));
+  }
+  auto exec_result = co_await exec_handler->apply(config, allowed_types);
+  if (exec_result.is_err()) {
+    const auto &err = exec_result.error();
+    BOOST_LOG_SEV(lg, trivial::error)
+        << "apply_copy_actions encountered error code=" << err.code
+        << " status=" << err.response_status << " what=" << err.what
+        << " params=" << boost::json::serialize(err.params);
+  }
+  co_return exec_result;
 }
 
-monad::IO<void> InstallConfigManager::apply_import_ca_actions(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::apply_import_ca_actions(
     const dto::DeviceInstallConfigDto &config,
     const std::optional<std::string> &target_ob_type,
     std::optional<std::int64_t> target_ob_id) {
   if (!import_ca_action_handler_factory_) {
-    return monad::IO<void>::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                           "ImportCaActionHandler factory not configured"));
   }
 
   auto import_handler = import_ca_action_handler_factory_();
   if (!import_handler) {
-    return monad::IO<void>::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                           "ImportCaActionHandler factory returned null"));
   }
@@ -1804,38 +1824,48 @@ monad::IO<void> InstallConfigManager::apply_import_ca_actions(
       << " target_ob_id="
       << (target_ob_id ? std::to_string(*target_ob_id) : "<none>");
 
-  return import_handler->apply(config, target_ob_type, target_ob_id)
-      .then([this, import_handler, &config, target_ob_type, target_ob_id]() {
-        (void)import_handler;
-        std::optional<std::vector<std::string>> allowed_types = std::nullopt;
-        if (target_ob_type) {
-          allowed_types = std::vector<std::string>{*target_ob_type};
-        }
-        auto exec_handler = exec_handler_factory_();
-        return exec_handler->apply(config, allowed_types);
-      })
-      .catch_then([this, import_handler](monad::Error err) {
-        (void)import_handler;
-        BOOST_LOG_SEV(lg, trivial::error)
-            << "apply_import_ca_actions encountered error code=" << err.code
-            << " status=" << err.response_status << " what=" << err.what
-            << " params=" << boost::json::serialize(err.params);
-        return monad::IO<void>::fail(std::move(err));
-      });
+  auto import_result =
+      co_await import_handler->apply(config, target_ob_type, target_ob_id);
+  if (import_result.is_err()) {
+    const auto &err = import_result.error();
+    BOOST_LOG_SEV(lg, trivial::error)
+        << "apply_import_ca_actions encountered error code=" << err.code
+        << " status=" << err.response_status << " what=" << err.what
+        << " params=" << boost::json::serialize(err.params);
+    co_return import_result;
+  }
+
+  std::optional<std::vector<std::string>> allowed_types = std::nullopt;
+  if (target_ob_type) {
+    allowed_types = std::vector<std::string>{*target_ob_type};
+  }
+  auto exec_handler = exec_handler_factory_();
+  if (!exec_handler) {
+    co_return monad::MyResult<void>::Err(
+        monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
+                          "ExecActionHandler factory returned null"));
+  }
+  auto exec_result = co_await exec_handler->apply(config, allowed_types);
+  if (exec_result.is_err()) {
+    const auto &err = exec_result.error();
+    BOOST_LOG_SEV(lg, trivial::error)
+        << "apply_import_ca_actions encountered error code=" << err.code
+        << " status=" << err.response_status << " what=" << err.what
+        << " params=" << boost::json::serialize(err.params);
+  }
+  co_return exec_result;
 }
 
-monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::apply_copy_actions_for_signal(
     const ::data::DeviceUpdateSignal &signal) {
-  using ReturnIO = monad::IO<void>;
-
   if (signal.type == "install.updated") {
-    using ReturnIO = monad::IO<void>;
     if (!config_provider_.get().auto_apply_config) {
       BOOST_LOG_SEV(lg, trivial::info)
           << "auto_apply_config disabled; install.updated ignored. Run "
              "'cert-ctrl"
           << " install-config pull/apply' to stage changes manually.";
-      return ReturnIO::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     if (auto refresh_r =
@@ -1854,36 +1884,43 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
       expected_hash = typed->installs_hash_b64;
     }
 
-    return ensure_config_version(expected_version, expected_hash)
-        .then([this](auto config_ptr) {
-          return apply_copy_actions(*config_ptr, std::nullopt, std::nullopt);
-        });
+    auto config_result =
+        co_await ensure_config_version(expected_version, expected_hash);
+    if (config_result.is_err()) {
+      co_return monad::MyResult<void>::Err(std::move(config_result).error());
+    }
+    auto config = std::move(config_result).value();
+    co_return co_await apply_copy_actions(*config, std::nullopt, std::nullopt);
   }
 
   if (signal.type == "cert.updated") {
     if (auto typed = ::data::get_cert_updated(signal)) {
       const auto cert_id = typed->cert_id;
       invalidate_resource_cache("cert", cert_id);
-      return ensure_cached_config().then([this, cert_id](auto config_ptr) {
-        auto scan = scan_cert_actionability(*config_ptr, cert_id);
-        if (!scan.actionable()) {
-          if (!scan.has_matching_items) {
-            BOOST_LOG_SEV(lg, trivial::info)
-                << "cert.updated for cert " << cert_id
-                << " ignored: no install items reference this cert";
-          } else {
-            BOOST_LOG_SEV(lg, trivial::info)
-                << "cert.updated for cert " << cert_id
-                << " ignored: install items lack destinations or commands";
-          }
-          return ReturnIO::pure();
+      auto config_result = co_await ensure_cached_config();
+      if (config_result.is_err()) {
+        co_return monad::MyResult<void>::Err(std::move(config_result).error());
+      }
+      auto config = std::move(config_result).value();
+      auto scan = scan_cert_actionability(*config, cert_id);
+      if (!scan.actionable()) {
+        if (!scan.has_matching_items) {
+          BOOST_LOG_SEV(lg, trivial::info)
+              << "cert.updated for cert " << cert_id
+              << " ignored: no install items reference this cert";
+        } else {
+          BOOST_LOG_SEV(lg, trivial::info)
+              << "cert.updated for cert " << cert_id
+              << " ignored: install items lack destinations or commands";
         }
+        co_return monad::MyResult<void>::Ok();
+      }
 
-        BOOST_LOG_SEV(lg, trivial::info)
-            << "Applying install config items for cert " << cert_id
-            << " due to cert.updated signal";
-        return apply_copy_actions(*config_ptr, std::string("cert"), cert_id);
-      });
+      BOOST_LOG_SEV(lg, trivial::info)
+          << "Applying install config items for cert " << cert_id
+          << " due to cert.updated signal";
+      co_return co_await apply_copy_actions(*config, std::string("cert"),
+                                            cert_id);
     }
   }
 
@@ -1898,32 +1935,32 @@ monad::IO<void> InstallConfigManager::apply_copy_actions_for_signal(
       BOOST_LOG_SEV(lg, trivial::warning)
           << "cert.unassigned signal missing cert_id";
     }
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
-  return ReturnIO::pure();
+  co_return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::maybe_run_after_update_script_for_signal(
     const ::data::DeviceUpdateSignal &signal,
     bool bypass_auto_apply_config_gate) {
   auto config_ptr = cached_config_snapshot();
   if (!config_ptr) {
     BOOST_LOG_SEV(lg, trivial::debug)
         << "after_update_script skipped: install config not cached";
-    return monad::IO<void>::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
-  return maybe_run_after_update_script_for_signal(
+  co_return co_await maybe_run_after_update_script_for_signal(
       *config_ptr, signal, bypass_auto_apply_config_gate);
 }
 
-monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::maybe_run_after_update_script_for_signal(
     const dto::DeviceInstallConfigDto &config,
     const ::data::DeviceUpdateSignal &signal,
     bool bypass_auto_apply_config_gate) {
-  using ReturnIO = monad::IO<void>;
-
   try {
     const auto &cfg = config_provider_.get();
 
@@ -1932,7 +1969,7 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
       BOOST_LOG_SEV(lg, trivial::debug)
           << "after_update_script skipped for type=" << signal.type
           << ": events_trigger_script allowlist is empty";
-      return ReturnIO::pure();
+      co_return monad::MyResult<void>::Ok();
     }
     const bool allowlisted =
         std::find(cfg.events_trigger_script.begin(),
@@ -1942,7 +1979,7 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
       BOOST_LOG_SEV(lg, trivial::debug)
           << "after_update_script skipped for type=" << signal.type
           << ": signal is not allowlisted";
-      return ReturnIO::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     // auto_apply_config gating, bypassed for cert/CA material events.
@@ -1951,21 +1988,21 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
       BOOST_LOG_SEV(lg, trivial::debug)
           << "auto_apply_config disabled; after_update_script skipped for type="
           << signal.type;
-      return ReturnIO::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     if (!config.after_update_script || config.after_update_script->empty()) {
       BOOST_LOG_SEV(lg, trivial::debug)
           << "after_update_script skipped for type=" << signal.type
           << ": staged config has no script payload";
-      return ReturnIO::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     auto selected = select_platform_script(*config.after_update_script);
     if (!selected || selected->second.empty()) {
       BOOST_LOG_SEV(lg, trivial::debug)
           << "after_update_script bundle has no matching platform block";
-      return ReturnIO::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     const auto &variant_name = selected->first;
@@ -1987,7 +2024,7 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
             << " because it is not pinned locally. Once the script is stable, "
                "keep trust-on-first-use disabled; command: "
             << kDisableAutoAllowScriptHashesCommand;
-        return ReturnIO::pure();
+        co_return monad::MyResult<void>::Ok();
       }
 
       trusted_hashes.push_back(script_hash);
@@ -2028,7 +2065,7 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
                                                       script_content)) {
       BOOST_LOG_SEV(lg, trivial::warning)
           << "after_update_script persist failed: " << *err;
-      return ReturnIO::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     const auto script_env =
@@ -2069,31 +2106,30 @@ monad::IO<void> InstallConfigManager::maybe_run_after_update_script_for_signal(
       BOOST_LOG_SEV(lg, trivial::warning)
           << "after_update_script execution failed for type=" << signal.type
           << " variant=" << variant_name << " error=" << *err;
-      return ReturnIO::pure();
+      co_return monad::MyResult<void>::Ok();
     }
 
     BOOST_LOG_SEV(lg, trivial::info)
         << "after_update_script executed for type=" << signal.type
         << " variant=" << variant_name << " hash=" << script_hash;
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   } catch (const std::exception &ex) {
     BOOST_LOG_SEV(lg, trivial::warning)
         << "after_update_script unexpected error: " << ex.what();
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 }
 
-monad::IO<void> InstallConfigManager::approve_after_update_script_hash(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::approve_after_update_script_hash(
     const dto::DeviceInstallConfigDto &config) {
-  using ReturnIO = monad::IO<void>;
-
   if (!config.after_update_script || config.after_update_script->empty()) {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   auto selected = select_platform_script(*config.after_update_script);
   if (!selected || selected->second.empty()) {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   const auto &variant_name = selected->first;
@@ -2110,7 +2146,7 @@ monad::IO<void> InstallConfigManager::approve_after_update_script_hash(
     BOOST_LOG_SEV(lg, trivial::info)
         << "after_update_script hash already trusted for manual apply: "
         << script_hash << " variant=" << variant_name;
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   trusted_hashes.push_back(script_hash);
@@ -2122,77 +2158,73 @@ monad::IO<void> InstallConfigManager::approve_after_update_script_hash(
       hash_array_from_vector(trusted_hashes),
   }});
   if (save_r.is_err()) {
-    return ReturnIO::fail(save_r.error());
+    co_return monad::MyResult<void>::Err(save_r.error());
   }
 
   BOOST_LOG_SEV(lg, trivial::info)
       << "Approved staged after_update_script hash=" << script_hash
       << " for variant=" << variant_name
       << " during manual install-config apply";
-  return ReturnIO::pure();
+  co_return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void> InstallConfigManager::approve_and_persist_after_update_script(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::approve_and_persist_after_update_script(
     const dto::DeviceInstallConfigDto &config) {
-  using ReturnIO = monad::IO<void>;
-
   if (!config.after_update_script || config.after_update_script->empty()) {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   auto selected = select_platform_script(*config.after_update_script);
   if (!selected || selected->second.empty()) {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   auto variant_name = selected->first;
   auto script_content = selected->second;
 
-  return approve_after_update_script_hash(config).then(
-      [this, variant_name = std::move(variant_name),
-       script_content = std::move(script_content)]() -> ReturnIO {
-        if (auto err = persist_after_update_script_atomic(
-                state_dir(), variant_name, script_content)) {
-          return ReturnIO::fail(monad::make_error(
-              my_errors::GENERAL::FILE_READ_WRITE,
-              "failed to persist after_update_script before manual apply: " +
-                  *err));
-        }
+  auto approval_result = co_await approve_after_update_script_hash(config);
+  if (approval_result.is_err()) {
+    co_return approval_result;
+  }
+  if (auto err = persist_after_update_script_atomic(state_dir(), variant_name,
+                                                    script_content)) {
+    co_return monad::MyResult<void>::Err(monad::make_error(
+        my_errors::GENERAL::FILE_READ_WRITE,
+        "failed to persist after_update_script before manual apply: " + *err));
+  }
 
-        BOOST_LOG_SEV(lg, trivial::info)
-            << "Persisted staged after_update_script before manual apply"
-            << " variant=" << variant_name;
-        return ReturnIO::pure();
-      });
+  BOOST_LOG_SEV(lg, trivial::info)
+      << "Persisted staged after_update_script before manual apply"
+      << " variant=" << variant_name;
+  co_return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void> InstallConfigManager::rearm_local_install_update_window() {
-  using ReturnIO = monad::IO<void>;
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::rearm_local_install_update_window() {
   auto refresh_r = config_provider_.refresh_install_update_grace_window(true);
   if (refresh_r.is_err()) {
-    return ReturnIO::fail(refresh_r.error());
+    co_return monad::MyResult<void>::Err(refresh_r.error());
   }
-  return ReturnIO::pure();
+  co_return monad::MyResult<void>::Ok();
 }
 
-monad::IO<void>
+boost::asio::awaitable<monad::MyResult<void>>
 InstallConfigManager::handle_ca_assignment(std::int64_t ca_id,
                                            std::optional<std::string> ca_name) {
-  using ReturnIO = monad::IO<void>;
-
   if (ca_id <= 0) {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   if (!import_ca_action_handler_factory_) {
-    return ReturnIO::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                           "ImportCaActionHandler factory not configured"));
   }
 
   auto import_handler = import_ca_action_handler_factory_();
   if (!import_handler) {
-    return ReturnIO::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                           "ImportCaActionHandler factory returned null"));
   }
@@ -2217,25 +2249,25 @@ InstallConfigManager::handle_ca_assignment(std::int64_t ca_id,
   output_.logger().info() << "Applying ca.assigned for CA " << ca_id
                           << std::endl;
 
-  return import_handler->apply(config, std::string("ca"), ca_id);
+  co_return co_await import_handler->apply(config, std::string("ca"), ca_id);
 }
 
-monad::IO<void> InstallConfigManager::handle_ca_unassignment(
+boost::asio::awaitable<monad::MyResult<void>>
+InstallConfigManager::handle_ca_unassignment(
     std::int64_t ca_id, std::optional<std::string> ca_name) {
-  using ReturnIO = monad::IO<void>;
   if (ca_id <= 0) {
-    return ReturnIO::pure();
+    co_return monad::MyResult<void>::Ok();
   }
 
   if (!import_ca_action_handler_factory_) {
-    return ReturnIO::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::INVALID_ARGUMENT,
                           "ImportCaActionHandler factory not configured"));
   }
 
   auto import_handler = import_ca_action_handler_factory_();
   if (!import_handler) {
-    return ReturnIO::fail(
+    co_return monad::MyResult<void>::Err(
         monad::make_error(my_errors::GENERAL::UNEXPECTED_RESULT,
                           "ImportCaActionHandler factory returned null"));
   }
@@ -2245,7 +2277,7 @@ monad::IO<void> InstallConfigManager::handle_ca_unassignment(
   output_.logger().info() << "Applying ca.unassigned for CA " << ca_id
                           << std::endl;
 
-  return import_handler->remove_ca(ca_id, ca_name);
+  co_return co_await import_handler->remove_ca(ca_id, ca_name);
 }
 
 std::optional<std::unordered_map<std::string, std::string>>
