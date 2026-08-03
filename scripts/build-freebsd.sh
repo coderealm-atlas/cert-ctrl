@@ -10,6 +10,11 @@ else
   REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 fi
 
+# FreeBSD base utilities can differ from the GNU/Info-ZIP interfaces expected
+# by vcpkg. Prefer package-installed build tools such as Info-ZIP unzip, CMake,
+# Ninja, and Git when they are available.
+export PATH="/usr/local/bin:${PATH}"
+
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build/freebsd-${BUILD_TYPE}}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-${REPO_ROOT}/install/freebsd-${BUILD_TYPE}}"
@@ -146,9 +151,23 @@ if [[ ! -d "${VCPKG_ROOT}" ]]; then
   exit 1
 fi
 
-if [[ ! -x "${VCPKG_ROOT}/vcpkg" ]]; then
-  echo "[freebsd-build] Bootstrapping vcpkg..."
+VCPKG_TOOL_STAMP="${CACHE_ROOT}/vcpkg-tool-revision"
+VCPKG_REVISION="$(git -C "${VCPKG_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+VCPKG_BOOTSTRAPPED_REVISION="$(cat "${VCPKG_TOOL_STAMP}" 2>/dev/null || true)"
+
+if [[ ! -x "${VCPKG_ROOT}/vcpkg" || -z "${VCPKG_REVISION}" \
+  || "${VCPKG_BOOTSTRAPPED_REVISION}" != "${VCPKG_REVISION}" ]]; then
+  echo "[freebsd-build] Bootstrapping vcpkg for revision ${VCPKG_REVISION:-unknown}..."
   (cd "${VCPKG_ROOT}" && ./bootstrap-vcpkg.sh -disableMetrics)
+
+  # Record the revision only after a successful bootstrap. A failed bootstrap
+  # must be retried instead of leaving an incompatible tool paired with newer
+  # vcpkg scripts.
+  if [[ -n "${VCPKG_REVISION}" ]]; then
+    VCPKG_TOOL_STAMP_TMP="${VCPKG_TOOL_STAMP}.tmp.$$"
+    printf '%s\n' "${VCPKG_REVISION}" > "${VCPKG_TOOL_STAMP_TMP}"
+    mv "${VCPKG_TOOL_STAMP_TMP}" "${VCPKG_TOOL_STAMP}"
+  fi
 fi
 
 # Prefer libatomic from GCC packages if available to appease CMake's atomic checks.
