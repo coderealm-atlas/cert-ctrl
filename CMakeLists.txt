@@ -758,6 +758,13 @@ target_include_directories(${CERT_CTRL_APP_NAME}
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/http_client/include
     )
 
+if(APPLE)
+    # Keep vcpkg imported headers ahead of stale global headers in
+    # /usr/local/include. CMake otherwise emits imported includes as -isystem,
+    # which Clang searches after its built-in system include directories.
+    set_property(TARGET ${CERT_CTRL_APP_NAME} PROPERTY NO_SYSTEM_FROM_IMPORTED ON)
+endif()
+
 target_link_libraries(${CERT_CTRL_APP_NAME} 
     PRIVATE Boost::program_options
     PRIVATE Boost::json
