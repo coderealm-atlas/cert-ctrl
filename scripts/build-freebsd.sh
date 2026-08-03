@@ -77,7 +77,7 @@ VCPKG_TARGET_TRIPLET="${VCPKG_TARGET_TRIPLET:-${DEFAULT_TRIPLET}}"
 VCPKG_HOST_TRIPLET="${VCPKG_HOST_TRIPLET:-${VCPKG_TARGET_TRIPLET}}"
 
 # patchelf is required by vcpkg to fix up ELF rpaths on FreeBSD.
-REQUIRED_CMDS=(cmake ninja git curl python3 patchelf)
+REQUIRED_CMDS=(cmake ninja git curl python3 patchelf autoconf autoreconf aclocal automake libtoolize)
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
   if ! command -v "${cmd}" >/dev/null 2>&1; then
@@ -90,6 +90,12 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   if command -v pkg >/dev/null 2>&1; then
     echo "Install them with: sudo pkg install -y bash cmake ninja git curl python3 pkgconf patchelf" >&2
   fi
+  exit 1
+fi
+
+if command -v pkg >/dev/null 2>&1 && ! pkg info -e autoconf-archive >/dev/null 2>&1; then
+  echo "Missing required FreeBSD package: autoconf-archive" >&2
+  echo "Install it with: sudo pkg install -y autoconf-archive" >&2
   exit 1
 fi
 

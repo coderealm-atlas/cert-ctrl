@@ -11,6 +11,25 @@
   hosts: build_freebsd
   vars_files:
     - ../vars.yml
+  pre_tasks:
+    - name: Install FreeBSD native build prerequisites
+      become: true
+      ansible.builtin.package:
+        name:
+          - autoconf
+          - autoconf-archive
+          - automake
+          - bash
+          - cmake
+          - curl
+          - git
+          - libtool
+          - ninja
+          - patchelf
+          - pkgconf
+          - python3
+          - unzip
+        state: present
   roles:
     - install_service_build
     - install_service_package_posix
