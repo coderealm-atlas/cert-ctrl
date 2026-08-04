@@ -1,5 +1,6 @@
 import { corsHeaders } from '../utils/cors.js';
 import { buildGithubHeaders, describeGithubFailure } from '../utils/github.js';
+import { classifyUpdateUrgency, compareVersions } from '../utils/versioning.js';
 
 export async function versionHandler(request, env) {
   try {
@@ -140,7 +141,7 @@ async function handleVersionCheck(request, env) {
       security_update: await isSecurityUpdate(latestData.body),
       minimum_supported_version: await getMinimumSupportedVersion(env),
       deprecation_warnings: await getDeprecationWarnings(currentVersion, env),
-      update_urgency: await getUpdateUrgency(currentVersion, latestVersion, latestData.body)
+      update_urgency: await getUpdateUrgency(currentVersion, latestVersion, latestData.body, env)
     };
 
     return new Response(JSON.stringify(result, null, 2), {
@@ -216,98 +217,16 @@ function extractDownloadUrls(assets) {
 
 function buildInstallCommands() {
   return {
-    linux: 'curl -fsSL "https://install.lets-script.com/install.sh?force=1" | sudo bash',
-    macos: 'curl -fsSL "https://install.lets-script.com/install-macos.sh?force=1" | sudo bash',
-    windows: 'irm "https://install.lets-script.com/install.ps1?force=1" | iex'
+    linux: 'curl -fsSL "https://install.lets-script.com/install.sh" | sudo bash',
+    macos: 'curl -fsSL "https://install.lets-script.com/install-macos.sh" | sudo bash',
+    windows: 'irm "https://install.lets-script.com/install.ps1" | iex'
   };
 }
 
 export const __testables__ = {
+  buildInstallCommands,
   extractDownloadUrls
 };
-
-function compareVersions(version1 = '', version2 = '') {
-  const normalize = (raw) => {
-    const cleaned = raw.trim().replace(/^v/i, '');
-    const [core, ...rest] = cleaned.split('-');
-
-    const toTokens = (segment) =>
-      segment
-        .split('.')
-        .filter((token) => token.length > 0)
-        .map((token) => {
-          const numeric = Number(token);
-          return Number.isNaN(numeric) ? token : numeric;
-        });
-
-    return {
-      core: toTokens(core),
-      qualifiers: rest.flatMap(toTokens)
-    };
-  };
-
-  const a = normalize(version1);
-  const b = normalize(version2);
-
-  const maxCoreLength = Math.max(a.core.length, b.core.length);
-  for (let i = 0; i < maxCoreLength; i++) {
-    const lhs = a.core[i] ?? 0;
-    const rhs = b.core[i] ?? 0;
-
-    if (typeof lhs === 'number' && typeof rhs === 'number') {
-      if (lhs > rhs) return 1;
-      if (lhs < rhs) return -1;
-    } else {
-      const lhsStr = String(lhs);
-      const rhsStr = String(rhs);
-      if (lhsStr > rhsStr) return 1;
-      if (lhsStr < rhsStr) return -1;
-    }
-  }
-
-  const aHasQualifiers = a.qualifiers.length > 0;
-  const bHasQualifiers = b.qualifiers.length > 0;
-
-  if (!aHasQualifiers && !bHasQualifiers) {
-    return 0;
-  }
-  if (!aHasQualifiers && bHasQualifiers) {
-    return 1;
-  }
-  if (aHasQualifiers && !bHasQualifiers) {
-    return -1;
-  }
-
-  const maxQualifierLength = Math.max(a.qualifiers.length, b.qualifiers.length);
-  for (let i = 0; i < maxQualifierLength; i++) {
-    const lhs = a.qualifiers[i];
-    const rhs = b.qualifiers[i];
-
-    if (lhs === undefined) return -1;
-    if (rhs === undefined) return 1;
-
-    const lhsIsNumber = typeof lhs === 'number';
-    const rhsIsNumber = typeof rhs === 'number';
-
-    if (lhsIsNumber && rhsIsNumber) {
-      if (lhs > rhs) return 1;
-      if (lhs < rhs) return -1;
-      continue;
-    }
-
-    if (lhsIsNumber !== rhsIsNumber) {
-      return lhsIsNumber ? -1 : 1;
-    }
-
-    const lhsStr = String(lhs);
-    const rhsStr = String(rhs);
-
-    if (lhsStr > rhsStr) return 1;
-    if (lhsStr < rhsStr) return -1;
-  }
-
-  return 0;
-}
 
 async function isSecurityUpdate(releaseBody) {
   if (!releaseBody) return false;
@@ -334,19 +253,11 @@ async function getDeprecationWarnings(currentVersion, env) {
   return warnings[currentVersion] || [];
 }
 
-async function getUpdateUrgency(currentVersion, latestVersion, releaseBody) {
-  // Determine update urgency based on version gap and release notes
-  const versionGap = compareVersions(latestVersion, currentVersion);
-  
-  if (await isSecurityUpdate(releaseBody)) {
-    return 'critical';
-  }
-  
-  if (versionGap >= 2) { // Major version difference
-    return 'high';
-  } else if (versionGap >= 1) { // Minor version difference
-    return 'medium';
-  }
-  
-  return 'low';
+async function getUpdateUrgency(currentVersion, latestVersion, releaseBody, env) {
+  return classifyUpdateUrgency({
+    currentVersion,
+    latestVersion,
+    minimumSupportedVersion: await getMinimumSupportedVersion(env),
+    securityUpdate: await isSecurityUpdate(releaseBody)
+  });
 }

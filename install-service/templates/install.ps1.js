@@ -7,9 +7,11 @@ export const powershellTemplate = `# cert-ctrl installation script (PowerShell)
 param(
     [switch]$UserInstall,
     [string]$Version = "{{VERSION}}",
-    [string]$InstallDir,
+    [string]$InstallDir = "{{INSTALL_DIR}}",
     [switch]$Verbose,
     [switch]$Force,
+    [switch]$ReplaceConfig,
+    [switch]$ReplaceService,
     [switch]$DryRun
 )
 
@@ -104,7 +106,7 @@ function Register-CertCtrlService {
     param(
         [string]$BinaryPath,
         [bool]$IsUserInstall,
-        [bool]$ForceInstall
+        [bool]$ReplaceService
     )
 
     if ($IsUserInstall) {
@@ -122,26 +124,29 @@ function Register-CertCtrlService {
     try {
         $existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
         if ($existing) {
-            if (-not $ForceInstall) {
-                Write-Info "Windows service '$serviceName' already exists. Use -Force to recreate it."
+            if (-not $ReplaceService) {
+                Write-Info "Preserving existing Windows service '$serviceName'. Use -ReplaceService to regenerate it."
                 if ($existing.Status -ne 'Running') {
-                    Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+                    Start-Service -Name $serviceName -ErrorAction Stop
                 }
                 return $true
             }
 
             if ($existing.Status -eq 'Running') {
-                Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+                Stop-Service -Name $serviceName -Force -ErrorAction Stop
             }
-            sc.exe delete $serviceName | Out-Null
-            Start-Sleep -Seconds 2
-            while (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
-                Start-Sleep -Milliseconds 200
+            $configOutput = & sc.exe config $serviceName 'binPath=' $imagePath 'start=' 'auto' 'DisplayName=' $serviceDisplayName 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "sc.exe config failed: $configOutput"
             }
+            & sc.exe description $serviceName $serviceDescription | Out-Null
+            Start-Service -Name $serviceName -ErrorAction Stop
+            Write-Success "Windows service '$serviceName' updated."
+            return $true
         }
 
         New-Service -Name $serviceName -BinaryPathName $imagePath -DisplayName $serviceDisplayName -Description $serviceDescription -StartupType Automatic -ErrorAction Stop
-        Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+        Start-Service -Name $serviceName -ErrorAction Stop
         Write-Success "Windows service '$serviceName' registered."
         return $true
     }
@@ -170,6 +175,8 @@ if ($PSBoundParameters.ContainsKey('UserInstall') -and $UserInstall.IsPresent) {
 }
 
 $paramForceInstall = ([bool]$Force) -or ("{{FORCE}}" -eq "true")
+$paramReplaceConfig = ([bool]$ReplaceConfig) -or ("{{REPLACE_CONFIG}}" -eq "true")
+$paramReplaceService = ([bool]$ReplaceService) -or ("{{REPLACE_SERVICE}}" -eq "true")
 
 
 $installPath = if ($InstallDir) {
@@ -196,7 +203,7 @@ elseif (-not $paramUserInstall -and -not (Test-Administrator)) {
 
 $destinationBinary = Join-Path $installPath 'cert-ctrl.exe'
 
-if (-not $paramForceInstall) {
+if (-not $paramForceInstall -and -not $paramReplaceConfig -and -not $paramReplaceService) {
     $existingVersion = Get-InstalledCertCtrlVersion -BinaryPath $destinationBinary
     if ($existingVersion) {
         $normalizedExisting = $existingVersion.TrimStart('v')
@@ -224,9 +231,21 @@ if ($mirrorUrl -eq "{{BASE_URL}}/releases/proxy") {
 
 $tempDir = New-Item -ItemType Directory -Path ([System.IO.Path]::GetTempPath()) -Name ("cert-ctrl-" + [System.Guid]::NewGuid().ToString())
 $zipPath = Join-Path $tempDir "cert-ctrl.zip"
+$checksumPath = Join-Path $tempDir "cert-ctrl.zip.sha256"
 
 Write-Info "Downloading cert-ctrl $Version..."
 Invoke-WebRequest -Uri $packageUrl -OutFile $zipPath -UseBasicParsing
+Invoke-WebRequest -Uri ($packageUrl + '.sha256') -OutFile $checksumPath -UseBasicParsing
+
+$expectedChecksum = ((Get-Content -Path $checksumPath -Raw).Trim() -split '\\s+')[0].ToLowerInvariant()
+$actualChecksum = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ([string]::IsNullOrWhiteSpace($expectedChecksum)) {
+    throw 'Release checksum file is empty; refusing an unverified installation.'
+}
+if ($expectedChecksum -ne $actualChecksum) {
+    throw "Checksum mismatch (expected $expectedChecksum, got $actualChecksum)."
+}
+Write-Success "Checksum verified."
 
 if ($DryRun -or ("{{DRY_RUN}}" -eq "true")) {
     Write-Info "DRY RUN: Installation files prepared at $tempDir"
@@ -260,7 +279,7 @@ catch {
 # Install a CA bundle for OpenSSL-based TLS verification on Windows.
 # The agent auto-detects 'cacert.pem' in config/runtime dirs when verify_paths is empty.
 $installedCaBundle = Join-Path $defaultConfigDir 'cacert.pem'
-if (-not (Test-Path $installedCaBundle)) {
+if ($paramReplaceConfig -or -not (Test-Path $installedCaBundle)) {
     $bundledCa = Join-Path $tempDir 'cacert.pem'
     if (-not (Test-Path $bundledCa)) {
         $bundledCa = Join-Path $tempDir 'certs\\cacert.pem'
@@ -317,43 +336,65 @@ if (-not (Test-Path $binaryPath)) {
     exit 1
 }
 
+$candidateVersion = (& $binaryPath --version 2>$null | Select-Object -First 1)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($candidateVersion)) {
+    throw 'Downloaded cert-ctrl binary failed its pre-install version check.'
+}
+if ($candidateVersion.Trim() -ne $Version.Trim()) {
+    throw "Downloaded binary version mismatch: expected $Version, got $candidateVersion."
+}
+
 $destinationBinary = Join-Path $installPath 'cert-ctrl.exe'
 
 $serviceWasRunning = $false
 if (-not $paramUserInstall) {
-    try {
-        $existingService = Get-Service -Name $serviceName -ErrorAction Stop
-        if ($existingService.Status -eq 'Running') {
+    $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($existingService -and $existingService.Status -eq 'Running') {
+        try {
             Write-Info "Stopping Windows service '$serviceName' before updating binary..."
             Stop-Service -Name $serviceName -Force -ErrorAction Stop
-            try {
-                $existingService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
-            }
-            catch {
-                Write-WarningMessage "Timed out waiting for '$serviceName' to stop"
-            }
+            $existingService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
             $serviceWasRunning = $true
         }
-    }
-    catch [System.InvalidOperationException] {
-        # Service not installed; nothing to stop
-    }
-    catch {
-        Write-WarningMessage "Unable to inspect or stop service '$serviceName': $($_.Exception.Message)"
+        catch {
+            throw "Unable to stop service '$serviceName'; refusing to replace a running installation. $($_.Exception.Message)"
+        }
     }
 }
 
-Copy-Item -Path $binaryPath -Destination $destinationBinary -Force
-$serviceInstalled = Register-CertCtrlService -BinaryPath $destinationBinary -IsUserInstall:$paramUserInstall -ForceInstall:$paramForceInstall
+$backupBinary = Join-Path $tempDir 'cert-ctrl.previous.exe'
+$hadExistingBinary = Test-Path $destinationBinary
+if ($hadExistingBinary) {
+    Copy-Item -Path $destinationBinary -Destination $backupBinary -Force
+}
 
-if (-not $paramUserInstall -and $serviceWasRunning -and -not $serviceInstalled) {
-    try {
-        Start-Service -Name $serviceName -ErrorAction Stop
-        Write-Info "Restarted Windows service '$serviceName'."
+try {
+    $stagedBinary = Join-Path $installPath ('.cert-ctrl.install.' + [System.Guid]::NewGuid().ToString('N') + '.exe')
+    Copy-Item -Path $binaryPath -Destination $stagedBinary -Force
+    Move-Item -Path $stagedBinary -Destination $destinationBinary -Force
+
+    $serviceInstalled = Register-CertCtrlService -BinaryPath $destinationBinary -IsUserInstall:$paramUserInstall -ReplaceService:$paramReplaceService
+    if (-not $paramUserInstall -and -not $serviceInstalled) {
+        throw "Failed to configure Windows service '$serviceName'."
     }
-    catch {
-        Write-WarningMessage "Failed to restart service '$serviceName': $($_.Exception.Message)"
+
+    if ($serviceWasRunning) {
+        $runningService = Get-Service -Name $serviceName -ErrorAction Stop
+        $runningService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
     }
+}
+catch {
+    Write-ErrorMessage "Upgrade failed; restoring the previous cert-ctrl binary. $($_.Exception.Message)"
+    if ($hadExistingBinary -and (Test-Path $backupBinary)) {
+        Copy-Item -Path $backupBinary -Destination $destinationBinary -Force
+    }
+    elseif (-not $hadExistingBinary) {
+        Remove-Item -Path $destinationBinary -Force -ErrorAction SilentlyContinue
+    }
+    if ($serviceWasRunning) {
+        Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+    }
+    throw
 }
 
 Write-Success "cert-ctrl installed at $destinationBinary"
@@ -413,4 +454,5 @@ if ($serviceInstalled) {
 }
 $statusCommand = 'Get-Service ' + $serviceName
 Write-Info "Service status: $statusCommand"
+Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 `;

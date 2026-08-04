@@ -55,7 +55,7 @@ boost::asio::awaitable<monad::MyResult<void>> UpdateHandler::start_awaitable() {
   }
 
   output_.logger().info()
-      << "Add --version <tag> if you need to pin a specific release."
+      << "To pin a release, add ?version=<tag> to the installer URL."
       << std::endl;
   output_.logger().info()
       << "The installer stops the running service, replaces the binary, "

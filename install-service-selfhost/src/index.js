@@ -10,6 +10,8 @@ import {
   normalizePlatformHint,
   normalizeArchitectureHint
 } from './utils/platform.js';
+import { InvalidInstallParameterError, parseBooleanFlag } from './utils/install-params.js';
+import { classifyUpdateUrgency, compareVersions } from './utils/versioning.js';
 
 const app = express();
 app.set('trust proxy', true);
@@ -153,13 +155,15 @@ app.get(['/install.sh', '/install.ps1', '/install-macos.sh'], rateLimiter, async
     const sandboxParam = readQueryString(req.query, 'sandbox')?.toLowerCase() || '';
     const params = {
       version: readQueryString(req.query, 'version') || defaultVersion,
-      verbose: hasQueryFlag(req.query, 'verbose') || hasQueryFlag(req.query, 'v'),
-      force: hasQueryFlag(req.query, 'force'),
+      verbose: readQueryFlag(req.query, 'verbose') || readQueryFlag(req.query, 'v'),
+      force: readQueryFlag(req.query, 'force'),
+      replaceConfig: readQueryFlag(req.query, 'replace-config'),
+      replaceService: readQueryFlag(req.query, 'replace-service'),
       installDir: readQueryString(req.query, 'install-dir') || readQueryString(req.query, 'dir') || '',
-      dryRun: hasQueryFlag(req.query, 'dry-run'),
+      dryRun: readQueryFlag(req.query, 'dry-run'),
       writableDirs: readQueryString(req.query, 'writable-dirs') || readQueryString(req.query, 'rw-dirs') || '',
       disableSandbox:
-        hasQueryFlag(req.query, 'no-sandbox') ||
+        readQueryFlag(req.query, 'no-sandbox') ||
         sandboxParam === '0' ||
         sandboxParam === 'false'
     };
@@ -189,6 +193,10 @@ app.get(['/install.sh', '/install.ps1', '/install-macos.sh'], rateLimiter, async
     res.set('X-Mirror', mirror.name);
     res.send(script);
   } catch (error) {
+    if (error instanceof InvalidInstallParameterError) {
+      res.status(400).type('text/plain').send(error.message);
+      return;
+    }
     res.status(500).type('text/plain').send('Error generating installation script');
   }
 });
@@ -224,10 +232,10 @@ app.get(['/uninstall.sh', '/uninstall.ps1', '/uninstall-macos.sh'], rateLimiter,
 
     const params = {
       version: readQueryString(req.query, 'version') || defaultVersion,
-      verbose: hasQueryFlag(req.query, 'verbose') || hasQueryFlag(req.query, 'v'),
-      force: hasQueryFlag(req.query, 'force'),
+      verbose: readQueryFlag(req.query, 'verbose') || readQueryFlag(req.query, 'v'),
+      force: readQueryFlag(req.query, 'force'),
       installDir: readQueryString(req.query, 'install-dir') || readQueryString(req.query, 'dir') || '',
-      dryRun: hasQueryFlag(req.query, 'dry-run')
+      dryRun: readQueryFlag(req.query, 'dry-run')
     };
 
     const mirror = selectBestMirror(baseUrl);
@@ -255,6 +263,10 @@ app.get(['/uninstall.sh', '/uninstall.ps1', '/uninstall-macos.sh'], rateLimiter,
     res.set('X-Mirror', mirror.name);
     res.send(script);
   } catch (error) {
+    if (error instanceof InvalidInstallParameterError) {
+      res.status(400).type('text/plain').send(error.message);
+      return;
+    }
     res.status(500).type('text/plain').send('Error generating uninstall script');
   }
 });
@@ -475,12 +487,22 @@ function readQueryString(query, key) {
   return String(value);
 }
 
-function hasQueryFlag(query, key) {
-  return Object.prototype.hasOwnProperty.call(query || {}, key);
+function readQueryFlag(query, key) {
+  const present = Object.prototype.hasOwnProperty.call(query || {}, key);
+  return parseBooleanFlag(readQueryString(query, key), present);
 }
 
 function getBaseUrl(req) {
-  return `${req.protocol}://${req.get('host')}`;
+  const candidate = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+  try {
+    const parsed = new URL(candidate);
+    if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password) {
+      return parsed.origin;
+    }
+  } catch {
+    // Use the canonical public origin below.
+  }
+  return 'https://install.lets-script.com';
 }
 
 function resolveScriptType(pathname) {
@@ -577,9 +599,9 @@ function extractDownloadUrls(assets, baseUrl, version) {
 
 function buildInstallCommands(baseUrl) {
   return {
-    linux: `curl -fsSL "${baseUrl}/install.sh?force=1" | sudo bash`,
-    macos: `curl -fsSL "${baseUrl}/install-macos.sh?force=1" | sudo bash`,
-    windows: `irm "${baseUrl}/install.ps1?force=1" | iex`
+    linux: `curl -fsSL "${baseUrl}/install.sh" | sudo bash`,
+    macos: `curl -fsSL "${baseUrl}/install-macos.sh" | sudo bash`,
+    windows: `irm "${baseUrl}/install.ps1" | iex`
   };
 }
 
@@ -662,89 +684,6 @@ function getContentType(filename) {
   return 'application/octet-stream';
 }
 
-function compareVersions(version1 = '', version2 = '') {
-  const normalize = (raw) => {
-    const cleaned = raw.trim().replace(/^v/i, '');
-    const [core, ...rest] = cleaned.split('-');
-
-    const toTokens = (segment) =>
-      segment
-        .split('.')
-        .filter((token) => token.length > 0)
-        .map((token) => {
-          const numeric = Number(token);
-          return Number.isNaN(numeric) ? token : numeric;
-        });
-
-    return {
-      core: toTokens(core),
-      qualifiers: rest.flatMap(toTokens)
-    };
-  };
-
-  const a = normalize(version1);
-  const b = normalize(version2);
-
-  const maxCoreLength = Math.max(a.core.length, b.core.length);
-  for (let i = 0; i < maxCoreLength; i++) {
-    const lhs = a.core[i] ?? 0;
-    const rhs = b.core[i] ?? 0;
-
-    if (typeof lhs === 'number' && typeof rhs === 'number') {
-      if (lhs > rhs) return 1;
-      if (lhs < rhs) return -1;
-    } else {
-      const lhsStr = String(lhs);
-      const rhsStr = String(rhs);
-      if (lhsStr > rhsStr) return 1;
-      if (lhsStr < rhsStr) return -1;
-    }
-  }
-
-  const aHasQualifiers = a.qualifiers.length > 0;
-  const bHasQualifiers = b.qualifiers.length > 0;
-
-  if (!aHasQualifiers && !bHasQualifiers) {
-    return 0;
-  }
-  if (!aHasQualifiers && bHasQualifiers) {
-    return 1;
-  }
-  if (aHasQualifiers && !bHasQualifiers) {
-    return -1;
-  }
-
-  const maxQualifierLength = Math.max(a.qualifiers.length, b.qualifiers.length);
-  for (let i = 0; i < maxQualifierLength; i++) {
-    const lhs = a.qualifiers[i];
-    const rhs = b.qualifiers[i];
-
-    if (lhs === undefined) return -1;
-    if (rhs === undefined) return 1;
-
-    const lhsIsNumber = typeof lhs === 'number';
-    const rhsIsNumber = typeof rhs === 'number';
-
-    if (lhsIsNumber && rhsIsNumber) {
-      if (lhs > rhs) return 1;
-      if (lhs < rhs) return -1;
-      continue;
-    }
-
-    if (lhsIsNumber !== rhsIsNumber) {
-      return lhsIsNumber ? -1 : 1;
-    }
-
-    const lhsStr = String(lhs);
-    const rhsStr = String(rhs);
-
-    if (lhsStr > rhsStr) return 1;
-    if (lhsStr < rhsStr) return -1;
-  }
-
-  return 0;
-}
-
 async function isSecurityUpdate(releaseBody) {
   if (!releaseBody) return false;
 
@@ -776,17 +715,10 @@ function getDeprecationWarnings(currentVersion) {
 }
 
 async function getUpdateUrgency(currentVersion, latestVersion, releaseBody) {
-  const versionGap = compareVersions(latestVersion, currentVersion);
-
-  if (await isSecurityUpdate(releaseBody)) {
-    return 'critical';
-  }
-
-  if (versionGap >= 2) {
-    return 'high';
-  } else if (versionGap >= 1) {
-    return 'medium';
-  }
-
-  return 'low';
+  return classifyUpdateUrgency({
+    currentVersion,
+    latestVersion,
+    minimumSupportedVersion: getMinimumSupportedVersion(),
+    securityUpdate: await isSecurityUpdate(releaseBody)
+  });
 }

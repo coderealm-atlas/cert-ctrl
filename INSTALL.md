@@ -348,7 +348,7 @@ OS="linux"        # or "macos" for macOS
 # Download binary
 curl -fsSL "https://github.com/coderealm-atlas/cert-ctrl/releases/download/${VERSION}/cert-ctrl-${OS}-${ARCH}.tar.gz" -o cert-ctrl.tar.gz
 
-# Verify checksum (optional but recommended)
+# Verify checksum (required by the hosted installer)
 curl -fsSL "https://github.com/coderealm-atlas/cert-ctrl/releases/download/${VERSION}/cert-ctrl-${OS}-${ARCH}.tar.gz.sha256" | sha256sum -c
 
 # Extract
@@ -421,7 +421,7 @@ $DownloadUrl = "https://github.com/coderealm-atlas/cert-ctrl/releases/download/$
 $TempFile = "$env:TEMP\cert-ctrl.zip"
 Invoke-WebRequest -Uri $DownloadUrl -OutFile $TempFile
 
-# Verify checksum (optional but recommended)
+# Verify checksum (required by the hosted installer)
 $ChecksumUrl = "https://github.com/coderealm-atlas/cert-ctrl/releases/download/$VERSION/cert-ctrl-windows-$ARCH.zip.sha256"
 $ExpectedChecksum = (Invoke-WebRequest -Uri $ChecksumUrl).Content.Trim()
 $ActualChecksum = (Get-FileHash -Path $TempFile -Algorithm SHA256).Hash
@@ -481,14 +481,14 @@ curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --version v0.
 ### Non-interactive Installation
 
 ```bash
-# Automated installation for scripts
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --non-interactive --force
+# Automated installation for scripts; this does not replace existing config
+curl -fsSL https://install.lets-script.com/install.sh | sudo bash -s -- --non-interactive
 ```
 
 ### Verification and Checksums
 
 ```bash
-# The installer automatically verifies checksums when available
+# The installer requires and verifies the matching release checksum
 # Manual verification:
 curl -fsSL "https://github.com/coderealm-atlas/cert-ctrl/releases/download/v0.1.0/cert-ctrl-linux-x64.tar.gz.sha256"
 sha256sum cert-ctrl-linux-x64.tar.gz
@@ -675,5 +675,7 @@ For detailed build instructions, see [BUILD.md](BUILD.md).
 - Run with minimal required privileges
 - Regularly update to the latest version for security patches
 - Verify checksums when downloading manually
+- Routine upgrades preserve existing configuration and service definitions. Use
+  `--replace-config` or `--replace-service` only for an intentional reset.
 
 For security questions, contact security@cert-ctrl.com.

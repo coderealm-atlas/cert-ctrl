@@ -152,11 +152,16 @@ AgentUpdateChecker::run_once_awaitable(const std::string &current_version) {
         << "Changelog: " << *response.changelog_url << std::endl;
   }
   if (!response.install_commands.empty()) {
-    output_.printer().green()
-        << "Recommended installation commands:" << std::endl;
-    for (const auto &[platform, command] : response.install_commands) {
-      output_.printer().green()
-          << "  " << platform << ": " << command << std::endl;
+    output_.printer().green() << "Recommended upgrade command:" << std::endl;
+    const auto current_platform = detect_platform();
+    if (const auto it = response.install_commands.find(current_platform);
+        it != response.install_commands.end()) {
+      output_.printer().green() << "  " << it->second << std::endl;
+    } else {
+      for (const auto &[platform, command] : response.install_commands) {
+        output_.printer().green()
+            << "  " << platform << ": " << command << std::endl;
+      }
     }
   } else if (!response.download_urls.empty()) {
     output_.logger().info() << "Download URLs:" << std::endl;

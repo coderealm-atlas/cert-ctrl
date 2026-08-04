@@ -15,6 +15,7 @@ install_service_skip_git_pull: false
 
 install_service_binary_basename: cert-ctrl
 install_service_app_env:
+  PUBLIC_BASE_URL: "https://install.lets-script.com"
   ANALYTICS_ENABLED: "true"
   RATE_LIMIT_ENABLED: "true"
   RATE_LIMIT_MAX_REQUESTS: "120"

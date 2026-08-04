@@ -24,6 +24,7 @@ SERVICE_LABEL="\${SERVICE_LABEL:-{{SERVICE_LABEL}}}"
 PLIST_PATH="/Library/LaunchDaemons/\${SERVICE_LABEL}.plist"
 DOWNLOAD_OS="macos"
 FORCE="\${FORCE:-{{FORCE}}}"
+REPLACE_SERVICE="\${REPLACE_SERVICE:-{{REPLACE_SERVICE}}}"
 RED='\x1b[0;31m'
 GREEN='\x1b[0;32m'
 BLUE='\x1b[0;34m'
@@ -31,6 +32,10 @@ YELLOW='\x1b[1;33m'
 NC='\x1b[0m'
 SHA256_CMD=()
 ARCHIVE_TMPDIR=""
+BINARY_BACKUP_PATH=""
+BINARY_TARGET_PATH=""
+UPGRADE_IN_PROGRESS="false"
+SERVICE_WAS_LOADED="false"
 
 die() {
     echo -e "\${RED}[ERROR]\${NC} $1" >&2
@@ -73,6 +78,11 @@ maybe_skip_install() {
 
     if [ "\${FORCE}" = "true" ]; then
         log_info "Force install requested; continuing even if version matches."
+        return 0
+    fi
+
+    if [[ "$REPLACE_SERVICE" == "true" ]]; then
+        log_info "LaunchDaemon replacement requested; continuing even if version matches."
         return 0
     fi
 
@@ -174,7 +184,7 @@ download_archive() {
         fi
         log_success "Checksum verified."
     else
-        log_warn "Checksum file unavailable; skipping verification."
+        die "Checksum file unavailable; refusing an unverified installation."
     fi
 
     echo "$archive"
@@ -182,6 +192,7 @@ download_archive() {
 
 install_binary() {
     local archive="$1"
+    local requested_version="$2"
     local temp_extract
     temp_extract=$(mktemp -d)
     tar -xzf "$archive" -C "$temp_extract" || die "Failed to extract archive."
@@ -195,9 +206,44 @@ install_binary() {
         die "cert-ctrl binary not found inside archive."
     fi
 
+    local candidate_version
+    candidate_version=$("$binary_path" --version 2>/dev/null | head -n1) || die "Downloaded binary failed its version check."
+    [[ "$candidate_version" == "$requested_version" ]] || die "Downloaded binary version mismatch: expected $requested_version, got $candidate_version."
+
     mkdir -p "$INSTALL_DIR"
-    install -m 755 "$binary_path" "\${INSTALL_DIR}/cert-ctrl"
+    BINARY_TARGET_PATH="\${INSTALL_DIR}/cert-ctrl"
+    if [[ -f "$BINARY_TARGET_PATH" ]]; then
+        BINARY_BACKUP_PATH="\${INSTALL_DIR}/.cert-ctrl.rollback.$$"
+        cp -p "$BINARY_TARGET_PATH" "$BINARY_BACKUP_PATH"
+    fi
+    UPGRADE_IN_PROGRESS="true"
+
+    local staged_binary="\${INSTALL_DIR}/.cert-ctrl.install.$$"
+    install -m 755 "$binary_path" "$staged_binary"
+    mv -f "$staged_binary" "$BINARY_TARGET_PATH"
     log_success "Installed cert-ctrl to \${INSTALL_DIR}."
+}
+
+rollback_failed_upgrade_on_exit() {
+    local status=$?
+    trap - EXIT
+    if [[ "$status" -ne 0 && "$UPGRADE_IN_PROGRESS" == "true" ]]; then
+        if [[ -n "$BINARY_BACKUP_PATH" && -f "$BINARY_BACKUP_PATH" ]]; then
+            mv -f "$BINARY_BACKUP_PATH" "$BINARY_TARGET_PATH"
+            log_warn "Restored the previous cert-ctrl binary."
+        else
+            rm -f "$BINARY_TARGET_PATH"
+        fi
+        if [[ "$SERVICE_WAS_LOADED" == "true" ]]; then
+            reload_service || log_warn "Previous binary restored, but LaunchDaemon restart still failed."
+        fi
+    fi
+    exit "$status"
+}
+
+commit_binary_upgrade() {
+    [[ -z "$BINARY_BACKUP_PATH" ]] || rm -f "$BINARY_BACKUP_PATH"
+    UPGRADE_IN_PROGRESS="false"
 }
 
 prepare_directories() {
@@ -208,12 +254,15 @@ prepare_directories() {
     log_info "State directory: $STATE_DIR"
 
     mkdir -p "$LOG_DIR"
-    : > "\${LOG_DIR}/certctrl.log"
-    : > "\${LOG_DIR}/certctrl.err.log"
+    touch "\${LOG_DIR}/certctrl.log" "\${LOG_DIR}/certctrl.err.log"
     chmod 644 "\${LOG_DIR}/certctrl.log" "\${LOG_DIR}/certctrl.err.log"
 }
 
 write_launchd_plist() {
+    if [[ -f "$PLIST_PATH" && "$REPLACE_SERVICE" != "true" ]]; then
+        log_info "Preserving existing LaunchDaemon definition at $PLIST_PATH."
+        return 0
+    fi
     cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -253,6 +302,7 @@ EOF
 
 reload_service() {
     if launchctl list | grep -q "\${SERVICE_LABEL}"; then
+        SERVICE_WAS_LOADED="true"
         log_info "Unloading existing service \${SERVICE_LABEL}."
         launchctl bootout system "$PLIST_PATH" >/dev/null 2>&1 || launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
     fi
@@ -263,7 +313,7 @@ reload_service() {
         launchctl kickstart -k system/\${SERVICE_LABEL} >/dev/null 2>&1 || true
     log_success "Service \${SERVICE_LABEL} started."
     else
-        launchctl load "$PLIST_PATH" >/dev/null 2>&1 || die "Failed to load LaunchDaemon."
+        launchctl load "$PLIST_PATH" >/dev/null 2>&1 || return 1
         log_warn "Service loaded via legacy launchctl load; verify status manually."
     fi
 }
@@ -288,10 +338,13 @@ main() {
     maybe_skip_install "$version"
     local archive
     archive=$(download_archive "$version" "$arch")
-    install_binary "$archive"
+    install_binary "$archive" "$version"
     prepare_directories
     write_launchd_plist
-    reload_service
+    if ! reload_service; then
+        die "Failed to restart LaunchDaemon after upgrade."
+    fi
+    commit_binary_upgrade
     rm -f "$archive" "$archive.sha256" 2>/dev/null || true
     if [[ -n "$ARCHIVE_TMPDIR" ]]; then
         rm -rf "$ARCHIVE_TMPDIR"
@@ -299,5 +352,6 @@ main() {
     print_next_steps
 }
 
+trap rollback_failed_upgrade_on_exit EXIT
 main "$@"
 `;

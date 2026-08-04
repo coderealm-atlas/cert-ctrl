@@ -19,9 +19,9 @@ The macOS installer template (`../install-service/templates/install-macos.sh.js`
 1. **Wrapper entrypoint** – The checked-in script (`../install-service/install-macos.sh`) simply downloads and executes the hosted installer (`install.lets-script.com/install-macos.sh`), ensuring we always run the latest template output (lines 1-13).
 2. **Root requirement & dependency checks** – The generated script exits unless invoked via `sudo`, then validates `curl`, `tar`, `gzip`, and either `sha256sum` or `shasum` are available (lines 6-119).
 3. **Version & artifact resolution** – It optionally hits the GitHub Releases API when `VERSION=latest`, chooses the macOS tarball (arm64/x64), and downloads both the archive and checksum from the Cloudflare Worker mirror (lines 122-181).
-4. **Binary installation** – The tarball is unpacked, `cert-ctrl` is copied into the install dir with mode 755, and ownership inherits from the user running the installer (lines 183-200).
-5. **Directory preparation** – Config/state folders are created with `0755` permissions and log files are created with `0644` (lines 203-214).
-6. **LaunchDaemon emission** – A plist is emitted to `/Library/LaunchDaemons`, invoking `cert-ctrl --config-dirs <config> --keep-running`, setting `CERTCTRL_STATE_DIR`, and wiring stdout/stderr to the log files. The plist is owned by `root:wheel` (lines 216-251).
+4. **Binary installation** – The tarball is unpacked and the candidate binary is version-checked before an atomic replacement. The previous executable is retained until launchd restarts successfully and is restored on failure.
+5. **Directory preparation** – Config/state folders are created with `0755` permissions. Existing log files are preserved rather than truncated.
+6. **LaunchDaemon emission** – A new plist is emitted only for a fresh install or when `replace-service=1` is explicitly requested. Existing service definitions are preserved during routine upgrades.
 
 	- If `websocket_config.json` is present in the config dir and `enabled=true`, the service will run **WebSocket-first** and will **not** run the legacy HTTP updates polling loop.
 	- If WebSocket is disabled, the agent falls back to HTTP polling for updates.
@@ -30,7 +30,8 @@ The macOS installer template (`../install-service/templates/install-macos.sh.js`
 ### Security & Correctness Notes
 
 - The script enforces elevated execution and fails fast on missing prerequisites, reducing partial installs.
-- SHA-256 verification is attempted for every download; failure to fetch the checksum downgrades to a warning so installs are still possible from mirrors with missing `.sha256` files (lines 164-179).
+- SHA-256 verification is mandatory. A missing, empty, or mismatched checksum aborts installation before the installed binary is changed.
+- If launchd cannot start the upgraded executable, the installer restores the previous binary and exits with a failure status.
 - Because the LaunchDaemon runs under the system domain, configuration and state directories must remain root-owned and readable by `cert-ctrl`.
 
 ## LaunchDaemon Behavior
@@ -72,7 +73,7 @@ To uninstall, remove `/Library/LaunchDaemons/com.coderealm.certctrl.plist`, unlo
 2. **Configuration contents** – The service passes the directory verbatim to `--config-dirs`. If `cert-ctrl` enforces format checks, place a valid config file inside that directory before starting the daemon.
 3. **Binary health** – Run `/usr/local/bin/cert-ctrl --version` and `/usr/local/bin/cert-ctrl --config-dirs "/Library/Application Support/certctrl" --check-config` manually (from a shell) to validate CLI arguments outside of launchd.
 4. **Logs** – Review `/var/log/certctrl.err.log` for CLI11/argument errors, stack traces, or network issues. stdout is generally informational and is appended to `/var/log/certctrl.log`.
-5. **Re-run installer** – Invoke `curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash` with `FORCE=true` when you need to rebuild the plist or reinstall the binary.
+5. **Re-run installer** – A normal invocation upgrades the binary while preserving the plist. Use `FORCE=true` only to reinstall the same binary version, or request `replace-service=1` when the plist must be regenerated from installer defaults.
 
 ## Current Machine Status (captured via `launchctl print`)
 

@@ -523,7 +523,8 @@ public:
     if (!dispatched) {
       if (cli_ctx_.params.subcmd.empty()) {
         output_hub_->logger().info()
-            << "No subcommand provided; running default update workflow."
+            << "No subcommand provided; checking the agent version and "
+               "synchronizing device updates."
             << std::endl;
 
         const bool websocket_enabled =

@@ -77,8 +77,11 @@ https://install.lets-script.com/
 ### Quick Installation
 
 ```bash
-# Unix/Linux/macOS
-curl -fsSL https://install.lets-script.com/install.sh | bash
+# Unix/Linux
+curl -fsSL https://install.lets-script.com/install.sh | sudo bash
+
+# macOS
+curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash
 
 # Windows PowerShell
 iwr -useb https://install.lets-script.com/install.ps1 | iex

@@ -6,6 +6,7 @@ import {
 } from '../utils/platform.js';
 import { getUninstallTemplate } from '../utils/templates.js';
 import { corsHeaders } from '../utils/cors.js';
+import { InvalidInstallParameterError, parseBooleanFlag } from '../utils/install-params.js';
 
 export async function uninstallHandler(request, env) {
   try {
@@ -48,10 +49,10 @@ export async function uninstallHandler(request, env) {
 
     const params = {
       version: url.searchParams.get('version') || 'latest',
-      verbose: url.searchParams.has('verbose') || url.searchParams.has('v'),
-      force: url.searchParams.has('force'),
+      verbose: readFlag(url.searchParams, 'verbose') || readFlag(url.searchParams, 'v'),
+      force: readFlag(url.searchParams, 'force'),
       installDir: url.searchParams.get('install-dir') || url.searchParams.get('dir'),
-      dryRun: url.searchParams.has('dry-run')
+      dryRun: readFlag(url.searchParams, 'dry-run')
     };
 
     const script = await getUninstallTemplate(scriptType, {
@@ -82,13 +83,18 @@ export async function uninstallHandler(request, env) {
     });
   } catch (error) {
     console.error('Uninstall handler error:', error);
+    const invalidInput = error instanceof InvalidInstallParameterError;
 
-    return new Response('Error generating uninstallation script', {
-      status: 500,
+    return new Response(invalidInput ? error.message : 'Error generating uninstallation script', {
+      status: invalidInput ? 400 : 500,
       headers: {
         'Content-Type': 'text/plain',
         ...corsHeaders
       }
     });
   }
+}
+
+function readFlag(searchParams, key) {
+  return parseBooleanFlag(searchParams.get(key), searchParams.has(key));
 }

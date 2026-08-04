@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { __testables__ } from './version.js';
 
-const { extractDownloadUrls } = __testables__;
+const { buildInstallCommands, extractDownloadUrls } = __testables__;
+
+describe('buildInstallCommands', () => {
+  it('uses normal upgrade commands without forcing a reinstall', () => {
+    const commands = buildInstallCommands();
+
+    expect(commands.linux).not.toContain('force=1');
+    expect(commands.macos).not.toContain('force=1');
+    expect(commands.windows).not.toContain('force=1');
+    expect(commands.linux).toContain('| sudo bash');
+  });
+});
 
 describe('extractDownloadUrls', () => {
   it('captures canonical linux, openssl3, and musl artifacts', () => {

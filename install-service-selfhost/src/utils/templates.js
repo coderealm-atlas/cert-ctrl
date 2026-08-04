@@ -4,8 +4,10 @@ import { macosTemplate } from '../../templates/install-macos.sh.js';
 import { bashUninstallTemplate } from '../../templates/uninstall.sh.js';
 import { powershellUninstallTemplate } from '../../templates/uninstall.ps1.js';
 import { macosUninstallTemplate } from '../../templates/uninstall-macos.sh.js';
+import { validateInstallTemplateOptions } from './install-params.js';
 
 export async function getInstallTemplate(scriptType, options) {
+  options = validateInstallTemplateOptions(scriptType, options);
   const {
     platform,
     platformConfidence = 'high',
@@ -44,6 +46,8 @@ export async function getInstallTemplate(scriptType, options) {
     VERSION: params.version,
     VERBOSE: params.verbose ? 'true' : 'false',
     FORCE: params.force ? 'true' : 'false',
+    REPLACE_CONFIG: params.replaceConfig ? 'true' : 'false',
+    REPLACE_SERVICE: params.replaceService ? 'true' : 'false',
     INSTALL_DIR: defaults.installDir,
     CONFIG_DIR: defaults.configDir,
     STATE_DIR: defaults.stateDir,
@@ -66,6 +70,10 @@ export async function getInstallTemplate(scriptType, options) {
 }
 
 export async function getUninstallTemplate(scriptType, options) {
+  options = validateInstallTemplateOptions(scriptType, {
+    ...options,
+    mirror: { name: 'uninstall', url: options.baseUrl }
+  });
   const {
     platform,
     platformConfidence = 'high',
@@ -103,6 +111,8 @@ export async function getUninstallTemplate(scriptType, options) {
     VERSION: params.version || 'latest',
     VERBOSE: params.verbose ? 'true' : 'false',
     FORCE: params.force ? 'true' : 'false',
+    REPLACE_CONFIG: 'false',
+    REPLACE_SERVICE: 'false',
     INSTALL_DIR: defaults.installDir,
     CONFIG_DIR: defaults.configDir,
     STATE_DIR: defaults.stateDir,
@@ -129,7 +139,7 @@ function interpolateTemplate(template, vars) {
   
   for (const [key, value] of Object.entries(vars)) {
     const placeholder = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
-    result = result.replace(placeholder, value);
+    result = result.replace(placeholder, () => String(value));
   }
 
   // Unescape shell variable references that were protected as \${VAR}

@@ -6,6 +6,7 @@ import {
 } from '../utils/platform.js';
 import { getInstallTemplate } from '../utils/templates.js';
 import { corsHeaders } from '../utils/cors.js';
+import { InvalidInstallParameterError, parseBooleanFlag } from '../utils/install-params.js';
 
 export async function installHandler(request, env) {
   try {
@@ -50,16 +51,18 @@ export async function installHandler(request, env) {
     const sandboxParam = (url.searchParams.get('sandbox') || '').toLowerCase();
     const params = {
       version: url.searchParams.get('version') || 'latest',
-      verbose: url.searchParams.has('verbose') || url.searchParams.has('v'),
-      force: url.searchParams.has('force'),
+      verbose: readFlag(url.searchParams, 'verbose') || readFlag(url.searchParams, 'v'),
+      force: readFlag(url.searchParams, 'force'),
+      replaceConfig: readFlag(url.searchParams, 'replace-config'),
+      replaceService: readFlag(url.searchParams, 'replace-service'),
       installDir: url.searchParams.get('install-dir') || url.searchParams.get('dir'),
-      dryRun: url.searchParams.has('dry-run'),
+      dryRun: readFlag(url.searchParams, 'dry-run'),
       writableDirs:
         url.searchParams.get('writable-dirs') ||
         url.searchParams.get('rw-dirs') ||
         '',
       disableSandbox:
-        url.searchParams.has('no-sandbox') ||
+        readFlag(url.searchParams, 'no-sandbox') ||
         sandboxParam === '0' ||
         sandboxParam === 'false'
     };
@@ -98,15 +101,20 @@ export async function installHandler(request, env) {
 
   } catch (error) {
     console.error('Install handler error:', error);
+    const invalidInput = error instanceof InvalidInstallParameterError;
     
-    return new Response('Error generating installation script', {
-      status: 500,
+    return new Response(invalidInput ? error.message : 'Error generating installation script', {
+      status: invalidInput ? 400 : 500,
       headers: {
         'Content-Type': 'text/plain',
         ...corsHeaders
       }
     });
   }
+}
+
+function readFlag(searchParams, key) {
+  return parseBooleanFlag(searchParams.get(key), searchParams.has(key));
 }
 
 // Mirror selection logic

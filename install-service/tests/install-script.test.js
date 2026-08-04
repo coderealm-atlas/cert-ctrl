@@ -36,6 +36,28 @@ describe('install.sh template', () => {
     expect(runSyntaxCheck).not.toThrow();
   });
 
+  it('supports a no-write dry run for a nested install path', async () => {
+    const script = await getInstallTemplate('bash', {
+      ...defaultOptions,
+      params: { ...defaultOptions.params, version: 'v0.0.0' }
+    });
+    const workDir = mkdtempSync(join(tmpdir(), 'certctrl-install-dry-run-'));
+    const scriptPath = join(workDir, 'install.sh');
+    writeFileSync(scriptPath, script, { mode: 0o755 });
+
+    expect(() => execFileSync(
+      'bash',
+      [
+        scriptPath,
+        '--dry-run',
+        '--no-service',
+        '--install-dir',
+        join(workDir, 'missing', 'bin')
+      ],
+      { env: { ...process.env, BASE_URL: '', MIRROR_URL: '', VERSION: '' } }
+    )).not.toThrow();
+  });
+
   it('includes jq-less awk fallback for version resolution', async () => {
     const script = await getInstallTemplate('bash', defaultOptions);
     const awkFallback = `awk -F'"' '/"version":/ {print $4; exit}'`;
@@ -87,5 +109,41 @@ describe('install.sh template', () => {
     expect(script).toContain('procname="@@BINARY_PATH@@"');
     expect(script).toContain('command_args="-p /var/run/${name}.pid @@BINARY_PATH@@ --config-dirs @@CONFIG_DIR@@ --keep-running"');
     expect(script).toContain(': ${@@RC_NAME@@_limits:=""}');
+  });
+
+  it('rejects command substitution in query-derived values', async () => {
+    await expect(getInstallTemplate('bash', {
+      ...defaultOptions,
+      params: { ...defaultOptions.params, installDir: '$(touch /tmp/unsafe)' }
+    })).rejects.toThrow(/Invalid install-dir/);
+
+    await expect(getInstallTemplate('bash', {
+      ...defaultOptions,
+      params: { ...defaultOptions.params, version: 'latest$(id)' }
+    })).rejects.toThrow(/Invalid version/);
+  });
+
+  it('requires checksums and includes transactional rollback', async () => {
+    const script = await getInstallTemplate('bash', defaultOptions);
+
+    expect(script).toContain('refusing an unverified installation');
+    expect(script).toContain('rollback_failed_upgrade_on_exit');
+    expect(script).toContain('refusing to replace a running installation');
+    expect(script).toContain('Configuration or service replacement requested');
+    expect(script).toContain('REPLACE_CONFIG="${REPLACE_CONFIG:-false}"');
+    expect(script).not.toContain('NONINTERACTIVE="true"\n            FORCE=true');
+  });
+
+  it('keeps PowerShell binary reinstall separate from service replacement', async () => {
+    const script = await getInstallTemplate('powershell', {
+      ...defaultOptions,
+      platform: 'windows',
+      params: { ...defaultOptions.params, installDir: 'C:\\Tools\\cert-ctrl' }
+    });
+
+    expect(script).toContain('[string]$InstallDir = "C:\\Tools\\cert-ctrl"');
+    expect(script).toContain('[switch]$ReplaceService');
+    expect(script).toContain('-ReplaceService:$paramReplaceService');
+    expect(script).not.toContain('-ForceInstall:$paramForceInstall');
   });
 });

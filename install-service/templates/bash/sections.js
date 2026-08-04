@@ -17,6 +17,8 @@ MIRROR_URL="\${MIRROR_URL:-{{MIRROR_URL}}}"
 VERSION="\${VERSION:-{{VERSION}}}"
 VERBOSE="\${VERBOSE:-{{VERBOSE}}}"
 FORCE="\${FORCE:-{{FORCE}}}"
+REPLACE_CONFIG="\${REPLACE_CONFIG:-{{REPLACE_CONFIG}}}"
+REPLACE_SERVICE="\${REPLACE_SERVICE:-{{REPLACE_SERVICE}}}"
 DRY_RUN="\${DRY_RUN:-{{DRY_RUN}}}"
 WRITABLE_DIRS="\${WRITABLE_DIRS:-{{WRITABLE_DIRS}}}"
 SANDBOX_DISABLED="\${SANDBOX_DISABLED:-{{SANDBOX_DISABLED}}}"
@@ -42,6 +44,9 @@ fi
 LAST_DOWNLOAD_URL=""
 LAST_CHECKSUM_URL=""
 RESTART_SERVICE_AFTER_INSTALL="false"
+BINARY_BACKUP_PATH=""
+BINARY_TARGET_PATH=""
+UPGRADE_IN_PROGRESS="false"
 SYSTEMD_EXTRA_RW_PATHS=()
 
 if [ -z "$BASE_URL" ]; then
@@ -497,6 +502,11 @@ maybe_skip_install() {
         return 0
     fi
 
+    if [ "$REPLACE_CONFIG" = "true" ] || [ "$REPLACE_SERVICE" = "true" ]; then
+        log_verbose "Configuration or service replacement requested; skipping existing version check"
+        return 0
+    fi
+
     local binary_path="$INSTALL_DIR/cert-ctrl"
 
     if [ ! -x "$binary_path" ]; then
@@ -860,9 +870,9 @@ download_checksum() {
         return 0
     fi
 
-    log_warning "Checksum file not available; skipping verification"
+    log_error "Checksum file not available; refusing an unverified installation"
     rm -f "$checksum_file"
-    echo ""
+    exit 1
 }
 
 verify_checksum() {
@@ -870,12 +880,13 @@ verify_checksum() {
     local checksum_file="$2"
 
     if [ -z "$checksum_file" ]; then
-        return 0
+        log_error "Checksum path is empty; refusing an unverified installation"
+        exit 1
     fi
 
     if [ ! -f "$checksum_file" ]; then
-        log_warning "Checksum file missing; skipping verification"
-        return 0
+        log_error "Checksum file missing; refusing an unverified installation"
+        exit 1
     fi
 
     log_info "Verifying archive integrity..."
@@ -885,8 +896,8 @@ verify_checksum() {
     local actual=\${actual_output%% *}
 
     if [ -z "$expected" ]; then
-        log_warning "Checksum file empty; skipping verification"
-        return 0
+        log_error "Checksum file is empty; refusing an unverified installation"
+        exit 1
     fi
 
     if [ "$expected" != "$actual" ]; then
@@ -935,15 +946,10 @@ install_config_files() {
     fi
 
     log_info "Installing configuration to $CONFIG_DIR"
-    if [ -d "$CONFIG_DIR" ] && [ -n "$(ls -A "$CONFIG_DIR" 2>/dev/null)" ] && [ "$FORCE" = "false" ]; then
-        if [ "$NONINTERACTIVE" = "true" ]; then
-            log_info "Configuration directory exists but continuing (non-interactive mode)"
-        else
-            log_warning "Configuration directory $CONFIG_DIR already exists and contains files"
-            log_info "To overwrite: Use ?force=1 in URL or FORCE=true with sudo -E"
-            log_info "Skipping configuration install"
-            return 0
-        fi
+    if [ -d "$CONFIG_DIR" ] && [ -n "$(ls -A "$CONFIG_DIR" 2>/dev/null)" ] && [ "$REPLACE_CONFIG" != "true" ]; then
+        log_info "Preserving existing configuration in $CONFIG_DIR"
+        log_info "Use --replace-config only when packaged defaults should replace matching files."
+        return 0
     fi
     mkdir -p "$CONFIG_DIR"
     cp -R "$config_source/." "$CONFIG_DIR/"
@@ -965,7 +971,8 @@ stop_service_if_running() {
                 if "$rc_service_bin" "$openrc_name" stop >/dev/null 2>&1; then
                     RESTART_SERVICE_AFTER_INSTALL="true"
                 else
-                    log_warning "Failed to stop $openrc_name; continuing with installation"
+                    log_error "Failed to stop $openrc_name; refusing to replace a running installation"
+                    return 1
                 fi
             fi
         fi
@@ -981,7 +988,8 @@ stop_service_if_running() {
                 if "$service_bin" "$rc_name" stop >/dev/null 2>&1; then
                     RESTART_SERVICE_AFTER_INSTALL="true"
                 else
-                    log_warning "Failed to stop $rc_name; continuing with installation"
+                    log_error "Failed to stop $rc_name; refusing to replace a running installation"
+                    return 1
                 fi
             fi
         fi
@@ -997,7 +1005,8 @@ stop_service_if_running() {
             if launchctl bootout system "$plist_path" >/dev/null 2>&1 || launchctl unload "$plist_path" >/dev/null 2>&1; then
                 RESTART_SERVICE_AFTER_INSTALL="true"
             else
-                log_warning "Failed to stop $label; continuing with installation"
+                log_error "Failed to stop $label; refusing to replace a running installation"
+                return 1
             fi
         fi
         return 0
@@ -1013,9 +1022,83 @@ stop_service_if_running() {
         if systemctl stop "$SERVICE_NAME"; then
             RESTART_SERVICE_AFTER_INSTALL="true"
         else
-            log_warning "Failed to stop $SERVICE_NAME; continuing with installation"
+            log_error "Failed to stop $SERVICE_NAME; refusing to replace a running installation"
+            return 1
         fi
     fi
+}
+
+start_previously_running_service() {
+    if [ "$RESTART_SERVICE_AFTER_INSTALL" != "true" ]; then
+        return 0
+    fi
+
+    case "$SERVICE_MANAGER" in
+        openrc)
+            local rc_service_bin
+            rc_service_bin=$(find_command_path rc-service 2>/dev/null) || return 1
+            "$rc_service_bin" "$(get_openrc_service_name)" start >/dev/null 2>&1
+            ;;
+        freebsd-rcd)
+            local service_bin
+            service_bin=$(find_command_path service 2>/dev/null) || return 1
+            "$service_bin" "$(get_freebsd_service_name)" start >/dev/null 2>&1
+            ;;
+        launchd)
+            reload_launchd_service
+            ;;
+        systemd)
+            [ "$EUID" -eq 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl start "$SERVICE_NAME"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+backup_existing_binary() {
+    local target_file="$1"
+    BINARY_TARGET_PATH="$target_file"
+    BINARY_BACKUP_PATH=""
+    if [ -f "$target_file" ]; then
+        BINARY_BACKUP_PATH="$(dirname "$target_file")/.cert-ctrl.rollback.$$"
+        cp -p "$target_file" "$BINARY_BACKUP_PATH"
+    fi
+    UPGRADE_IN_PROGRESS="true"
+}
+
+rollback_binary() {
+    if [ -n "$BINARY_BACKUP_PATH" ] && [ -f "$BINARY_BACKUP_PATH" ]; then
+        mv -f "$BINARY_BACKUP_PATH" "$BINARY_TARGET_PATH"
+        log_warning "Restored the previous cert-ctrl binary"
+    elif [ -n "$BINARY_TARGET_PATH" ]; then
+        rm -f "$BINARY_TARGET_PATH"
+    fi
+}
+
+commit_binary_upgrade() {
+    if [ -n "$BINARY_BACKUP_PATH" ]; then
+        rm -f "$BINARY_BACKUP_PATH"
+    fi
+    BINARY_BACKUP_PATH=""
+    UPGRADE_IN_PROGRESS="false"
+}
+
+rollback_failed_upgrade_on_exit() {
+    local status=$?
+    trap - EXIT
+    if [ "$status" -ne 0 ] && [ "$UPGRADE_IN_PROGRESS" = "true" ]; then
+        log_error "Installation failed after binary replacement; restoring the previous state"
+        rollback_binary
+        if [ "$RESTART_SERVICE_AFTER_INSTALL" = "true" ]; then
+            if start_previously_running_service; then
+                log_warning "The previous cert-ctrl service was restored and restarted"
+            else
+                log_error "The previous binary was restored, but its service did not restart"
+            fi
+        fi
+    fi
+    exit "$status"
 }
 
 safe_replace_binary() {
@@ -1134,6 +1217,11 @@ install_launchd_service_unit() {
 
     log_info "Installing launchd service at $plist_path"
 
+    if [ -f "$plist_path" ] && [ "$REPLACE_SERVICE" != "true" ]; then
+        log_info "Preserving existing LaunchDaemon definition at $plist_path"
+        return 0
+    fi
+
     ensure_service_directories
     prepare_launchd_log_files
     mkdir -p "$(dirname "$plist_path")"
@@ -1179,7 +1267,8 @@ EOF
         if reload_launchd_service; then
             RESTART_SERVICE_AFTER_INSTALL="false"
         else
-            log_warning "LaunchDaemon installed but failed to start automatically; run: launchctl bootstrap system $plist_path"
+            log_error "LaunchDaemon installed but failed to start automatically"
+            return 1
         fi
     else
         log_info "Service installed. Enable manually with: launchctl bootstrap system $plist_path && launchctl enable system/$label"
@@ -1256,15 +1345,10 @@ install_systemd_service_unit() {
     fi
 
     log_info "Installing systemd unit at /etc/systemd/system/$SERVICE_NAME"
-    if [ -f "$unit_path" ] && [ "$FORCE" = "false" ]; then
-        if [ "$NONINTERACTIVE" = "true" ]; then
-            log_info "Overwriting existing service unit (non-interactive mode)"
-        else
-            log_warning "Service $SERVICE_NAME already exists."
-            log_info "To overwrite: Use ?force=1 in URL or FORCE=true with sudo -E"
-            log_info "Skipping service installation"
-            return 0
-        fi
+    if [ -f "$unit_path" ] && [ "$REPLACE_SERVICE" != "true" ]; then
+        log_info "Preserving existing service unit $unit_path"
+        log_info "Use --replace-service to regenerate it from installer defaults."
+        return 0
     fi
 
     create_systemd_unit
@@ -1395,15 +1479,9 @@ install_openrc_service_unit() {
     local init_path="/etc/init.d/$openrc_name"
 
     log_info "Installing OpenRC service at $init_path"
-    if [ -f "$init_path" ] && [ "$FORCE" = "false" ]; then
-        if [ "$NONINTERACTIVE" = "true" ]; then
-            log_info "Overwriting existing OpenRC script (non-interactive mode)"
-        else
-            log_warning "Service $openrc_name already exists."
-            log_info "To overwrite: Use ?force=1 in URL or FORCE=true with sudo -E"
-            log_info "Skipping service installation"
-            return 0
-        fi
+    if [ -f "$init_path" ] && [ "$REPLACE_SERVICE" != "true" ]; then
+        log_info "Preserving existing OpenRC service $init_path"
+        return 0
     fi
 
     create_openrc_service
@@ -1437,10 +1515,12 @@ install_openrc_service_unit() {
                 log_success "$openrc_name service started"
                 RESTART_SERVICE_AFTER_INSTALL="false"
             else
-                log_warning "Failed to start $openrc_name automatically; run: rc-service $openrc_name start"
+                log_error "Failed to start $openrc_name automatically"
+                return 1
             fi
         else
-            log_warning "rc-service not found; start manually: rc-service $openrc_name start"
+            log_error "rc-service not found; cannot start $openrc_name"
+            return 1
         fi
     else
         log_info "Service installed. Enable manually with: rc-update add $openrc_name default && rc-service $openrc_name start"
@@ -1481,15 +1561,9 @@ install_freebsd_service_unit() {
     local init_path="/usr/local/etc/rc.d/$rc_name"
 
     log_info "Installing FreeBSD rc.d service at $init_path"
-    if [ -f "$init_path" ] && [ "$FORCE" = "false" ]; then
-        if [ "$NONINTERACTIVE" = "true" ]; then
-            log_info "Overwriting existing rc.d script (non-interactive mode)"
-        else
-            log_warning "Service $rc_name already exists."
-            log_info "To overwrite: Use ?force=1 in URL or FORCE=true with sudo -E"
-            log_info "Skipping service installation"
-            return 0
-        fi
+    if [ -f "$init_path" ] && [ "$REPLACE_SERVICE" != "true" ]; then
+        log_info "Preserving existing FreeBSD rc.d service $init_path"
+        return 0
     fi
 
     mkdir -p "/usr/local/etc/rc.d"
@@ -1526,13 +1600,15 @@ install_freebsd_service_unit() {
             else
                 local restart_status=$?
                 if [ "$restart_status" -eq 124 ]; then
-                    log_warning "Timed out while restarting $rc_name; run: service $rc_name restart"
+                    log_error "Timed out while restarting $rc_name"
                 else
-                    log_warning "Failed to start $rc_name automatically (exit $restart_status); run: service $rc_name start"
+                    log_error "Failed to start $rc_name automatically (exit $restart_status)"
                 fi
+                return 1
             fi
         else
-            log_warning "service command not found; start manually: service $rc_name start"
+            log_error "service command not found; cannot start $rc_name"
+            return 1
         fi
     else
         log_info "Service installed. Enable manually with: sysrc \${rc_name}_enable=YES && service $rc_name start"
@@ -1655,32 +1731,25 @@ install_binary() {
         rm -rf "$extract_dir"
         exit 1
     fi
-    
-    # Check existing installation
-    if [ -f "$INSTALL_DIR/cert-ctrl" ] && [ "$FORCE" = "false" ]; then
-        local current_version=""
-        if [ -x "$INSTALL_DIR/cert-ctrl" ]; then
-            current_version=$("$INSTALL_DIR/cert-ctrl" --version 2>/dev/null || echo "unknown")
-        fi
-        
-        log_warning "cert-ctrl is already installed at $INSTALL_DIR/cert-ctrl"
-        if [ -n "$current_version" ]; then
-            log_info "Current version: $current_version"
-            log_info "New version: $VERSION"
-        fi
-        log_info ""
-        log_info "To proceed with installation, choose one of:"
-    log_info "  1. URL parameter:   curl -fsSL \"$BASE_URL/install.sh?force=1\" | sudo bash"
-    log_info "  2. Environment var: FORCE=true curl -fsSL \"$BASE_URL/install.sh\" | sudo -E bash"
-    log_info "  3. Remove existing: sudo rm $INSTALL_DIR/cert-ctrl && curl -fsSL \"$BASE_URL/install.sh\" | sudo bash"
-        log_info ""
-        log_error "Installation stopped. Use one of the options above to continue."
+
+    local candidate_version
+    if ! candidate_version=$("$binary_path" --version 2>/dev/null | head -n1); then
+        log_error "Downloaded cert-ctrl binary failed its pre-install version check"
+        rm -rf "$extract_dir"
+        exit 1
+    fi
+    if [ "$candidate_version" != "$VERSION" ]; then
+        log_error "Downloaded binary version mismatch: expected $VERSION, got $candidate_version"
         rm -rf "$extract_dir"
         exit 1
     fi
     
     # Install
-    stop_service_if_running
+    if ! stop_service_if_running; then
+        rm -rf "$extract_dir"
+        exit 1
+    fi
+    backup_existing_binary "$INSTALL_DIR/cert-ctrl"
     if safe_replace_binary "$binary_path" "$INSTALL_DIR/cert-ctrl"; then
         log_success "Binary installed"
     else
@@ -1705,49 +1774,13 @@ install_binary() {
     apply_distro_specific_fixes
 
     if [ "$RESTART_SERVICE_AFTER_INSTALL" = "true" ]; then
-        if [ "$SERVICE_MANAGER" = "openrc" ]; then
-            local rc_service_bin=""
-            if rc_service_bin=$(find_command_path rc-service 2>/dev/null); then
-                local openrc_name
-                openrc_name=$(get_openrc_service_name)
-                if "$rc_service_bin" "$openrc_name" start >/dev/null 2>&1; then
-                    log_success "Service $openrc_name restarted"
-                else
-                    log_warning "Failed to restart $openrc_name; start manually with: rc-service $openrc_name start"
-                fi
-            else
-                log_warning "Service was stopped but rc-service is unavailable; start manually once rc-service is installed"
-            fi
-        elif [ "$SERVICE_MANAGER" = "freebsd-rcd" ]; then
-            local service_bin
-            if service_bin=$(find_command_path service 2>/dev/null); then
-                local rc_name
-                rc_name=$(get_freebsd_service_name)
-                if "$service_bin" "$rc_name" start >/dev/null 2>&1; then
-                    log_success "Service $rc_name restarted"
-                else
-                    log_warning "Failed to restart $rc_name; start manually with: service $rc_name start"
-                fi
-            else
-                log_warning "Service was stopped but 'service' is unavailable; start manually once available"
-            fi
-        elif [ "$SERVICE_MANAGER" = "launchd" ]; then
-            if ! reload_launchd_service; then
-                local plist_path
-                plist_path=$(get_launchd_plist_path)
-                log_warning "Launchd job failed to restart automatically; run: launchctl bootstrap system $plist_path"
-            fi
+        log_info "Restarting cert-ctrl service after upgrade"
+        if start_previously_running_service; then
+            log_success "cert-ctrl service restarted"
         else
-            if [ "$EUID" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
-                log_warning "Service $SERVICE_NAME was stopped but could not be restarted automatically"
-            else
-                log_info "Restarting $SERVICE_NAME after upgrade"
-                if systemctl start "$SERVICE_NAME"; then
-                    log_success "Service $SERVICE_NAME restarted"
-                else
-                    log_warning "Failed to restart $SERVICE_NAME; start manually with: systemctl start $SERVICE_NAME"
-                fi
-            fi
+            log_error "The upgraded service failed to restart"
+            rm -rf "$extract_dir"
+            exit 1
         fi
     fi
 
@@ -1918,7 +1951,7 @@ main() {
     
     resolve_version
     
-    if [ ! -w "$(dirname "$INSTALL_DIR")" ] && [ "$EUID" -ne 0 ]; then
+    if [ "$DRY_RUN" != "true" ] && [ ! -w "$(dirname "$INSTALL_DIR")" ] && [ "$EUID" -ne 0 ]; then
         log_error "Installation requires root privileges"
         exit 1
     fi
@@ -1949,6 +1982,7 @@ main() {
     
     setup_path
     verify_installation
+    commit_binary_upgrade
     
     echo
     log_success "cert-ctrl installation completed!"
@@ -2038,7 +2072,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --non-interactive|--yes|-y)
             NONINTERACTIVE="true"
-            FORCE=true
             shift
             ;;
         --channel)
@@ -2047,6 +2080,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --force)
             FORCE=true
+            shift
+            ;;
+        --replace-config)
+            REPLACE_CONFIG=true
+            shift
+            ;;
+        --replace-service)
+            REPLACE_SERVICE=true
             shift
             ;;
         --verbose|-v)
@@ -2069,7 +2110,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --writable-dirs LIST  Comma-separated directories added to systemd ReadWritePaths"
             echo "  --no-sandbox      Disable systemd ProtectSystem/ProtectHome sandbox"
             echo "  --sandbox         Re-enable sandbox after using --no-sandbox"
-            echo "  --force           Overwrite existing installation"
+            echo "  --force           Reinstall the requested binary version"
+            echo "  --replace-config  Replace packaged configuration files"
+            echo "  --replace-service Regenerate the service definition"
             echo "  --service         Install and enable systemd service"
             echo "  --no-service      Skip systemd service installation"
             echo "  --enable-service  Enable service after install"
@@ -2114,6 +2157,9 @@ fi
 if [ "$SANDBOX_DISABLED" = "true" ] && [ -n "$WRITABLE_DIRS" ]; then
     log_warning "writable-dirs option ignored because sandbox is disabled"
 fi
+
+# Roll back a partially applied binary upgrade on any later failure.
+trap rollback_failed_upgrade_on_exit EXIT
 
 # Run installation
 main`
