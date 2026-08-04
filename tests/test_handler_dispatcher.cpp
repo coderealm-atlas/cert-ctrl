@@ -41,6 +41,21 @@ public:
   bool started{false};
 };
 
+TEST(HandlerDispatcherTest, EmptySubcommandDoesNotInvokeFactory) {
+  TestOutput output;
+  std::size_t factory_calls = 0;
+  certctrl::HandlerFactoryImpl factory(
+      [&factory_calls](
+          const std::string &) -> std::shared_ptr<certctrl::IHandler> {
+        ++factory_calls;
+        return nullptr;
+      });
+  certctrl::HandlerDispatcher dispatcher(output, factory);
+
+  EXPECT_FALSE(dispatcher.dispatch_awaitable("").has_value());
+  EXPECT_EQ(factory_calls, 0U);
+}
+
 TEST(HandlerDispatcherTest, RetainsHandlerUntilAwaitableCompletes) {
   TestOutput output;
 

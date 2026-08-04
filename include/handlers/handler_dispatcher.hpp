@@ -29,6 +29,10 @@ public:
 
   std::optional<boost::asio::awaitable<monad::MyResult<void>>>
   dispatch_awaitable(const std::string &subcmd) {
+    if (subcmd.empty()) {
+      return std::nullopt;
+    }
+
     try {
       auto handler = handler_factory_.create(subcmd);
       if (!handler) {
