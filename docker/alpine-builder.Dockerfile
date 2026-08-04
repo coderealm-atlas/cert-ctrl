@@ -19,6 +19,7 @@ RUN apk add --no-cache \
     pkgconfig \
     perl \
     autoconf \
+    autoconf-archive \
     automake \
     libtool \
     lld \

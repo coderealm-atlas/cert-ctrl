@@ -15,11 +15,17 @@ RECONFIG_CMAKE="${INSTALL_SERVICE_RECONFIG_CMAKE:-0}"
 HOST_BUILD_DIR="${REPO_ROOT}/${BUILD_DIR_REL}"
 HOST_INSTALL_PREFIX="${REPO_ROOT}/${INSTALL_PREFIX_REL}"
 STAMP_FILE="${HOST_BUILD_DIR}/.install-service-build.stamp"
-# Default to a known-good vcpkg release unless caller overrides.
-VCPKG_COMMIT="${VCPKG_COMMIT:-b322364f06308bdd24823f9d8f03fe0cc86fd46f}"
+# Keep the in-container vcpkg checkout aligned with this repository.
+VCPKG_COMMIT="${VCPKG_COMMIT:-$(git -C "${REPO_ROOT}/external/vcpkg" rev-parse HEAD)}"
 
 # Used for an explicit in-container connectivity/proxy check before vcpkg runs.
-VCPKG_TOOL_RELEASE_TAG="${VCPKG_TOOL_RELEASE_TAG:-2024-12-09}"
+VCPKG_TOOL_RELEASE_TAG="${VCPKG_TOOL_RELEASE_TAG:-$(
+  sed -n 's/^VCPKG_TOOL_RELEASE_TAG=//p' "${REPO_ROOT}/external/vcpkg/scripts/vcpkg-tool-metadata.txt" | head -n 1
+)}"
+if [[ -z "${VCPKG_TOOL_RELEASE_TAG}" ]]; then
+  echo "error: unable to derive VCPKG_TOOL_RELEASE_TAG from external/vcpkg/scripts/vcpkg-tool-metadata.txt" >&2
+  exit 1
+fi
 VCPKG_TOOL_PROBE_URL_DEFAULT="https://github.com/microsoft/vcpkg-tool/releases/download/${VCPKG_TOOL_RELEASE_TAG}/vcpkg-muslc"
 VCPKG_TOOL_PROBE_URL="${VCPKG_TOOL_PROBE_URL:-${VCPKG_TOOL_PROBE_URL_DEFAULT}}"
 

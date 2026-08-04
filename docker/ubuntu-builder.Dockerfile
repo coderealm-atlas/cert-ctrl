@@ -22,6 +22,7 @@ RUN apt-get update && \
         ca-certificates \
         ccache \
         autoconf \
+        autoconf-archive \
         automake \
         libtool \
         libssl-dev \
