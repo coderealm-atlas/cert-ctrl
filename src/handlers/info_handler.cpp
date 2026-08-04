@@ -208,10 +208,6 @@ boost::asio::awaitable<monad::MyResult<void>> InfoHandler::start_awaitable() {
   printer.cyan() << "Device" << std::endl;
   auto device_info = cjj365::device::gather_device_info(
       fmt::format("cert-ctrl/{}", MYAPP_VERSION));
-  auto fingerprint =
-      cjj365::device::generate_device_fingerprint_hex(device_info);
-  auto public_id =
-      cjj365::device::device_public_id_from_fingerprint(fingerprint);
   std::optional<std::string> stored_device_id;
 
   // Prefer device id from state store (SQLite); getter will lazily
@@ -231,6 +227,10 @@ boost::asio::awaitable<monad::MyResult<void>> InfoHandler::start_awaitable() {
     }
     stored_device_id.reset();
 
+    const auto fingerprint =
+        cjj365::device::generate_device_fingerprint_hex(device_info);
+    const auto public_id =
+        cjj365::device::device_public_id_from_fingerprint(fingerprint);
     const std::optional<std::string> id_payload(public_id);
     const std::optional<std::string> fingerprint_payload(fingerprint);
     if (auto err = state_store_.save_device_identity(id_payload,
@@ -278,15 +278,7 @@ boost::asio::awaitable<monad::MyResult<void>> InfoHandler::start_awaitable() {
   }
   {
     auto proxy = printer.white();
-    proxy << "  Derived device ID: " << public_id;
-    if (stored_device_id && *stored_device_id != public_id) {
-      proxy << "  (differs from stored)";
-    }
-    proxy << std::endl;
-  }
-  if (!runtime_dir.empty()) {
-    auto proxy = printer.white();
-    proxy << "  Stored device ID: ";
+    proxy << "  Device ID: ";
     if (stored_device_id) {
       proxy << *stored_device_id;
     } else {
@@ -319,7 +311,7 @@ boost::asio::awaitable<monad::MyResult<void>> InfoHandler::start_awaitable() {
   if (access_token) {
     if (auto device_id = decode_device_id(*access_token); device_id) {
       auto proxy = printer.white();
-      proxy << "  Token device_id: " << *device_id << std::endl;
+      proxy << "  Server device ID: " << *device_id << std::endl;
     }
     if (auto expiry = decode_expiry(*access_token); expiry) {
       auto proxy = printer.white();
