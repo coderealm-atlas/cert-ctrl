@@ -77,6 +77,24 @@ To skip GitHub publishing:
 ./deploy.sh --not-publish-github-release
 ```
 
+### macOS vcpkg tool recovery
+
+Before configuring an actual macOS build, the build script checks the vcpkg
+executable's SHA-512 against the checked-out submodule's tool metadata. A missing
+or mismatched executable is refreshed with `bootstrap-vcpkg.sh -disableMetrics`.
+Bootstrap failures stop the build before CMake; dependency and binary caches are
+preserved. Unchanged builds still take the existing no-build fast path.
+
+This repairs stale-tool errors such as `document schema version 2 is not supported`
+after a vcpkg baseline/submodule upgrade. No host cache purge is needed for this
+error. Bootstrap downloads inherit the build host's proxy environment.
+
+Run the isolated script tests (no deployment or package downloads):
+
+```bash
+python3 scripts/test_macos_build_bootstrap.py
+```
+
 ### Remote deploy (nginx + app + assets)
 
 If you already have assets staged locally under `assets-staging/` (or you ran the pipeline),

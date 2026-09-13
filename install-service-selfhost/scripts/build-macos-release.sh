@@ -106,6 +106,38 @@ if [[ "${force_build}" != "1" && "${force_build}" != "true" && "${force_build}" 
     fi
   fi
 fi
+
+# Updating the submodule does not update its ignored vcpkg executable. CMake
+# bootstraps only a missing executable, so repair stale tools before configuring.
+vcpkg_root="${PWD}/external/vcpkg"
+vcpkg_metadata="${vcpkg_root}/scripts/vcpkg-tool-metadata.txt"
+if [[ ! -f "${vcpkg_metadata}" || ! -f "${vcpkg_root}/bootstrap-vcpkg.sh" ]]; then
+  echo "vcpkg bootstrap files missing; initialize external/vcpkg first." >&2
+  exit 1
+fi
+vcpkg_expected_sha="$(sed -n 's/^VCPKG_MACOS_SHA=//p' "${vcpkg_metadata}")"
+if [[ ! "${vcpkg_expected_sha}" =~ ^[[:xdigit:]]{128}$ ]]; then
+  echo "Invalid or missing VCPKG_MACOS_SHA in ${vcpkg_metadata}" >&2
+  exit 1
+fi
+vcpkg_tool_matches() {
+  local actual_sha
+  [[ -x "${vcpkg_root}/vcpkg" ]] || return 1
+  actual_sha="$(shasum -a 512 "${vcpkg_root}/vcpkg")" || return 1
+  [[ "${actual_sha%% *}" == "${vcpkg_expected_sha}" ]]
+}
+if ! vcpkg_tool_matches; then
+  echo "Refreshing vcpkg executable to match the checked-out submodule..."
+  if ! "${vcpkg_root}/bootstrap-vcpkg.sh" -disableMetrics; then
+    echo "vcpkg bootstrap failed; stopping before CMake configure." >&2
+    exit 1
+  fi
+  if ! vcpkg_tool_matches; then
+    echo "vcpkg executable still does not match the checkout after bootstrap." >&2
+    exit 1
+  fi
+fi
+
 "${cmake_bin}" --preset macos-release ${cmake_fresh_flag} \
   -DCMAKE_PROGRAM_PATH="${cmake_program_path}" \
   -DAUTOCONF="${AUTOCONF}" \
