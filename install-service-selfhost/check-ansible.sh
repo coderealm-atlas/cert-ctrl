@@ -5,6 +5,7 @@ service_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${service_root}/scripts/ansible-env.sh"
 cert_ctrl_require_ansible
 "${CERT_CTRL_ANSIBLE_VENV}/bin/python" "${service_root}/scripts/test_freebsd_prerequisites.py"
+"${CERT_CTRL_ANSIBLE_VENV}/bin/python" "${service_root}/scripts/test_windows_shell.py"
 for playbook in "${CERT_CTRL_ANSIBLE_DIR}"/playbooks/*.yml; do
   "${CERT_CTRL_ANSIBLE_PLAYBOOK}" --syntax-check \
     -i "${CERT_CTRL_ANSIBLE_DIR}/inventory.yml" "${playbook}"

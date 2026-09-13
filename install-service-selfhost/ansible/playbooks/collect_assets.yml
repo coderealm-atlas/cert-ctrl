@@ -117,7 +117,8 @@
   tasks:
     - name: Determine release version on Windows build host (fallback)
       when: install_service_release_version | length == 0
-      raw: >-
+      ansible.windows.win_shell: >-
+        $ErrorActionPreference = "Stop";
         & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
         '$ErrorActionPreference = "Stop";
         Set-Location "{{ install_service_repo_path }}";
@@ -135,8 +136,9 @@
           }
         }
         if (-not $tag) { $tag = "v0.0.0-unknown" }
-        if ({{ install_service_force_clean_git_describe | bool | lower }}) { $tag = $tag -replace ''-dirty$'', '''' }
-        Write-Output $tag'
+        if (${{ install_service_force_clean_git_describe | bool | lower }}) { $tag = $tag -replace ''-dirty$'', '''' }
+        Write-Output $tag';
+        exit $LASTEXITCODE
       register: install_service_release_version_cmd_win
       changed_when: false
 

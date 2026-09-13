@@ -75,7 +75,8 @@
     dest: C:\\temp\\install-service-package.ps1
 
 - name: Package Windows release
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
     "C:\\temp\\install-service-package.ps1"
     -ReleaseVersion "{{ install_service_release_version }}"
@@ -83,4 +84,5 @@
     -AssetName "{{ install_service_asset_name }}"
     -ArchiveExt "{{ install_service_archive_ext }}"
     -BinaryBasename "{{ install_service_binary_basename }}"
-    -StagingRoot "{{ install_service_remote_staging_root }}"
+    -StagingRoot "{{ install_service_remote_staging_root }}";
+    exit $LASTEXITCODE

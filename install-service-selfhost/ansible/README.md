@@ -34,6 +34,17 @@ python3 install-service-selfhost/scripts/test_ansible_environment.py
 ./install-service-selfhost/check-ansible.sh
 ```
 
+For an opt-in, read-only Windows execution check with the pinned controller:
+
+```bash
+.venv-ansible/bin/python install-service-selfhost/scripts/test_windows_shell.py --windows-host win-build
+```
+
+This exercises the real repository and release-version probes, missing paths,
+interpreter failures, and native exit-code propagation. Expected failure cases
+are marked ignored and then asserted. It does not clone, fetch, build, package,
+or change host configuration. The offline checks also run its static regressions.
+
 To roll back dependencies, restore the previously tested requirement files from
 version control and rerun setup. To also change the controller Python version,
 move `.venv-ansible` aside first and recreate it; virtualenvs are not relocatable
@@ -54,7 +65,17 @@ remains overridable.
 
 ## Inventory
 Create an inventory with build hosts reachable via SSH. Examples: `inventory.example.ini` and `inventory.example.yml`.
-For Windows over SSH, set `ansible_shell_type=powershell` and `ansible_shell_executable=powershell.exe`.
+For Windows over SSH, match `ansible_shell_type` to the host's actual OpenSSH
+default shell: `cmd` with `ansible_shell_executable=cmd.exe` for the Windows
+default, or `powershell` with `ansible_shell_executable=powershell.exe` if the
+host has explicitly configured PowerShell as its SSH default shell. Do not
+change just the inventory to pretend the remote shell is different.
+
+PowerShell tasks use `ansible.windows.win_shell`, which works over either SSH
+shell. They explicitly invoke `install_service_powershell_executable` (PowerShell
+7 for the Windows build host), preserve its exit status, and do not depend on
+Ansible 2.16's implicit PowerShell wrapping of `raw` commands. No host cache reset
+or SSH default-shell change is required after this migration.
 
 ## Build + package + publish
 ```bash

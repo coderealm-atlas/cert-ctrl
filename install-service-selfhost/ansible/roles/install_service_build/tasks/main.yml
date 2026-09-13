@@ -223,28 +223,35 @@
   register: install_service_repo_stat
   when: not install_service_is_windows
 
+# Windows SSH may use cmd.exe. win_shell explicitly supplies PowerShell instead
+# of relying on the implicit raw-command wrapper removed from newer Ansible.
+# Reserve rc=3 for a missing path; interpreter/probe errors must stop the play.
 - name: Check repository directory exists (Windows)
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    'if (Test-Path "{{ install_service_repo_path }}") { exit 0 } else { exit 1 }'
+    '$ErrorActionPreference = "Stop"; if (Test-Path -LiteralPath "{{ install_service_repo_path }}") { exit 0 } else { exit 3 }';
+    exit $LASTEXITCODE
   register: install_service_repo_stat_win
-  failed_when: false
+  failed_when: (install_service_repo_stat_win.rc | default(-1)) not in [0, 3]
   changed_when: false
   when: install_service_is_windows
 
 - name: Check repository is a git worktree (Windows)
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    'if (Test-Path "{{ install_service_repo_path }}\\.git") { exit 0 } else { exit 1 }'
+    '$ErrorActionPreference = "Stop"; if (Test-Path -LiteralPath "{{ install_service_repo_path }}\\.git") { exit 0 } else { exit 3 }';
+    exit $LASTEXITCODE
   register: install_service_repo_git_win
-  failed_when: false
+  failed_when: (install_service_repo_git_win.rc | default(-1)) not in [0, 3]
   changed_when: false
   when: install_service_is_windows and install_service_repo_stat_win.rc == 0
 
 - name: Default git repo status when path missing (Windows)
   set_fact:
     install_service_repo_git_win:
-      rc: 1
+      rc: 3
   when: install_service_is_windows and install_service_repo_stat_win.rc != 0
 
 - name: Fail when repo path exists but is not a git worktree (Windows)
@@ -256,9 +263,11 @@
 
 - name: Remove non-git repo path before reclone (Windows)
   when: install_service_is_windows and install_service_repo_stat_win.rc == 0 and install_service_repo_git_win.rc != 0 and install_service_repo_force_reclone | bool
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    'Remove-Item -Recurse -Force "{{ install_service_repo_path }}"'
+    '$ErrorActionPreference = "Stop"; Remove-Item -Recurse -Force -LiteralPath "{{ install_service_repo_path }}"';
+    exit $LASTEXITCODE
 
 - name: Clone repository (POSIX)
   when: not install_service_is_windows and not install_service_repo_stat.stat.exists
@@ -267,9 +276,11 @@
 
 - name: Clone repository (Windows)
   when: install_service_is_windows and install_service_repo_git_win.rc != 0
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    '{{ install_service_ps_env_block }}git {{ install_service_git_proxy_args }} clone --depth 1 "{{ install_service_repo_url }}" "{{ install_service_repo_path }}"'
+    '{{ install_service_ps_env_block }}git {{ install_service_git_proxy_args }} clone --depth 1 "{{ install_service_repo_url }}" "{{ install_service_repo_path }}"';
+    exit $LASTEXITCODE
 
 - name: Detect detached HEAD (POSIX)
   when: not install_service_is_windows and install_service_repo_stat.stat.exists
@@ -343,9 +354,11 @@
   when: install_service_is_windows and not install_service_skip_git_pull | bool and install_service_repo_git_win.rc == 0
   block:
     - name: Update repository (Windows, proxy)
-      raw: >-
+      ansible.windows.win_shell: >-
+        $ErrorActionPreference = "Stop";
         & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-        '{{ install_service_ps_preamble }}git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args }} -C "{{ install_service_repo_path }}" pull --ff-only'
+        '{{ install_service_ps_preamble }}git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args }} -C "{{ install_service_repo_path }}" pull --ff-only';
+        exit $LASTEXITCODE
       register: install_service_git_pull_win
       retries: "{{ install_service_git_retry_count }}"
       delay: "{{ install_service_git_retry_delay }}"
@@ -358,9 +371,11 @@
         msg: "git pull failed with proxy; set install_service_git_try_without_proxy=true to retry without proxy."
     - name: Update repository (Windows, no proxy)
       when: install_service_git_try_without_proxy | bool
-      raw: >-
+      ansible.windows.win_shell: >-
+        $ErrorActionPreference = "Stop";
         & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-        '{{ install_service_ps_preamble_no_proxy }}git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args_no_proxy }} -C "{{ install_service_repo_path }}" pull --ff-only'
+        '{{ install_service_ps_preamble_no_proxy }}git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args_no_proxy }} -C "{{ install_service_repo_path }}" pull --ff-only';
+        exit $LASTEXITCODE
       register: install_service_git_pull_win
       retries: "{{ install_service_git_retry_count }}"
       delay: "{{ install_service_git_retry_delay }}"
@@ -465,9 +480,11 @@
   when: install_service_is_windows and install_service_repo_git_win.rc == 0 and not install_service_skip_git_fetch_tags | bool
   block:
     - name: Fetch repository tags (Windows, proxy)
-      raw: >-
+      ansible.windows.win_shell: >-
+        $ErrorActionPreference = "Stop";
         & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-        '{{ install_service_ps_preamble }}git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args }} -C "{{ install_service_repo_path }}" fetch --tags --force'
+        '{{ install_service_ps_preamble }}git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args }} -C "{{ install_service_repo_path }}" fetch --tags --force';
+        exit $LASTEXITCODE
       register: install_service_git_fetch_win
       retries: "{{ install_service_git_retry_count }}"
       delay: "{{ install_service_git_retry_delay }}"
@@ -480,9 +497,11 @@
         msg: "git fetch --tags failed with proxy; set install_service_git_try_without_proxy=true to retry without proxy."
     - name: Fetch repository tags (Windows, no proxy)
       when: install_service_git_try_without_proxy | bool
-      raw: >-
+      ansible.windows.win_shell: >-
+        $ErrorActionPreference = "Stop";
         & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-        '{{ install_service_ps_preamble_no_proxy }}git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args_no_proxy }} -C "{{ install_service_repo_path }}" fetch --tags --force'
+        '{{ install_service_ps_preamble_no_proxy }}git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args_no_proxy }} -C "{{ install_service_repo_path }}" fetch --tags --force';
+        exit $LASTEXITCODE
       register: install_service_git_fetch_win
       retries: "{{ install_service_git_retry_count }}"
       delay: "{{ install_service_git_retry_delay }}"
@@ -491,9 +510,11 @@
 
 - name: Check submodule status (Windows)
   when: install_service_is_windows and install_service_update_submodules | bool
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    'Set-Location "{{ install_service_repo_path }}"; git submodule status; exit $LASTEXITCODE'
+    'Set-Location "{{ install_service_repo_path }}"; git submodule status; exit $LASTEXITCODE';
+    exit $LASTEXITCODE
   register: install_service_submodule_status_win
   changed_when: false
   failed_when: false
@@ -512,13 +533,15 @@
   when: install_service_is_windows and install_service_update_submodules | bool and install_service_submodule_needs_update_win | bool
   block:
     - name: Update submodules (Windows, proxy)
-      raw: >-
+      ansible.windows.win_shell: >-
+        $ErrorActionPreference = "Stop";
         & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
         '{{ install_service_ps_preamble }}Set-Location "{{ install_service_repo_path }}";
         git submodule sync --recursive;
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE };
         git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args }} submodule update --init --recursive --checkout --depth 1;
-        exit $LASTEXITCODE'
+        exit $LASTEXITCODE';
+        exit $LASTEXITCODE
       register: install_service_git_submodule_win
       retries: "{{ install_service_git_retry_count }}"
       delay: "{{ install_service_git_retry_delay }}"
@@ -531,13 +554,15 @@
         msg: "git submodule update failed with proxy; set install_service_git_try_without_proxy=true to retry without proxy."
     - name: Update submodules (Windows, no proxy)
       when: install_service_git_try_without_proxy | bool
-      raw: >-
+      ansible.windows.win_shell: >-
+        $ErrorActionPreference = "Stop";
         & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
         '{{ install_service_ps_preamble_no_proxy }}Set-Location "{{ install_service_repo_path }}";
         git submodule sync --recursive;
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE };
         git {{ install_service_git_low_speed_args }} {{ install_service_git_proxy_args_no_proxy }} submodule update --init --recursive --checkout --depth 1;
-        exit $LASTEXITCODE'
+        exit $LASTEXITCODE';
+        exit $LASTEXITCODE
       register: install_service_git_submodule_win
       retries: "{{ install_service_git_retry_count }}"
       delay: "{{ install_service_git_retry_delay }}"
@@ -546,7 +571,8 @@
 
 - name: Verify submodules are aligned (Windows)
   when: install_service_is_windows and install_service_update_submodules | bool
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
     '$status = git -C "{{ install_service_repo_path }}" submodule status;
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE };
@@ -556,7 +582,8 @@
     if ($misaligned.Count -gt 0) {
       $misaligned | Write-Output;
       exit 1
-    }'
+    }';
+    exit $LASTEXITCODE
   changed_when: false
 
 - name: Check submodule status (POSIX)
@@ -633,7 +660,8 @@
 
 - name: Determine release version (Windows)
   when: install_service_is_windows and install_service_release_version | length == 0 and install_service_repo_git_win.rc == 0
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
     '$ErrorActionPreference = "Stop";
     Set-Location "{{ install_service_repo_path }}";
@@ -651,8 +679,9 @@
       }
     }
     if (-not $tag) { $tag = "v0.0.0-unknown" }
-    if ({{ install_service_force_clean_git_describe | bool | lower }}) { $tag = $tag -replace ''-dirty$'', '''' }
-    Write-Output $tag'
+    if (${{ install_service_force_clean_git_describe | bool | lower }}) { $tag = $tag -replace ''-dirty$'', '''' }
+    Write-Output $tag';
+    exit $LASTEXITCODE
   register: install_service_release_version_cmd_win
   changed_when: false
 
@@ -1063,15 +1092,19 @@
 
 - name: Run build commands (Windows)
   when: install_service_is_windows and install_service_build_script_path | default('') | length == 0
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
     '{{ install_service_ps_preamble }}Set-Location "{{ install_service_repo_path }}";
-    & { {{ item }} }'
+    & { {{ item }} }';
+    exit $LASTEXITCODE
   loop: "{{ install_service_build_commands }}"
   changed_when: false
 
 - name: Run build script (Windows)
   when: install_service_is_windows and install_service_build_script_path | default('') | length > 0
-  raw: >-
+  ansible.windows.win_shell: >-
+    $ErrorActionPreference = "Stop";
     & "{{ install_service_powershell_executable }}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
-    '{{ install_service_ps_preamble }}& "{{ install_service_build_script_remote_path | default('C:\\\\temp\\\\install-service-build.ps1') }}" -RepoPath "{{ install_service_repo_path }}" -BuildTarget cert_ctrl'
+    '{{ install_service_ps_preamble }}& "{{ install_service_build_script_remote_path | default('C:\\\\temp\\\\install-service-build.ps1') }}" -RepoPath "{{ install_service_repo_path }}" -BuildTarget cert_ctrl';
+    exit $LASTEXITCODE
