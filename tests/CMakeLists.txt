@@ -33,7 +33,7 @@ if(NOT (TARGET OpenSSL::SSL AND TARGET OpenSSL::Crypto))
   find_package(OpenSSL REQUIRED)
 endif()
 
-add_executable(test_program_options test_program_options.cpp)
+add_executable(test_program_options test_program_options.cpp test_config_sources_yaml.cpp)
 target_compile_features(test_program_options PRIVATE cxx_std_17)
 target_include_directories(test_program_options PRIVATE
   ${CMAKE_SOURCE_DIR}/include

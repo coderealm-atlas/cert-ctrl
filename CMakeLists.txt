@@ -681,7 +681,19 @@ set(PROTO_FILES
 )
 set(Protobuf_USE_STATIC_LIBS ON)
 message(STATUS "************* Protobuf_INCLUDE_DIRS: ${Protobuf_INCLUDE_DIRS}")
-protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS ${PROTO_FILES})
+# Regenerate when the baseline changes protoc, even if the .proto files did
+# not change; generated code must match the linked Protobuf runtime.
+protobuf_generate(
+    LANGUAGE cpp
+    APPEND_PATH
+    OUT_VAR PROTO_GENERATED
+    PROTOS ${PROTO_FILES}
+    DEPENDENCIES protobuf::protoc
+)
+set(PROTO_SRCS ${PROTO_GENERATED})
+list(FILTER PROTO_SRCS INCLUDE REGEX "\\.cc$")
+set(PROTO_HDRS ${PROTO_GENERATED})
+list(FILTER PROTO_HDRS INCLUDE REGEX "\\.h$")
 
 # print PROTO_SRCS and PROTO_HDRS
 message(STATUS "************* PROTO_SRCS: ${PROTO_SRCS}")
