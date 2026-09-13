@@ -10,7 +10,7 @@
     fail_msg: install_service_release_version, install_service_install_prefix, install_service_asset_name, and install_service_archive_ext are required
 
 - name: Verify built binary version matches release version
-  win_shell: |
+  ansible.windows.win_shell: |
     $ErrorActionPreference = "Stop"
     $expected = "{{ install_service_release_version }}"
 

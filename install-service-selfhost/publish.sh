@@ -66,6 +66,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+source "${ROOT_DIR}/scripts/ansible-env.sh"
+cert_ctrl_require_ansible
+
 if [[ -n "$release_version" && "$release_version" != "latest" ]]; then
   extra_vars+=("install_service_release_version=$release_version")
 fi
@@ -109,7 +112,7 @@ case "$action" in
 esac
 
 for playbook in "${playbooks[@]}"; do
-  cmd=(ansible-playbook -i "$INVENTORY_PATH" "${ANSIBLE_DIR}/playbooks/${playbook}")
+  cmd=("${CERT_CTRL_ANSIBLE_PLAYBOOK}" -i "$INVENTORY_PATH" "${ANSIBLE_DIR}/playbooks/${playbook}")
   if [[ -n "$limit" ]]; then
     cmd+=(--limit "$limit")
   fi

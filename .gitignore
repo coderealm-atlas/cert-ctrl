@@ -42,6 +42,7 @@ node_modules/
 CMakeUserPresets.json
 .vcpkg-cache/
 .venv/
+.venv-ansible/
 .ccache/
 tests/test-env
 .clangd

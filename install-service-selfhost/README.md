@@ -56,6 +56,20 @@ Update ports as needed before deploying.
 ## Deployment
 `deploy.sh` drives the build + asset pipeline.
 
+First install the pinned controller tools (Python 3.12-3.14 with `venv` support):
+
+```bash
+# From the repository root; also rerun after dependency pins change.
+./install-service-selfhost/setup-ansible.sh
+```
+
+This creates `.venv-ansible/` at the repository root, including isolated Ansible
+collections. `deploy.sh` and `publish.sh` use it explicitly, without activation or
+system Ansible fallback. They fail with setup instructions if it is missing or
+the checked-in pins have changed. Setup installs local tools only; it does not
+contact build hosts or deploy anything. See [Ansible maintenance](ansible/README.md#setup-and-maintenance)
+for validation, upgrades, and rollback.
+
 Default behavior (no `--action`):
 - Builds and packages on all build hosts.
 - Collects assets into `install-service-selfhost/assets-staging/`.

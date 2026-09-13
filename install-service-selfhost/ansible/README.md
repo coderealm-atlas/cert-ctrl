@@ -2,10 +2,55 @@
 
 This Ansible subproject builds cert-ctrl across multiple VMs, collects the release artifacts to the controller, and prepares `latest.json` + release assets for the self-hosted install service.
 
-## Setup
+## Setup and maintenance
+
+All commands below run from the repository root. The controller requires Python
+3.12-3.14 with `venv` support (on Ubuntu, install `python3-venv` if needed).
+
 ```bash
-ansible-galaxy collection install -r requirements.yml
+./install-service-selfhost/setup-ansible.sh
+./install-service-selfhost/ansible.sh playbook --version
 ```
+
+Set `ANSIBLE_SETUP_PYTHON=/path/to/python3.12` when choosing the interpreter on
+first setup. The environment is fixed at `.venv-ansible/` in this checkout and is
+gitignored. System Ansible is not modified. Deployment entry points explicitly
+select this environment, so shell activation is unnecessary. Collections are
+isolated from user/system installations as well.
+
+`requirements.txt` pins Ansible and its Python dependencies; `requirements.yml`
+pins `ansible.posix`, `ansible.windows`, and `community.general` (FreeBSD's package
+backend), plus its inventory-filtering dependency. The built-in default callback provides YAML output. No WinRM Python
+dependency is needed for the current Windows-over-SSH inventory.
+
+To upgrade: edit the pins in a dedicated change, rerun setup, then run the offline
+checks below. Validate on the intended hosts before publishing a release;
+syntax checks cannot prove remote Python/PowerShell compatibility or exercise
+every runtime template. Target Python must be 3.9-3.14 for this Ansible version.
+Do not update the environment while a deployment is running.
+
+```bash
+python3 install-service-selfhost/scripts/test_ansible_environment.py
+./install-service-selfhost/check-ansible.sh
+```
+
+To roll back dependencies, restore the previously tested requirement files from
+version control and rerun setup. To also change the controller Python version,
+move `.venv-ansible` aside first and recreate it; virtualenvs are not relocatable
+for execution. Setup marks the environment ready only after both pip and Galaxy
+succeed. Changed pins or an incomplete setup block deployment until setup succeeds.
+Setup inherits your normal network/proxy settings; deployments never auto-install
+or upgrade tooling.
+
+For direct commands, use `ansible.sh playbook|inventory|config|doc|galaxy|adhoc`.
+For example:
+
+```bash
+./install-service-selfhost/ansible.sh inventory -i install-service-selfhost/ansible/inventory.yml --graph
+```
+
+The wrapper selects the project's Ansible config by default; `ANSIBLE_CONFIG`
+remains overridable.
 
 ## Inventory
 Create an inventory with build hosts reachable via SSH. Examples: `inventory.example.ini` and `inventory.example.yml`.
@@ -13,7 +58,7 @@ For Windows over SSH, set `ansible_shell_type=powershell` and `ansible_shell_exe
 
 ## Build + package + publish
 ```bash
-ansible-playbook -i inventory.ini playbooks/pipeline.yml \
+./install-service-selfhost/ansible.sh playbook -i install-service-selfhost/ansible/inventory.yml install-service-selfhost/ansible/playbooks/pipeline.yml \
   -e install_service_release_version=v1.2.3
 ```
 
@@ -36,40 +81,40 @@ named `install_service_remote` (see `inventory.yml`). Deployment is split into:
 You can run these playbooks directly:
 
 ```bash
-ansible-playbook -i inventory.yml playbooks/bootstrap_nginx.yml
-ansible-playbook -i inventory.yml playbooks/deploy_install_service.yml
-ansible-playbook -i inventory.yml playbooks/sync_assets.yml \
-  -e install_service_release_version=v1.2.3
+./install-service-selfhost/publish.sh --action bootstrap-nginx
+./install-service-selfhost/publish.sh --action deploy-app
+./install-service-selfhost/publish.sh --action sync-assets \
+  --release-version v1.2.3
 ```
 
 Or use the repository wrapper script `publish.sh` (recommended), which wires the
 inventory/config paths and supports selecting a version:
 
 ```bash
-./publish.sh --action all --release-version v1.2.3
+./install-service-selfhost/publish.sh --action all --release-version v1.2.3
 
 # pick the latest directory under assets-staging/ (prefers non -dirty)
-./publish.sh --action all --release-version-latest
+./install-service-selfhost/publish.sh --action all --release-version-latest
 
 # only deploy app code (no nginx/assets)
-./publish.sh --action deploy-app
+./install-service-selfhost/publish.sh --action deploy-app
 
 # only sync assets for a specific version
-./publish.sh --action sync-assets --release-version v1.2.3
+./install-service-selfhost/publish.sh --action sync-assets --release-version v1.2.3
 
 # restrict to a subset of hosts
-./publish.sh --action all --limit install-selfhost
+./install-service-selfhost/publish.sh --action all --limit install-selfhost
 ```
 
 Prereqs:
-- `ansible-galaxy collection install -r requirements.yml`
+- `./install-service-selfhost/setup-ansible.sh`
 - Remote host reachable via SSH and in the `install_service_remote` group
 - Assets already prepared locally under `assets-staging/<version>/` (or run `playbooks/pipeline.yml` first)
 
 ## Asset-only publish
 If you already have artifacts staged locally:
 ```bash
-ansible-playbook -i inventory.ini playbooks/prepare_assets.yml \
+./install-service-selfhost/ansible.sh playbook -i install-service-selfhost/ansible/inventory.yml install-service-selfhost/ansible/playbooks/prepare_assets.yml \
   -e install_service_assets_src=/path/to/release-assets \
   -e install_service_release_version=v1.2.3
 ```
@@ -77,6 +122,16 @@ ansible-playbook -i inventory.ini playbooks/prepare_assets.yml \
 ## Variables
 Common variables (see `vars.yml` for defaults):
 - `install_service_reconfig_cmake` (optional): forces a CMake reconfigure step on build hosts (useful when only tags changed and you need the embedded `git describe` version refreshed)
+- `install_service_freebsd_pkg_timeout_seconds` (optional, default `1200`): maximum
+  runtime of FreeBSD prerequisite installation. The task polls every five seconds
+  and must finish successfully before any build starts. In check mode it runs
+  synchronously without making package changes.
+
+FreeBSD prerequisite installation uses the host's `install_service_proxy_env`,
+including when running through sudo, and task-local `ASSUME_ALWAYS_YES=yes` plus
+`BATCH=yes` to avoid hidden pkg confirmation prompts. These settings do not change
+the VM's global pkg configuration or clear any caches. The overall timeout stops
+an unresponsive package job instead of leaving deployment waiting indefinitely.
 
 Per-host/group variables:
 

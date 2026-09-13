@@ -14,7 +14,18 @@
   pre_tasks:
     - name: Install FreeBSD native build prerequisites
       become: true
-      ansible.builtin.package:
+      # This runs before install_service_build prepares its effective environment.
+      # BATCH alone does not suppress every prompt from pkg update.
+      environment: >-
+        {{
+          (install_service_proxy_env | default({}))
+          | combine({'ASSUME_ALWAYS_YES': 'yes', 'BATCH': 'yes'})
+        }}
+      # Polling keeps this a prerequisite: do not start builds before it finishes.
+      # Disable async only for check mode, which Ansible async does not support.
+      async: "{{ 0 if ansible_check_mode else (install_service_freebsd_pkg_timeout_seconds | default(1200) | int) }}"
+      poll: 5
+      community.general.pkgng:
         name:
           - autoconf
           - autoconf-archive

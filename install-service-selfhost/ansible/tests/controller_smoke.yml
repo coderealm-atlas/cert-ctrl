@@ -1,0 +1,23 @@
+---
+- name: Verify isolated controller runtime without connecting to build hosts
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Check collection isolation and the controller interpreter
+      ansible.builtin.assert:
+        that:
+          - "'/.venv-ansible/' in ansible_playbook_python"
+          - lookup('env', 'ANSIBLE_COLLECTIONS_SCAN_SYS_PATH') == 'false'
+          - lookup('env', 'ANSIBLE_COLLECTIONS_PATH') == (ansible_playbook_python | dirname | dirname) ~ '/collections'
+
+    - name: Exercise native values and YAML output
+      ansible.builtin.set_fact:
+        smoke_jobs: "{{ [{'name': 'ubuntu'}, {'name': 'alpine'}] | selectattr('name', 'equalto', 'ubuntu') | list }}"
+
+    - name: Check templating produces a list rather than a string
+      ansible.builtin.assert:
+        that:
+          - smoke_jobs | type_debug == 'list'
+          - smoke_jobs | length == 1
+          - smoke_jobs[0].name == 'ubuntu'

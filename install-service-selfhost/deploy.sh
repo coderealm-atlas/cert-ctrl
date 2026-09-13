@@ -386,6 +386,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+source "${ROOT_DIR}/scripts/ansible-env.sh"
+cert_ctrl_require_ansible
+
 if [[ -n "${linux_docker_variant:-}" ]]; then
   case "${linux_docker_variant,,}" in
     ubuntu|alpine|both)
@@ -518,7 +521,7 @@ case "$action" in
 esac
 
 # Construct Ansible command with appropriate filters and variables
-cmd=(ansible-playbook -i "$INVENTORY_PATH" "$playbook")
+cmd=("${CERT_CTRL_ANSIBLE_PLAYBOOK}" -i "$INVENTORY_PATH" "$playbook")
 
 # Build Ansible host limit from --builds argument
 if [[ -z "$limit" && ${#build_groups[@]} -gt 0 && "$build_groups_all" != "true" ]]; then
@@ -549,7 +552,7 @@ run_ansible_playbook() {
   local pb="$1"
   shift
   local -a _cmd
-  _cmd=(ansible-playbook -i "$INVENTORY_PATH" "$pb")
+  _cmd=("${CERT_CTRL_ANSIBLE_PLAYBOOK}" -i "$INVENTORY_PATH" "$pb")
   if [[ $# -gt 0 ]]; then
     _cmd+=("$@")
   fi
