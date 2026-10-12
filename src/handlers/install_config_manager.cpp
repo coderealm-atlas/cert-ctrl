@@ -653,15 +653,15 @@ static std::optional<std::string> run_script_file_best_effort(
   CloseHandle(out_read);
   CloseHandle(err_read);
 
-  DWORD exit_code = 0;
-  if (!GetExitCodeProcess(pi.hProcess, &exit_code)) {
+  DWORD process_exit_code = 0;
+  if (!GetExitCodeProcess(pi.hProcess, &process_exit_code)) {
     store_details(std::nullopt, std::nullopt);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return std::optional<std::string>("GetExitCodeProcess failed");
   }
 
-  store_details(static_cast<int>(exit_code), std::nullopt);
+  store_details(static_cast<int>(process_exit_code), std::nullopt);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
 
@@ -678,9 +678,9 @@ static std::optional<std::string> run_script_file_best_effort(
         << err_for_log;
   }
 
-  if (exit_code != 0) {
+  if (process_exit_code != 0) {
     return std::optional<std::string>(
-        fmt::format("script exited with code {}", exit_code));
+        fmt::format("script exited with code {}", process_exit_code));
   }
   return std::nullopt;
 #else

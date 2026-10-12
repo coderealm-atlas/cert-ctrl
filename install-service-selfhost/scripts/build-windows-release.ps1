@@ -181,8 +181,17 @@ if ($cmakeFresh) {
 } else {
   cmake --preset w64
 }
+if ($LASTEXITCODE -ne 0) {
+  throw "CMake configure failed with exit code $LASTEXITCODE"
+}
 cmake --build --preset w64 --target $BuildTarget
+if ($LASTEXITCODE -ne 0) {
+  throw "CMake build failed with exit code $LASTEXITCODE"
+}
 cmake --install build\w64 --config Release --prefix $installPrefix
+if ($LASTEXITCODE -ne 0) {
+  throw "CMake install failed with exit code $LASTEXITCODE"
+}
 
 $gitStatus = Get-GitStatus
 $stampContent = "git_head=$($gitStatus.Head)`nsubmodules=$($gitStatus.Submodules)`n"
