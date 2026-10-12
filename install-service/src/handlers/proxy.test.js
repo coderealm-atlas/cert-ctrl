@@ -59,7 +59,7 @@ describe('resolveDownloadSource', () => {
 
   it('returns asset URL from cached release metadata', async () => {
     const kv = new FakeKV();
-    const assetUrl = 'https://install.lets-script.com/releases/proxy/v1.0.0/cert-ctrl-linux-x64.tar.gz';
+    const assetUrl = 'https://install.never-lost.app/releases/proxy/v1.0.0/cert-ctrl-linux-x64.tar.gz';
     await kv.put('release_meta:v1.0.0', JSON.stringify({
       assets: [
         {

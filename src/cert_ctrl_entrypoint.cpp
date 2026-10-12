@@ -154,7 +154,7 @@ bool bootstrap_default_config_dir(const fs::path &config_dir,
                                   {"backoff_seconds", 30},
                                   {"fast_mode_ttl_seconds", 120}}},
         {"update_check_url",
-         "https://install.lets-script.com/api/version/check"},
+         certctrl::kDefaultUpdateCheckUrl},
         {"runtime_dir", runtime_dir.string()}};
     write_json_if_missing(config_dir / "application.json", application);
 

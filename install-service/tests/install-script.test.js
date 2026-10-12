@@ -11,7 +11,7 @@ const defaultOptions = {
   country: 'US',
   mirror: {
     name: 'cloudflare-proxy',
-    url: 'https://install.lets-script.com/releases/proxy'
+    url: 'https://install.never-lost.app/releases/proxy'
   },
   params: {
     version: 'latest',
@@ -22,7 +22,7 @@ const defaultOptions = {
     writableDirs: '',
     disableSandbox: false
   },
-  baseUrl: 'https://install.lets-script.com'
+  baseUrl: 'https://install.never-lost.app'
 };
 
 describe('install.sh template', () => {

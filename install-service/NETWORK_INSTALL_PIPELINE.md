@@ -11,8 +11,8 @@ This document describes how we will automate packaging, publishing, and serving 
 3. Produce a platform manifest (JSON) and checksums so clients can resolve the right asset.
 4. Push manifest metadata into Cloudflare KV so the worker can reply instantly without hitting GitHub on every request.
 5. Serve users via:
-   - `curl -fsSL https://install.lets-script.com/install.sh | bash`
-   - `iwr -useb https://install.lets-script.com/install.ps1 | iex`
+   - `curl -fsSL https://install.never-lost.app/install.sh | bash`
+   - `iwr -useb https://install.never-lost.app/install.ps1 | iex`
 6. Keep the Cloudflare Worker stateless by caching GitHub assets and manifest data aggressively while still being able to purge/refresh on new releases.
 
 ### Canonical artifact naming
@@ -229,7 +229,7 @@ Scripts referenced above should:
 
 ## 6. Operational Notes
 
-- **Cache Invalidation**: On new release, purge `https://install.lets-script.com/install.*` and `/releases/proxy/*` to force fresh GitHub fetch.
+- **Cache Invalidation**: On new release, purge `https://install.never-lost.app/install.*` and `/releases/proxy/*` to force fresh GitHub fetch.
 - **Rollback**: Update KV `latest` pointer to previous version, redeploy worker (no need to delete GitHub assets).
 - **Monitoring**: Analytics KV collects installation counts; ensure dashboards alert on failure spikes.
 - **Security**: Keep CF API token and signing keys in GitHub environment-protected secrets; require reviewers for production deploy.

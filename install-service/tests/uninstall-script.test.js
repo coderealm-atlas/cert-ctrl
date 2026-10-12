@@ -20,7 +20,7 @@ const defaultOptions = {
     installDir: '',
     dryRun: false
   },
-  baseUrl: 'https://install.lets-script.com'
+  baseUrl: 'https://install.never-lost.app'
 };
 
 describe('uninstall.sh template', () => {

@@ -50,7 +50,7 @@ UPGRADE_IN_PROGRESS="false"
 SYSTEMD_EXTRA_RW_PATHS=()
 
 if [ -z "$BASE_URL" ]; then
-    BASE_URL="https://install.lets-script.com"
+    BASE_URL="https://install.never-lost.app"
 fi
 
 if [ -z "$MIRROR_URL" ]; then

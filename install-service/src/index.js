@@ -64,13 +64,13 @@ router.get('/', async (request, env) => {
       'Health Check': '/health'
     },
     usage: {
-      'Quick Install (Unix)': 'curl -fsSL https://install.lets-script.com/install.sh | bash',
-  'Quick Install (macOS)': 'curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash',
-      'Quick Install (Windows)': 'iwr -useb https://install.lets-script.com/install.ps1 | iex',
-      'Quick Uninstall (Unix)': 'curl -fsSL https://install.lets-script.com/uninstall.sh | sudo bash',
-  'Quick Uninstall (macOS)': 'curl -fsSL https://install.lets-script.com/uninstall-macos.sh | sudo bash',
-      'Quick Uninstall (Windows)': 'iwr -useb https://install.lets-script.com/uninstall.ps1 | iex',
-      'Version Check': 'curl https://install.lets-script.com/api/version/latest'
+      'Quick Install (Unix)': 'curl -fsSL https://install.never-lost.app/install.sh | bash',
+  'Quick Install (macOS)': 'curl -fsSL https://install.never-lost.app/install-macos.sh | sudo bash',
+      'Quick Install (Windows)': 'iwr -useb https://install.never-lost.app/install.ps1 | iex',
+      'Quick Uninstall (Unix)': 'curl -fsSL https://install.never-lost.app/uninstall.sh | sudo bash',
+  'Quick Uninstall (macOS)': 'curl -fsSL https://install.never-lost.app/uninstall-macos.sh | sudo bash',
+      'Quick Uninstall (Windows)': 'iwr -useb https://install.never-lost.app/uninstall.ps1 | iex',
+      'Version Check': 'curl https://install.never-lost.app/api/version/latest'
     }
   };
 

@@ -19,7 +19,7 @@ async function main() {
     country: process.env.COUNTRY || 'US',
     mirror: {
       name: process.env.MIRROR_NAME || 'local-test',
-      url: process.env.MIRROR_URL || 'https://install.lets-script.com/releases/proxy'
+      url: process.env.MIRROR_URL || 'https://install.never-lost.app/releases/proxy'
     },
     params: {
       version: process.env.VERSION || 'latest',
@@ -30,7 +30,7 @@ async function main() {
       writableDirs: process.env.WRITABLE_DIRS || '',
       disableSandbox: process.env.SANDBOX_DISABLED === 'true'
     },
-    baseUrl: process.env.BASE_URL || 'https://install.lets-script.com'
+    baseUrl: process.env.BASE_URL || 'https://install.never-lost.app'
   });
 
   mkdirSync(outputDir, { recursive: true });

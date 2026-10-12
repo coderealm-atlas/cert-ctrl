@@ -9,7 +9,7 @@
     ],
     "interval_seconds": 300,
     "url_base": "https://api.cjj365.cc",
-    "update_check_url": "https://install.lets-script.com/api/version/check",
+    "update_check_url": "https://install.never-lost.app/api/version/check",
     "runtime_dir": "/var/lib/certctrl",
     "short_poll": {
         "enabled": false,

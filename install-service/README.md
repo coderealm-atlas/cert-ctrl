@@ -58,7 +58,7 @@ cd /d/workspace/cert-ctrl/install-service && npx wrangler deploy --env productio
 Once deployed, your service will provide:
 
 ```
-https://install.lets-script.com/
+https://install.never-lost.app/
 ├── /                           # Service information
 ├── /assets/cacert.pem           # CA bundle (PEM) for Windows OpenSSL builds
 ├── /install.sh                 # Unix installation script
@@ -78,13 +78,13 @@ https://install.lets-script.com/
 
 ```bash
 # Unix/Linux
-curl -fsSL https://install.lets-script.com/install.sh | sudo bash
+curl -fsSL https://install.never-lost.app/install.sh | sudo bash
 
 # macOS
-curl -fsSL https://install.lets-script.com/install-macos.sh | sudo bash
+curl -fsSL https://install.never-lost.app/install-macos.sh | sudo bash
 
 # Windows PowerShell
-iwr -useb https://install.lets-script.com/install.ps1 | iex
+iwr -useb https://install.never-lost.app/install.ps1 | iex
 
 ```
 
@@ -92,15 +92,15 @@ iwr -useb https://install.lets-script.com/install.ps1 | iex
 
 ```bash
 # Unix/Linux
-curl -fsSL https://install.lets-script.com/uninstall.sh | sudo bash
+curl -fsSL https://install.never-lost.app/uninstall.sh | sudo bash
 
 # macOS
-curl -fsSL https://install.lets-script.com/uninstall-macos.sh | sudo bash
+curl -fsSL https://install.never-lost.app/uninstall-macos.sh | sudo bash
 ```
 
 ```powershell
 # Windows
-iwr -useb https://install.lets-script.com/uninstall.ps1 | iex
+iwr -useb https://install.never-lost.app/uninstall.ps1 | iex
 ```
 
 > **Heads-up:** Installing to the default path `C:\Program Files\cert-ctrl` requires an elevated PowerShell (right-click → **Run as administrator**). If you prefer a different location, pass `-InstallDir` with a directory you already own.
@@ -110,21 +110,21 @@ iwr -useb https://install.lets-script.com/uninstall.ps1 | iex
 
 ```bash
 # Specific version
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --version v1.2.3
+curl -fsSL https://install.never-lost.app/install.sh | bash -s -- --version v1.2.3
 
 # Verbose output
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --verbose
+curl -fsSL https://install.never-lost.app/install.sh | bash -s -- --verbose
 
 # Grant cert-ctrl access to extra directories during service install
-curl -fsSL "https://install.lets-script.com/install.sh?writable-dirs=/etc/nginx/ssl,/var/www/certs" | \
+curl -fsSL "https://install.never-lost.app/install.sh?writable-dirs=/etc/nginx/ssl,/var/www/certs" | \
   sudo bash -s -- --service
 
 # Equivalent when running a downloaded copy
-curl -fsSL https://install.lets-script.com/install.sh -o install.sh
+curl -fsSL https://install.never-lost.app/install.sh -o install.sh
 sudo bash install.sh --writable-dirs /etc/nginx/ssl,/var/www/certs
 
 # Drop the systemd sandbox entirely (not recommended unless you trust the host)
-curl -fsSL "https://install.lets-script.com/install.sh?no-sandbox=1" | sudo bash -s -- --service
+curl -fsSL "https://install.never-lost.app/install.sh?no-sandbox=1" | sudo bash -s -- --service
 # or
 sudo bash install.sh --no-sandbox
 ```
@@ -148,10 +148,10 @@ Some CLI tools (notably `curl` builds that omit OS information) prevent the work
 
 ```bash
 # FreeBSD example
-curl -fsSL "https://install.lets-script.com/install.sh?platform=freebsd&arch=x64" | sudo bash
+curl -fsSL "https://install.never-lost.app/install.sh?platform=freebsd&arch=x64" | sudo bash
 
 # Using headers instead of query params
-curl -fsSL https://install.lets-script.com/install.sh \
+curl -fsSL https://install.never-lost.app/install.sh \
   -H "X-Install-Platform: freebsd" \
   -H "X-Install-Arch: x64" | sudo bash
 ```
@@ -162,10 +162,10 @@ Accepted platform hints: `linux`, `freebsd`, `macos`, `windows`. Accepted archit
 
 ```bash
 # Get latest version
-curl https://install.lets-script.com/api/version/latest
+curl https://install.never-lost.app/api/version/latest
 
 # Check if update available
-curl "https://install.lets-script.com/api/version/check?current=v1.0.0&platform=linux&arch=x64"
+curl "https://install.never-lost.app/api/version/check?current=v1.0.0&platform=linux&arch=x64"
 ```
 
 ## Configuration
@@ -215,10 +215,10 @@ The service tracks (anonymously):
 
 ```bash
 # Get daily installation stats
-curl https://install.lets-script.com/api/stats/daily
+curl https://install.never-lost.app/api/stats/daily
 
 # Get platform breakdown
-curl https://install.lets-script.com/api/stats/platforms
+curl https://install.never-lost.app/api/stats/platforms
 ```
 
 ## Development
@@ -279,7 +279,7 @@ The service provides health endpoints:
 
 ```bash
 # Basic health check
-curl https://install.lets-script.com/health
+curl https://install.never-lost.app/health
 
 # Response:
 {
@@ -364,7 +364,7 @@ Cloudflare Workers automatically scale:
 To migrate from static file hosting:
 
 1. **Deploy Worker**: Set up Cloudflare Worker
-2. **Update DNS**: Point install.lets-script.com to Worker
+2. **Update DNS**: Point install.never-lost.app to Worker
 3. **Test Installation**: Verify all platforms work
 4. **Monitor**: Watch for any issues
 5. **Cleanup**: Remove old static files

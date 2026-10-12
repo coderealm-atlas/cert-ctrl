@@ -6,20 +6,25 @@ compatibility_flags = ["nodejs_compat"]
 
 # Route configuration (applies to default environment)
 routes = [
-	"install.lets-script.com/*"
+	{ pattern = "install.never-lost.app", custom_domain = true },
+	"install.lets-script.com/*" # Compatibility for existing installed clients.
 ]
 
 # Environment variables
 # Custom domain configuration
 # Environment variables
 [env.production]
+routes = [
+  { pattern = "install.never-lost.app", custom_domain = true },
+  "install.lets-script.com/*"
+]
 
 [env.production.vars]
 GITHUB_REPO_OWNER = "coderealm-atlas"
 GITHUB_REPO_NAME = "cert-ctrl"
 ANALYTICS_ENABLED = true
 RATE_LIMIT_ENABLED = true
-CURRENT_HOST = "install.lets-script.com"
+CURRENT_HOST = "install.never-lost.app"
 
 [[env.production.kv_namespaces]]
 binding = "RELEASE_CACHE"
@@ -53,7 +58,7 @@ CURRENT_HOST = "install-staging.cjj365.cc"
 # Note: These sections are now replaced by the top-level `routes` configuration above
 # [env.production]
 # routes = [
-#   { pattern = "install.lets-script.com/*", custom_domain = true }
+#   { pattern = "install.never-lost.app/*", custom_domain = true }
 # ]
 
 # [env.staging]  

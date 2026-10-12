@@ -78,7 +78,7 @@ export async function installHandler(request, env) {
       country,
       mirror,
       params,
-      baseUrl: `https://${url.host}`
+      baseUrl: `https://${env.CURRENT_HOST || 'install.never-lost.app'}`
     });
 
     // Set appropriate content type and headers
@@ -122,7 +122,7 @@ async function selectBestMirror(country, env) {
   const mirrors = {
     proxy: {
       name: 'cloudflare-proxy',
-      url: `https://${env.CURRENT_HOST || 'install.lets-script.com'}/releases/proxy`,
+      url: `https://${env.CURRENT_HOST || 'install.never-lost.app'}/releases/proxy`,
       regions: ['all']
     },
     github: {
