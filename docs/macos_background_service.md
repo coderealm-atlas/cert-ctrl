@@ -16,7 +16,7 @@ The macOS installer template (`../install-service/templates/install-macos.sh.js`
 
 ## Installation Workflow
 
-1. **Wrapper entrypoint** – The checked-in script (`../install-service/install-macos.sh`) simply downloads and executes the hosted installer (`install.lets-script.com/install-macos.sh`), ensuring we always run the latest template output (lines 1-13).
+1. **Wrapper entrypoint** – The checked-in script (`../install-service/install-macos.sh`) simply downloads and executes the hosted installer (`install.never-lost.app/install-macos.sh`), ensuring we always run the latest template output (lines 1-13).
 2. **Root requirement & dependency checks** – The generated script exits unless invoked via `sudo`, then validates `curl`, `tar`, `gzip`, and either `sha256sum` or `shasum` are available (lines 6-119).
 3. **Version & artifact resolution** – It optionally hits the GitHub Releases API when `VERSION=latest`, chooses the macOS tarball (arm64/x64), and downloads both the archive and checksum from the Cloudflare Worker mirror (lines 122-181).
 4. **Binary installation** – The tarball is unpacked and the candidate binary is version-checked before an atomic replacement. The previous executable is retained until launchd restarts successfully and is restored on failure.

@@ -49,7 +49,7 @@ inline void write_basic_config_files(const fs::path &config_dir,
       {"runtime_dir", options.runtime_dir.string()},
       {"interval_seconds", options.interval_seconds},
       {"update_check_url",
-       "https://install.lets-script.com/api/version/check"}};
+       "https://install.never-lost.app/api/version/check"}};
   write_json(config_dir / "application.json", application);
 
   json::object httpclient{

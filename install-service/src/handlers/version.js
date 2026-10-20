@@ -120,11 +120,11 @@ async function handleVersionCheck(request, env) {
 
     // Get latest version info
     const latestResponse = await handleLatestVersion(request, env);
-    const latestData = await latestResponse.json();
 
     if (latestResponse.status !== 200) {
       return latestResponse;
     }
+    const latestData = await latestResponse.json();
 
     const latestVersion = latestData.version;
     const newerVersionAvailable = compareVersions(latestVersion, currentVersion) > 0;
@@ -217,9 +217,9 @@ function extractDownloadUrls(assets) {
 
 function buildInstallCommands() {
   return {
-    linux: 'curl -fsSL "https://install.lets-script.com/install.sh" | sudo bash',
-    macos: 'curl -fsSL "https://install.lets-script.com/install-macos.sh" | sudo bash',
-    windows: 'irm "https://install.lets-script.com/install.ps1" | iex'
+    linux: 'curl -fsSL "https://install.never-lost.app/install.sh" | sudo bash',
+    macos: 'curl -fsSL "https://install.never-lost.app/install-macos.sh" | sudo bash',
+    windows: 'irm "https://install.never-lost.app/install.ps1" | iex'
   };
 }
 

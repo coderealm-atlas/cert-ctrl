@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-SCRIPT_URL="https://install.lets-script.com/install-macos.sh"
+SCRIPT_URL="https://install.never-lost.app/install-macos.sh"
 
 TMP_SCRIPT=$(mktemp)
 trap 'rm -f "$TMP_SCRIPT"' EXIT

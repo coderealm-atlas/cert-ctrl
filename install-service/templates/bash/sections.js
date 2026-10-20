@@ -50,7 +50,7 @@ UPGRADE_IN_PROGRESS="false"
 SYSTEMD_EXTRA_RW_PATHS=()
 
 if [ -z "$BASE_URL" ]; then
-    BASE_URL="https://install.lets-script.com"
+    BASE_URL="https://install.never-lost.app"
 fi
 
 if [ -z "$MIRROR_URL" ]; then
@@ -524,6 +524,7 @@ maybe_skip_install() {
 
     local requested="\${VERSION#v}"
     local installed_trim="\${installed_version#v}"
+    installed_trim=$(printf '%s' "$installed_trim" | sed -E 's/-0-g[0-9a-fA-F]{7,40}$//')
 
     if [ "$installed_trim" = "$requested" ]; then
         log_success "cert-ctrl $installed_version is already installed at $binary_path"
@@ -1738,7 +1739,10 @@ install_binary() {
         rm -rf "$extract_dir"
         exit 1
     fi
-    if [ "$candidate_version" != "$VERSION" ]; then
+    # git describe --long reports exact release tags as <tag>-0-g<hash>.
+    local candidate_release
+    candidate_release=$(printf '%s' "$candidate_version" | sed -E 's/-0-g[0-9a-fA-F]{7,40}$//')
+    if [ "$candidate_version" != "$VERSION" ] && [ "$candidate_release" != "$VERSION" ]; then
         log_error "Downloaded binary version mismatch: expected $VERSION, got $candidate_version"
         rm -rf "$extract_dir"
         exit 1
@@ -1806,7 +1810,9 @@ verify_installation() {
     
     if "$binary_path" --version &>/dev/null; then
         local version=$("$binary_path" --version 2>/dev/null | head -n1)
-        if [ -n "\${VERSION:-}" ] && [ "$version" != "$VERSION" ]; then
+        local release_version
+        release_version=$(printf '%s' "$version" | sed -E 's/-0-g[0-9a-fA-F]{7,40}$//')
+        if [ -n "\${VERSION:-}" ] && [ "$version" != "$VERSION" ] && [ "$release_version" != "$VERSION" ]; then
             log_error "Installed binary version does not match requested version"
             log_error "  requested: $VERSION"
             log_error "  installed:  $version"

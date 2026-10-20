@@ -1,0 +1,13 @@
+all:
+  children:
+    install_service_remote:
+      hosts:
+        install-selfhost:
+          ansible_host: 172.234.89.243
+          ansible_user: jianglibo
+          ansible_become: true
+          install_service_app_root: /opt/install-service/selfhost
+          install_service_assets_root: /opt/install-service/assets
+          install_service_app_user: install-service
+          install_service_app_group: install-service
+          install_service_nginx_port: 8080

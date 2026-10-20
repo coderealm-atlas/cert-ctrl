@@ -340,7 +340,8 @@ $candidateVersion = (& $binaryPath --version 2>$null | Select-Object -First 1)
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($candidateVersion)) {
     throw 'Downloaded cert-ctrl binary failed its pre-install version check.'
 }
-if ($candidateVersion.Trim() -ne $Version.Trim()) {
+$candidateRelease = $candidateVersion.Trim() -creplace '-0-g[0-9a-fA-F]{7,40}$', ''
+if ($candidateVersion.Trim() -ne $Version.Trim() -and $candidateRelease -ne $Version.Trim()) {
     throw "Downloaded binary version mismatch: expected $Version, got $candidateVersion."
 }
 

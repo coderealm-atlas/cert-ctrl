@@ -208,7 +208,9 @@ install_binary() {
 
     local candidate_version
     candidate_version=$("$binary_path" --version 2>/dev/null | head -n1) || die "Downloaded binary failed its version check."
-    [[ "$candidate_version" == "$requested_version" ]] || die "Downloaded binary version mismatch: expected $requested_version, got $candidate_version."
+    local candidate_release
+    candidate_release=$(printf '%s' "$candidate_version" | sed -E 's/-0-g[0-9a-fA-F]{7,40}$//')
+    [[ "$candidate_version" == "$requested_version" || "$candidate_release" == "$requested_version" ]] || die "Downloaded binary version mismatch: expected $requested_version, got $candidate_version."
 
     mkdir -p "$INSTALL_DIR"
     BINARY_TARGET_PATH="\${INSTALL_DIR}/cert-ctrl"

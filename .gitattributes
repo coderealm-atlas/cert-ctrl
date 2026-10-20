@@ -1,0 +1,2 @@
+# Dependency patches must remain valid for git apply on Windows.
+*.patch text eol=lf

@@ -64,6 +64,40 @@ The wrapper selects the project's Ansible config by default; `ANSIBLE_CONFIG`
 remains overridable.
 
 ## Inventory
+
+Both `inventory.yml` and `inventory.mail-consolidation.yml` now target
+172.234.89.243 using jianglibo with sudo for the self-hosted installer.
+Its canonical URL is `https://install-selfhost.never-lost.app`; the separate
+Cloudflare Worker remains at `https://install.never-lost.app`. The app runs on localhost:8787; nginx serves its
+assets on 8080, alongside the destination's existing sites. Use:
+
+```bash
+./install-service-selfhost/ansible.sh playbook \
+  -i install-service-selfhost/ansible/inventory.mail-consolidation.yml \
+  install-service-selfhost/ansible/playbooks/deploy_install_service.yml
+./install-service-selfhost/ansible.sh playbook \
+  -i install-service-selfhost/ansible/inventory.mail-consolidation.yml \
+  install-service-selfhost/ansible/playbooks/bootstrap_nginx.yml
+./install-service-selfhost/ansible.sh playbook \
+  -i install-service-selfhost/ansible/inventory.mail-consolidation.yml \
+  install-service-selfhost/ansible/playbooks/configure_mail_consolidation.yml
+```
+
+For hosts whose Node.js/npm/nginx/rsync packages are already installed, pass
+`-e install_service_manage_packages=false` as a JSON/YAML boolean (for example
+`-e '{"install_service_manage_packages":false}'`) to skip package management.
+Initial migration copied the running source app and all 97 production asset
+files; it did not publish a new software release. Synchronize assets separately
+when publishing subsequent releases.
+
+The route helper merges into the existing shared HAProxy config and validates it
+before reload, rather than replacing the complete config. It routes
+mail.cjj365.cc to the isolated mail relay on 18084, and the installation hostnames
+to the installation app/assets. `install.cjj365.cc` is also accepted for direct
+IP tests with the existing wildcard certificate; no DNS record was created.
+It includes a never-lost.app HTTPS bundle only when that bundle exists.
+The public install.never-lost.app Cloudflare Worker is separate and unchanged.
+
 Create an inventory with build hosts reachable via SSH. Examples: `inventory.example.ini` and `inventory.example.yml`.
 For Windows over SSH, match `ansible_shell_type` to the host's actual OpenSSH
 default shell: `cmd` with `ansible_shell_executable=cmd.exe` for the Windows
@@ -158,3 +192,26 @@ Per-host/group variables:
 
 Linux Docker builds use `install_service_linux_docker_jobs` to define multiple artifacts per host.
 The Linux Docker host must have Docker installed and access to the cert-ctrl repo path.
+
+## Self-hosted installer migration (2026-10-12)
+
+Production now runs on 172.234.89.243 at
+`https://install-selfhost.never-lost.app`. Both inventories target this host.
+HAProxy terminates TLS with the existing never-lost.app wildcard certificate
+managed by cert-ctrl; the app and release files reside under `/opt/install-service`.
+Release v0.1.4 and its checksums are available for all five supported platforms.
+Use the normal `sync_assets.yml` playbook for subsequent self-hosted releases;
+publishing to GitHub alone does not update this server's local latest.json.
+
+The `legacy-redirect/` Worker forwards `install-selfhost.lets-script.com/*`
+to the new self-hosted hostname, preserving path and query string. The legacy
+DNS record is proxied through Cloudflare; the Worker answers without contacting
+the old server. Keep that DNS record and Worker until old links are no longer
+needed. The independent installer Worker at `install.never-lost.app` is unchanged.
+
+Deploy the redirect from the repository root using existing Cloudflare credentials:
+
+```bash
+install-service/node_modules/.bin/wrangler deploy \
+  --config install-service-selfhost/legacy-redirect/wrangler.jsonc
+```

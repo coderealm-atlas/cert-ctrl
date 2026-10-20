@@ -1,5 +1,6 @@
 #pragma once
 #include "log_stream.hpp"
+#include "conf/update_service_url.hpp"
 #include <boost/asio/thread_pool.hpp>
 #include <boost/json/fwd.hpp>
 #include <boost/log/trivial.hpp>
@@ -66,8 +67,7 @@ struct CertctrlConfig {
   // Missing/empty means disabled.
   std::vector<std::string> events_trigger_script;
   std::string base_url{"https://api.cjj365.cc"};
-  std::string update_check_url{
-      "https://install.lets-script.com/api/version/check"};
+  std::string update_check_url{kDefaultUpdateCheckUrl};
   fs::path runtime_dir{};
   int interval_seconds{30};
   std::string poll_url{};
@@ -123,7 +123,8 @@ struct CertctrlConfig {
         if (auto *p = jo_p->if_contains("url_base"))
           cc.base_url = p->as_string().c_str();
         if (auto *p = jo_p->if_contains("update_check_url"))
-          cc.update_check_url = p->as_string().c_str();
+          cc.update_check_url =
+              migrate_update_check_url(p->as_string().c_str());
         if (auto *p = jo_p->if_contains("runtime_dir"))
           cc.runtime_dir = fs::path(p->as_string().c_str());
 

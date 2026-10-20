@@ -10,12 +10,12 @@
         name: rsync
         state: present
         update_cache: true
-      when: ansible_os_family == 'Debian'
+      when: ansible_os_family == 'Debian' and (install_service_manage_packages | default(true))
 
     - name: Ensure rsync installed (other)
       package:
         name: rsync
         state: present
-      when: ansible_os_family != 'Debian'
+      when: ansible_os_family != 'Debian' and (install_service_manage_packages | default(true))
   roles:
     - install_service_assets

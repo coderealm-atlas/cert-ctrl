@@ -502,7 +502,7 @@ function getBaseUrl(req) {
   } catch {
     // Use the canonical public origin below.
   }
-  return 'https://install.lets-script.com';
+  return 'https://install-selfhost.never-lost.app';
 }
 
 function resolveScriptType(pathname) {
@@ -579,6 +579,10 @@ function extractDownloadUrls(assets, baseUrl, version) {
     }
     if (name.includes('linux') && name.includes('arm64')) {
       urls['linux-arm64'] = downloadUrl;
+      return;
+    }
+    if (name.includes('freebsd') && name.includes('x64')) {
+      urls['freebsd-x64'] = downloadUrl;
       return;
     }
     if (name.includes('windows') && name.includes('x64')) {

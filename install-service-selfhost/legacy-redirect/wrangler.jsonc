@@ -1,0 +1,17 @@
+{
+  "$schema": "../../install-service/node_modules/wrangler/config-schema.json",
+  "name": "cert-ctrl-selfhost-legacy-redirect",
+  "account_id": "4f3c7b8bd8c76a7cf8072775c945762b",
+  "main": "index.js",
+  "compatibility_date": "2026-10-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "install-selfhost.lets-script.com/*",
+      "zone_id": "f640bddae520741a549b9d410e8c087b"
+    }
+  ],
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
+}

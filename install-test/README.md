@@ -1,6 +1,6 @@
 # cert-ctrl installer smoke-test container
 
-This directory provides a minimal Docker environment that exercises the Cloudflare-hosted installer scripts end-to-end. Use it to confirm that a published release installs correctly from `install.lets-script.com`.
+This directory provides a minimal Docker environment that exercises the Cloudflare-hosted installer scripts end-to-end. Use it to confirm that a published release installs correctly from `install.never-lost.app`.
 
 ## Files
 

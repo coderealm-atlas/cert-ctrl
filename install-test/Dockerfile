@@ -23,8 +23,8 @@ RUN rm -f /usr/lib/gcc/*/*/libatomic.so* /usr/lib/x86_64-linux-gnu/libatomic.so*
 
 # Download and patch the installer script so logging stays on stderr for captured outputs.
 RUN set -eux; \
-    curl -fsSL https://install.lets-script.com/install.sh -o /tmp/install-cert-ctrl.sh; \
-    sed -i 's|https://github.com.cnpmjs.org|https://install.lets-script.com/releases/proxy|g' /tmp/install-cert-ctrl.sh; \
+    curl -fsSL https://install.never-lost.app/install.sh -o /tmp/install-cert-ctrl.sh; \
+    sed -i 's|https://github.com.cnpmjs.org|https://install.never-lost.app/releases/proxy|g' /tmp/install-cert-ctrl.sh; \
     python3 - <<'PY'
 from pathlib import Path
 

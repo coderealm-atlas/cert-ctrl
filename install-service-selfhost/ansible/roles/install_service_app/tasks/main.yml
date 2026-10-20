@@ -13,7 +13,7 @@
       - rsync
     state: present
     update_cache: true
-  when: ansible_os_family == 'Debian'
+  when: ansible_os_family == 'Debian' and (install_service_manage_packages | default(true))
 
 - name: Ensure app packages installed (other)
   package:
@@ -22,7 +22,7 @@
       - npm
       - rsync
     state: present
-  when: ansible_os_family != 'Debian'
+  when: ansible_os_family != 'Debian' and (install_service_manage_packages | default(true))
 
 - name: Ensure service group exists
   group:
@@ -61,7 +61,7 @@
       {{
         install_service_app_excludes
         | default([])
-        | map('regex_replace', '^(.*)$', '--exclude=\\1')
+        | map('regex_replace', '^', '--exclude=')
         | list
       }}
 

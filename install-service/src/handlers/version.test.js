@@ -1,7 +1,32 @@
-import { describe, it, expect } from 'vitest';
-import { __testables__ } from './version.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { __testables__, versionHandler } from './version.js';
 
 const { buildInstallCommands, extractDownloadUrls } = __testables__;
+
+describe('version check upstream failures', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('returns a readable GitHub authentication error response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ message: 'Bad credentials' }), { status: 401 }
+    )));
+    const response = await versionHandler(new Request(
+      'https://install.never-lost.app/api/version/check?current=v0.1.2'
+    ), {
+      RELEASE_CACHE: { get: vi.fn().mockResolvedValue(null) },
+      GITHUB_REPO_OWNER: 'example',
+      GITHUB_REPO_NAME: 'cert-ctrl',
+      GITHUB_TOKEN: 'invalid-test-token'
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.bodyUsed).toBe(false);
+    expect(await response.json()).toMatchObject({
+      error: 'Failed to fetch latest version',
+      details: { status: 401, reason: 'unauthorized', message: 'Bad credentials' }
+    });
+  });
+});
 
 describe('buildInstallCommands', () => {
   it('uses normal upgrade commands without forcing a reinstall', () => {

@@ -11,7 +11,7 @@ const defaultOptions = {
   country: 'US',
   mirror: {
     name: 'cloudflare-proxy',
-    url: 'https://install.lets-script.com/releases/proxy'
+    url: 'https://install.never-lost.app/releases/proxy'
   },
   params: {
     version: 'latest',
@@ -22,10 +22,44 @@ const defaultOptions = {
     writableDirs: '',
     disableSandbox: false
   },
-  baseUrl: 'https://install.lets-script.com'
+  baseUrl: 'https://install.never-lost.app'
 };
 
 describe('install.sh template', () => {
+  it('verifies the installed exact-tag binary and rejects a different build', async () => {
+    const script = await getInstallTemplate('bash', defaultOptions);
+    const verify = script.match(/verify_installation\(\) \{[\s\S]*?\n\}/)[0];
+    const workDir = mkdtempSync(join(tmpdir(), 'certctrl-verify-'));
+    const binary = join(workDir, 'cert-ctrl');
+    const run = () => execFileSync('bash', ['-c', `
+      log_error() { :; }
+      log_success() { :; }
+      ${verify}
+      verify_installation
+    `], { env: { ...process.env, INSTALL_DIR: workDir, VERSION: 'v0.1.4' } });
+    for (const version of ['v0.1.4', 'v0.1.4-0-gf137f927']) {
+      writeFileSync(binary, `#!/bin/sh\necho '${version}'\n`, { mode: 0o755 });
+      expect(run).not.toThrow();
+    }
+    for (const version of ['v0.1.3-0-gf137f927', 'v0.1.4-1-gf137f927', 'v0.1.4-0-gf137f927-dirty']) {
+      writeFileSync(binary, `#!/bin/sh\necho '${version}'\n`, { mode: 0o755 });
+      expect(run).toThrow();
+    }
+  });
+
+  it('accepts exact-tag git describe versions and rejects mismatched builds', async () => {
+    const script = await getInstallTemplate('bash', defaultOptions);
+    const normalization = script.match(/^    candidate_release=.*$/m)[0];
+    const condition = script.match(/^    if \[ "\$candidate_version" != "\$VERSION" \].*; then$/m)[0];
+    const check = `candidate_version="$1"\nVERSION="$2"\n${normalization}\n${condition}\nexit 1\nfi`;
+    for (const version of ['v0.1.4', 'v0.1.4-0-gf137f927']) {
+      expect(() => execFileSync('bash', ['-c', check, 'check', version, 'v0.1.4'])).not.toThrow();
+    }
+    for (const version of ['v0.1.3-0-gf137f927', 'v0.1.4-1-gf137f927', 'v0.1.4-0-gf137f927-dirty', 'v0.1.4-0-ginvalid', '']) {
+      expect(() => execFileSync('bash', ['-c', check, 'check', version, 'v0.1.4'])).toThrow();
+    }
+  });
+
   it('renders bash script that passes a syntax check', async () => {
     const script = await getInstallTemplate('bash', defaultOptions);
     const workDir = mkdtempSync(join(tmpdir(), 'certctrl-install-'));

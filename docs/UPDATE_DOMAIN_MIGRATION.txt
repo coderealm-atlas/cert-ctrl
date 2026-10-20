@@ -1,0 +1,63 @@
+cert-ctrl update service domain migration
+========================================
+
+Canonical service: https://install.never-lost.app
+Update check: https://install.never-lost.app/api/version/check
+Linux installer: https://install.never-lost.app/install.sh
+macOS installer: https://install.never-lost.app/install-macos.sh
+Windows installer: https://install.never-lost.app/install.ps1
+
+The Cloudflare Worker serves both install.never-lost.app and the legacy
+install.lets-script.com hostname. Keep the legacy route and domain registration
+until installed clients have migrated. Serve the old API normally rather than
+depending on HTTP redirects: existing update check clients expect a JSON 2xx
+response. Installers fetched through either hostname advertise the new host.
+
+The client configuration parser recognizes the former public default
+https://install.lets-script.com/api/version/check (and its HTTP variant) and
+uses the new endpoint. Query strings are retained. Empty values still disable
+update checks, and custom endpoints, including the separate self-hosted
+installer, are preserved. This compatibility behavior takes effect in binaries
+built with include/conf/update_service_url.hpp; changing source alone does not
+upgrade already installed binaries.
+
+Existing binaries can migrate without a reinstall: back up their configuration
+and change only the update_check_url value in the effective application JSON
+or YAML configuration, including any profile/override that defines it. On Linux
+the usual file is /etc/certctrl/application.json. If the key is absent, add:
+
+  "update_check_url": "https://install.never-lost.app/api/version/check"
+
+Preserve url_base, credentials, websocket settings, and install actions. Restart
+the running agent after the edit. Verify its log says "Checking for agent
+updates via https://install.never-lost.app/..." and reports a latest version.
+Older binaries do not support "conf set update_check_url"; edit the config file.
+
+cert-ctrl's update command currently prints upgrade instructions; it does not
+replace the binary automatically. Publishing a new cross-platform release is
+a separate rollout step. Until then, existing release archives may contain
+the old default, so retain legacy-host compatibility.
+
+Do not retire lets-script.com merely because the new installer is online.
+Unmanaged clients and other services can still depend on the old domain.
+
+Troubleshooting version API failures
+-----------------------------------
+If /health succeeds but /api/version/check returns HTTP 500, inspect
+/api/version/latest directly. A GitHub 401 with "Bad credentials" means the
+Worker's GITHUB_TOKEN is invalid; changing the client hostname cannot fix it.
+Replace the secret in the environment serving both public domains:
+
+  cd install-service
+  npx wrangler secret put GITHUB_TOKEN --env production
+
+Enter a valid token with read access to the repository and its releases at the
+prompt. Do not put the token in source files or command-line arguments.
+The version handler must check the latest response status before reading its
+body, so upstream failures remain readable when forwarded to update clients.
+Deploy the handler fix with:
+
+  npx wrangler deploy --env production
+
+Verify /api/version/latest and /api/version/check?current=v0.1.2 on both
+install.never-lost.app and install.lets-script.com return HTTP 200 JSON.

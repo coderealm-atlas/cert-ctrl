@@ -60,8 +60,10 @@ all:
     install_service_remote:
       hosts:
         install-selfhost:
-          ansible_host: install-selfhost.lets-script.com
-          ansible_user: root
+          # Production self-hosted installer on the consolidated Japan server.
+          ansible_host: 172.234.89.243
+          ansible_user: jianglibo
+          ansible_become: true
           install_service_app_root: /opt/install-service/selfhost
           install_service_assets_root: /opt/install-service/assets
           install_service_app_user: install-service

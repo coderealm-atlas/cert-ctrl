@@ -4,13 +4,13 @@
     name: nginx
     state: present
     update_cache: true
-  when: ansible_os_family == 'Debian'
+  when: ansible_os_family == 'Debian' and (install_service_manage_packages | default(true))
 
 - name: Ensure nginx installed (other)
   package:
     name: nginx
     state: present
-  when: ansible_os_family != 'Debian'
+  when: ansible_os_family != 'Debian' and (install_service_manage_packages | default(true))
 
 - name: Ensure assets root exists
   file:

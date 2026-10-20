@@ -3,7 +3,7 @@ auto_apply_config: true
 verbose: info
 interval_seconds: 300                # Single cadence; no long/short split
 url_base: https://api.cjj365.cc # Base API; poll endpoint derived if poll_url is null
-update_check_url: https://install.lets-script.com/api/version/check
+update_check_url: https://install.never-lost.app/api/version/check
 runtime_dir: /var/lib/certctrl
 events_trigger_script:
 	- install.updated

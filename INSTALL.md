@@ -11,13 +11,13 @@ This guide provides comprehensive installation instructions for the cert-ctrl ce
 For most users, the easiest installation method is our automated installer:
 
 ```bash
-curl -fsSL https://install.lets-script.com/install.sh | sudo bash
+curl -fsSL https://install.never-lost.app/install.sh | sudo bash
 ```
 
 or
 
 ```bash
-curl -fsSL https://install.lets-script.com/install.sh -o install.sh
+curl -fsSL https://install.never-lost.app/install.sh -o install.sh
 # Review the script first
 cat install.sh
 # Then run with sudo
@@ -36,12 +36,12 @@ This will automatically:
 For Windows users, use PowerShell with the Windows installer script:
 
 ```powershell
-irm https://install.lets-script.com/install.ps1 | iex
+irm https://install.never-lost.app/install.ps1 | iex
 ```
 
 Or download and run manually for better security:
 ```powershell
-Invoke-WebRequest -Uri "https://install.lets-script.com/install.ps1" -OutFile "install.ps1"
+Invoke-WebRequest -Uri "https://install.never-lost.app/install.ps1" -OutFile "install.ps1"
 # Review the script content before running
 Get-Content install.ps1
 # Then run it
@@ -69,24 +69,24 @@ The installer automatically detects:
 
 ```bash
 # Install for all users (requires sudo/root)
-curl -fsSL https://install.lets-script.com/install.sh | bash
+curl -fsSL https://install.never-lost.app/install.sh | bash
 ```
 
 #### Custom Installation Directory
 
 ```bash
 # Install to custom directory
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --install-dir /opt/cert-ctrl/bin
+curl -fsSL https://install.never-lost.app/install.sh | bash -s -- --install-dir /opt/cert-ctrl/bin
 ```
 
 #### Service Installation
 
 ```bash
 # Install binary and systemd service (Linux)
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --service
+curl -fsSL https://install.never-lost.app/install.sh | bash -s -- --service
 
 # Install binary only, skip service
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --no-service
+curl -fsSL https://install.never-lost.app/install.sh | bash -s -- --no-service
 ```
 
 ### Windows
@@ -95,7 +95,7 @@ curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --no-service
 
 ```powershell
 # Install for all users (requires Administrator privileges)
-irm https://install.lets-script.com/install.ps1 | iex
+irm https://install.never-lost.app/install.ps1 | iex
 ```
 
 #### User Installation
@@ -107,17 +107,17 @@ irm https://install.lets-script.com/install.ps1 | iex
 ```powershell
 # Install to custom directory
 $installDir = "C:\Tools\cert-ctrl"
-irm https://install.lets-script.com/install.ps1 | iex -ArgumentList "--install-dir", $installDir
+irm https://install.never-lost.app/install.ps1 | iex -ArgumentList "--install-dir", $installDir
 ```
 
 #### Service Installation Options
 
 ```powershell
 # Install binary and Windows service
-irm https://install.lets-script.com/install.ps1 | iex -ArgumentList "--service"
+irm https://install.never-lost.app/install.ps1 | iex -ArgumentList "--service"
 
 # Install binary only, skip service
-irm https://install.lets-script.com/install.ps1 | iex -ArgumentList "--no-service"
+irm https://install.never-lost.app/install.ps1 | iex -ArgumentList "--no-service"
 ```
 
 ## Alternative Installation Methods
@@ -192,7 +192,7 @@ The following package managers are planned for future releases:
 #### Installation
 ```bash
 # Standard installation with service
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --service
+curl -fsSL https://install.never-lost.app/install.sh | bash -s -- --service
 
 # Verify installation
 cert-ctrl --version
@@ -231,7 +231,7 @@ Default configuration locations:
 #### Installation
 ```bash
 # Install system-wide (requires root)
-sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash
+sudo curl -fsSL https://install.never-lost.app/install.sh | sudo bash
 
 # Verify installation
 cert-ctrl --version
@@ -287,11 +287,11 @@ Default configuration location: `~/.config/certctrl/`
 #### Installation
 ```powershell
 # Download and run installer
-Invoke-WebRequest -Uri "https://install.lets-script.com/install.ps1" -OutFile "$env:TEMP\install-cert-ctrl.ps1"
+Invoke-WebRequest -Uri "https://install.never-lost.app/install.ps1" -OutFile "$env:TEMP\install-cert-ctrl.ps1"
 PowerShell -ExecutionPolicy Bypass -File "$env:TEMP\install-cert-ctrl.ps1"
 
 # Or one-line installation
-iwr https://install.lets-script.com/install.ps1 | iex
+iwr https://install.never-lost.app/install.ps1 | iex
 ```
 
 #### Alternative: Manual Installation
@@ -475,14 +475,14 @@ Get-Service -Name "cert-ctrl"
 
 ```bash
 # Install specific version
-curl -fsSL https://install.lets-script.com/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://install.never-lost.app/install.sh | bash -s -- --version v0.1.0
 ```
 
 ### Non-interactive Installation
 
 ```bash
 # Automated installation for scripts; this does not replace existing config
-curl -fsSL https://install.lets-script.com/install.sh | sudo bash -s -- --non-interactive
+curl -fsSL https://install.never-lost.app/install.sh | sudo bash -s -- --non-interactive
 ```
 
 ### Verification and Checksums
@@ -500,7 +500,7 @@ sha256sum cert-ctrl-linux-x64.tar.gz
 # Set proxy for installation
 export http_proxy="http://proxy.company.com:8080"
 export https_proxy="https://proxy.company.com:8080"
-curl -fsSL https://install.lets-script.com/install.sh | bash
+curl -fsSL https://install.never-lost.app/install.sh | bash
 ```
 
 ## Configuration
@@ -556,10 +556,10 @@ cert-ctrl recognizes these environment variables:
 #### Permission Denied
 ```bash
 # Fix: Use sudo for system installation
-curl -fsSL https://install.lets-script.com/install.sh | sudo bash
+curl -fsSL https://install.never-lost.app/install.sh | sudo bash
 
 # System-wide installation requires root
-sudo curl -fsSL https://install.lets-script.com/install.sh | sudo bash
+sudo curl -fsSL https://install.never-lost.app/install.sh | sudo bash
 ```
 
 #### Command Not Found
@@ -590,7 +590,7 @@ cert-ctrl test-connection
 echo $http_proxy $https_proxy
 
 # Verify DNS resolution
-nslookup install.lets-script.com
+nslookup install.never-lost.app
 ```
 
 ### Getting Help

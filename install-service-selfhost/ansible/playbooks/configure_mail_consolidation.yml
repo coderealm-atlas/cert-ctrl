@@ -1,0 +1,17 @@
+---
+# Use inventory.mail-consolidation.yml. Certificate bundles must exist first.
+- name: Merge migrated HTTP services into shared HAProxy
+  hosts: install_service_remote
+  become: true
+  tasks:
+    - name: Install route configuration helper
+      ansible.builtin.copy:
+        src: ../../scripts/configure-mail-consolidation.py
+        dest: /usr/local/sbin/configure-mail-consolidation
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Apply and validate shared HTTP routes
+      ansible.builtin.command: /usr/local/sbin/configure-mail-consolidation
+      register: route_result
+      changed_when: "'already configured' not in route_result.stdout"

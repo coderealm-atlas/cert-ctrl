@@ -53,3 +53,4 @@ temp/
 **/assets-staging/
 bin-in-git/
 .venv-e2e/
+.env

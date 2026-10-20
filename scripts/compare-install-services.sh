@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-base_a="${1:-https://install.lets-script.com}"
-base_b="${2:-https://install-selfhost.lets-script.com}"
+base_a="${1:-https://install.never-lost.app}"
+base_b="${2:-https://install-selfhost.never-lost.app}"
 
 tmp_root="$(mktemp -d)"
 trap 'rm -rf "$tmp_root"' EXIT

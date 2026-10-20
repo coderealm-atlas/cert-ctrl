@@ -40,16 +40,16 @@ boost::asio::awaitable<monad::MyResult<void>> UpdateHandler::start_awaitable() {
   const auto platform = detect_platform();
   if (platform == "windows") {
     output_.logger().info()
-        << "  Windows: irm https://install.lets-script.com/install.ps1 | iex"
+        << "  Windows: irm https://install.never-lost.app/install.ps1 | iex"
         << std::endl;
   } else if (platform == "macos") {
     output_.logger().info()
         << "  macOS: curl -fsSL "
-           "https://install.lets-script.com/install-macos.sh | sudo bash"
+           "https://install.never-lost.app/install-macos.sh | sudo bash"
         << std::endl;
   } else {
     output_.logger().info()
-        << "  Linux: curl -fsSL https://install.lets-script.com/install.sh | "
+        << "  Linux: curl -fsSL https://install.never-lost.app/install.sh | "
            "sudo bash"
         << std::endl;
   }
