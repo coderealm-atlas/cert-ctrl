@@ -5,11 +5,13 @@ install_service_build_commands:
 install_service_linux_docker_jobs:
   - name: linux-x64
     script: scripts/build-ubuntu-docker.sh
+    platform: ubuntu
     preset: release
     install_prefix: install/selfhost-release
     asset_name: cert-ctrl-linux-x64
   - name: linux-musl-x64
     script: scripts/build-alpine-docker.sh
+    platform: alpine
     preset: alpine-release
     install_prefix: install/selfhost-alpine-release
     asset_name: cert-ctrl-linux-musl-x64

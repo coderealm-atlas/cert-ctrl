@@ -11,3 +11,12 @@ set(CMAKE_C_COMPILER "clang")
 set(CMAKE_CXX_COMPILER "clang++")
 
 set(VCPKG_CMAKE_SYSTEM_NAME Linux)
+# Container releases opt in; keep native builds' toolchain choices unchanged.
+set(VCPKG_ENV_PASSTHROUGH CERTCTRL_CPU_BASELINE)
+if(DEFINED ENV{CERTCTRL_CPU_BASELINE})
+    if(NOT "$ENV{CERTCTRL_CPU_BASELINE}" STREQUAL "x86-64")
+        message(FATAL_ERROR "Unsupported cert-ctrl container CPU baseline")
+    endif()
+    set(VCPKG_C_FLAGS "-march=x86-64 -mtune=generic")
+    set(VCPKG_CXX_FLAGS "-march=x86-64 -mtune=generic")
+endif()

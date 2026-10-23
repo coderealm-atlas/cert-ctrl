@@ -88,6 +88,21 @@
       Unable to locate built binary under install prefix {{ install_service_install_prefix }}.
       Candidates: {{ install_service_binary_candidates | join(', ') }}
 
+- name: Validate Linux Docker provenance and ELF before packaging
+  when: install_service_docker_platform | default('') | length > 0
+  command:
+    argv:
+      - python3
+      - "{{ install_service_repo_path }}/scripts/docker-release.py"
+      - verify
+      - --platform
+      - "{{ install_service_docker_platform }}"
+      - --manifest
+      - "{{ install_service_install_prefix }}/build-info.json"
+      - --binary
+      - "{{ install_service_binary_path_effective }}"
+  changed_when: false
+
 - name: Stage build info (if present)
   copy:
     src: "{{ install_service_install_prefix }}/build-info.json"
@@ -227,6 +242,21 @@
       fi
       exit 1
     fi
+  changed_when: false
+
+- name: Validate Linux Docker provenance and ELF after staging
+  when: install_service_docker_platform | default('') | length > 0
+  command:
+    argv:
+      - python3
+      - "{{ install_service_repo_path }}/scripts/docker-release.py"
+      - verify
+      - --platform
+      - "{{ install_service_docker_platform }}"
+      - --manifest
+      - "{{ install_service_package_tmp }}/build-info.json"
+      - --binary
+      - "{{ install_service_package_tmp }}/{{ install_service_binary_basename }}"
   changed_when: false
 
 - name: Create archive
